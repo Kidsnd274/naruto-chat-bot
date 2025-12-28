@@ -2,13 +2,23 @@ import logging
 import os
 
 from dotenv import load_dotenv
+from openai.types.responses import response
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+import ai_client
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger("telegram_bot")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm gonna be Hokage some day!")
@@ -16,9 +26,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # This will now respond to any text message
     user_message = update.message.text
+
+    response = await ai_client.chat([
+        {
+          "role": "user",
+          "content": user_message
+        }
+      ])
+
     await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text=f"You said: {user_message}"
+        text=response.choices[0].message.content
     )
 
 if __name__ == '__main__':
@@ -27,6 +45,7 @@ if __name__ == '__main__':
     if not token:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN. Put it in .env or export it in your shell.")
 
+    logger.info("Starting bot...")
     application = ApplicationBuilder().token(token).build()
     
     start_handler = CommandHandler('start', start)

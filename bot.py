@@ -39,6 +39,23 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=response.choices[0].message.content
     )
 
+def setup(token):
+    global logger
+
+    logger.info("Starting Telegram Bot...")
+    application = ApplicationBuilder().token(token).build()
+    
+    start_handler = CommandHandler('start', start)
+    respond_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, respond)
+
+    application.add_handler(start_handler)
+    application.add_handler(respond_handler)
+    
+    application.run_polling()
+
+
+
+
 if __name__ == '__main__':
     load_dotenv()  # reads .env in the current working directory (if present)
     token = os.getenv("TELEGRAM_BOT_TOKEN")

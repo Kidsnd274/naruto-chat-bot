@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from httpx._transports import base
 import openai
 
 from dotenv import load_dotenv
@@ -11,35 +12,50 @@ from dotenv import load_dotenv
 #         url = url + "/v1"
 #     return url
 
-load_dotenv()
-
 logger = logging.getLogger("ai_client")
 
-_base_url = os.getenv("OPENAI_BASE_URL")
-_api_key = os.getenv("OPENAI_API_KEY")
-_model = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-2507-instruct-unsloth-settings")
+base_url = os.getenv("OPENAI_BASE_URL")
+api_key = os.getenv("OPENAI_API_KEY")
+model = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-2507-instruct-unsloth-settings")
 
-if not _api_key:
-    raise RuntimeError("Missing OPENAI_API_KEY in environment/.env")
-if not _base_url:
-    raise RuntimeError("Missing OPENAI_BASE_URL in environment/.env")
-
-_client = openai.AsyncOpenAI(api_key=_api_key, base_url=_base_url)
-
-async def _print_models():
-    print(await _client.models.list())
+client = None
 
 async def chat(messages) -> str:
     """
     messages format:
       [{"role":"system|user|assistant", "content":"..."}]
     """
-    resp = await _client.chat.completions.create(
-        model=_model,
+    resp = await client.chat.completions.create(
+        model=model,
         messages=messages
     )
 
     return resp
 
+def test():
+    """Test connectivity to the AI backend. Call this after setup()."""
+    asyncio.run(client.models.list())
+
+def setup(new_base_url, new_api_key, new_model):
+    global base_url, api_key, model, client
+
+    base_url = new_base_url
+    api_key = new_api_key
+    model = new_model
+
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+    test()
+
 if __name__ == "__main__":
-    asyncio.run(_print_models())
+    load_dotenv()
+
+    _base_url = os.getenv("OPENAI_BASE_URL")
+    _api_key = os.getenv("OPENAI_API_KEY")
+    _model = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-2507-instruct-unsloth-settings")
+
+    if not _api_key:
+        raise RuntimeError("Missing OPENAI_API_KEY in environment/.env")
+    if not _base_url:
+        raise RuntimeError("Missing OPENAI_BASE_URL in environment/.env")
+
+    setup(_base_url, _api_key, _model)

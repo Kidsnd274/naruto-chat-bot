@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -58,17 +59,25 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_message:
         return
 
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING
-    )
+    async def keep_typing():
+        while True:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=ChatAction.TYPING
+            )
+            await asyncio.sleep(4.5)
+    
+    typing_task = asyncio.create_task(keep_typing())
 
-    response = await ai_client.chat([
-        {
-          "role": "user",
-          "content": user_message
-        }
-      ])
+    try:
+        response = await ai_client.chat([
+            {
+            "role": "user",
+            "content": user_message
+            }
+        ])
+    finally:
+        typing_task.cancel()
 
     if response is None or not hasattr(response, 'choices') or not response.choices:
         bot_response = "Sorry, I couldn't get a response right now. Please try again later."

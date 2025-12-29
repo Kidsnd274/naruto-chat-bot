@@ -32,9 +32,13 @@ async def chat(messages) -> str:
 
     return resp
 
+async def _test_connection():
+    async for _ in client.models.list():
+        return
+
 def test():
     """Test connectivity to the AI backend. Call this after setup()."""
-    asyncio.run(client.models.list())
+    asyncio.run(_test_connection())
 
 def setup(new_base_url, new_api_key, new_model):
     global base_url, api_key, model, client

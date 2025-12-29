@@ -21,8 +21,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telegram_bot")
 
-whitelisted_groups = []
-whitelisted_ids = []
+try:
+    from config import whitelist, whitelisted_groups, whitelisted_ids
+except ImportError:
+    logger.warning("config.py not found, please create the file according to the example. Whitelist disabled.")
+    whitelist = False
+    whitelisted_groups = []
+    whitelisted_ids = []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm gonna be Hokage some day!")
@@ -32,16 +37,17 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     chat_type = update.effective_chat.type
 
-    # # Whitelist check - explicit handling for each chat type
-    # if chat_type in ("group", "supergroup"):
-    #     if update.message.chat_id not in whitelisted_groups:
-    #         return
-    # elif chat_type == "private":
-    #     if update.message.chat_id not in whitelisted_ids:
-    #         return
-    # else:
-    #     # Block all other chat types (channels, etc.)
-    #     return
+    # Whitelist check - explicit handling for each chat type
+    if whitelist:
+        if chat_type in ("group", "supergroup"):
+            if update.message.chat_id not in whitelisted_groups:
+                return
+        elif chat_type == "private":
+            if update.message.chat_id not in whitelisted_ids:
+                return
+        else:
+            # Block all other chat types (channels, etc.)
+            return
 
     if chat_type in ("group", "supergroup"):
         bot_username = context.bot.username

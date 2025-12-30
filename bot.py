@@ -25,13 +25,16 @@ logger = logging.getLogger("telegram_bot")
 
 try:
     from config import whitelist, whitelisted_groups, whitelisted_ids, max_chat_history
+    if max_chat_history < 1:
+        logger.warning("Max Chat History can't be less than 1, changing it to 1")
+        max_chat_history = 1
 except ImportError:
     logger.warning("config.py not found, please create the file according to the example. Whitelist disabled.")
     logger.warning("Chat History Disabled")
     whitelist = False
     whitelisted_groups = []
     whitelisted_ids = []
-    max_chat_history = 0
+    max_chat_history = 1
 
 # Initializing Conversation History
 conversation_history = defaultdict(lambda: deque(maxlen=max_chat_history))
@@ -104,10 +107,10 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     typing_task = asyncio.create_task(keep_typing())
 
     # # DEBUG: Print conversation history
-    # logger.debug(f"=== Conversation history for chat {chat_id} ({len(conversation_history[chat_id])} messages) ===")
+    # logger.info(f"=== Conversation history for chat {chat_id} ({len(conversation_history[chat_id])} messages) ===")
     # for i, msg in enumerate(conversation_history[chat_id]):
-    #     logger.debug(f"  [{i}] {msg['role']}: {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
-    # logger.debug("=== End history ===")
+    #     logger.info(f"  [{i}] {msg['role']}: {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
+    # logger.info("=== End history ===")
 
     try:
         response = await ai_client.chat(list(conversation_history[chat_id]))

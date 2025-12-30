@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from collections import defaultdict, deque
 
 from dotenv import load_dotenv
 from openai.types.responses import response
@@ -23,18 +24,29 @@ logging.basicConfig(
 logger = logging.getLogger("telegram_bot")
 
 try:
-    from config import whitelist, whitelisted_groups, whitelisted_ids
+    from config import whitelist, whitelisted_groups, whitelisted_ids, max_chat_history
 except ImportError:
     logger.warning("config.py not found, please create the file according to the example. Whitelist disabled.")
+    logger.warning("Chat History Disabled")
     whitelist = False
     whitelisted_groups = []
     whitelisted_ids = []
+    max_chat_history = 0
+
+# Initializing Conversation History
+conversation_history = defaultdict(lambda: deque(maxlen=max_chat_history))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
     logger.info(f"/start command received from user {user.id} (@{user.username}) in chat {chat_id}")
     await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm gonna be Hokage some day!")
+
+async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    logger.info(f"/clear command received from user {user.id} (@{user.username}) in chat {chat_id}")
+    conversation_history[chat_id].clear()
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # This will now respond to any text message
@@ -61,6 +73,13 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Blocked unsupported chat type '{chat_type}' from chat {chat_id}")
             return
 
+    # Add user message to history  
+    sender_name = user.first_name or user.username or f"User {user.id}"
+    conversation_history[chat_id].append({
+        "role": "user",
+        "content": f"{sender_name}: {user_message}"
+    })
+
     if chat_type in ("group", "supergroup"):
         bot_username = context.bot.username
         if f"@{bot_username}" not in user_message:
@@ -84,13 +103,14 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     typing_task = asyncio.create_task(keep_typing())
 
+    # # DEBUG: Print conversation history
+    # logger.debug(f"=== Conversation history for chat {chat_id} ({len(conversation_history[chat_id])} messages) ===")
+    # for i, msg in enumerate(conversation_history[chat_id]):
+    #     logger.debug(f"  [{i}] {msg['role']}: {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
+    # logger.debug("=== End history ===")
+
     try:
-        response = await ai_client.chat([
-            {
-            "role": "user",
-            "content": user_message
-            }
-        ])
+        response = await ai_client.chat(list(conversation_history[chat_id]))
     finally:
         typing_task.cancel()
 
@@ -99,6 +119,10 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_response = "Sorry, I couldn't get a response right now. Please try again later."
     else:
         bot_response = response.choices[0].message.content
+        conversation_history[chat_id].append({
+            "role": "assistant",
+            "content": bot_response
+        })
     
     if chat_type not in ("group", "supergroup"):
         user_message_id = None

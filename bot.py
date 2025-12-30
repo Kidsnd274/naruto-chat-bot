@@ -31,33 +31,48 @@ except ImportError:
     whitelisted_ids = []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    logger.info(f"/start command received from user {user.id} (@{user.username}) in chat {chat_id}")
     await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm gonna be Hokage some day!")
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # This will now respond to any text message
     user_message = update.message.text
+    user_message_id = update.message.id
     chat_type = update.effective_chat.type
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    logger.debug(f"Message received: chat_id={chat_id}, user_id={user.id}, type={chat_type}")
 
     # Whitelist check - explicit handling for each chat type
     if whitelist:
         if chat_type in ("group", "supergroup"):
             if update.message.chat_id not in whitelisted_groups:
+                logger.warning(f"Blocked group chat {chat_id} - not in whitelist")
                 return
         elif chat_type == "private":
             if update.message.chat_id not in whitelisted_ids:
+                logger.warning(f"Blocked private chat from user {user.id} (@{user.username}) - not in whitelist")
                 return
         else:
             # Block all other chat types (channels, etc.)
+            logger.warning(f"Blocked unsupported chat type '{chat_type}' from chat {chat_id}")
             return
 
     if chat_type in ("group", "supergroup"):
         bot_username = context.bot.username
         if f"@{bot_username}" not in user_message:
+            logger.debug(f"Ignoring group message without bot mention in chat {chat_id}")
             return
         user_message = user_message.replace(f"@{bot_username}", "").strip()
 
     if not user_message:
+        logger.debug(f"Empty message after processing, ignoring (chat {chat_id})")
         return
+
+    logger.info(f"Processing message from user {user.id} (@{user.username}) in {chat_type} chat {chat_id}: {user_message[:50]}{'...' if len(user_message) > 50 else ''}")
 
     async def keep_typing():
         while True:
@@ -80,28 +95,34 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         typing_task.cancel()
 
     if response is None or not hasattr(response, 'choices') or not response.choices:
+        logger.error(f"Invalid AI response for chat {chat_id}: response={response}")
         bot_response = "Sorry, I couldn't get a response right now. Please try again later."
     else:
         bot_response = response.choices[0].message.content
     
+    if chat_type not in ("group", "supergroup"):
+        user_message_id = None
+
     try:
         await context.bot.send_message(
             chat_id=update.effective_chat.id, 
             text=bot_response,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_to_message_id=user_message_id
         )
     except Exception as e:
         # Fallback to plain text if markdown parsing fails
         logger.warning(f"Markdown parsing failed: {e}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id, 
-            text=bot_response
+            text=bot_response,
+            reply_to_message_id=user_message_id
         )
 
 def setup(token):
     global logger
 
-    logger.info("Starting Telegram Bot...")
+    logger.info("Initializing Telegram Bot...")
     application = ApplicationBuilder().token(token).build()
     
     start_handler = CommandHandler('start', start)
@@ -110,7 +131,9 @@ def setup(token):
     application.add_handler(start_handler)
     application.add_handler(respond_handler)
     
+    logger.info("Bot handlers registered, starting polling...")
     application.run_polling()
+    logger.info("Bot stopped")
 
 
 

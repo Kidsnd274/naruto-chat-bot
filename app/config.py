@@ -1,6 +1,9 @@
 import json
 import logging
 import os
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -13,41 +16,96 @@ whitelisted_groups = []
 whitelisted_ids = []
 max_chat_history = 1  # Chat History of 1 = Disabled
 
-def setup():
-    global whitelist_enabled, whitelisted_groups, whitelisted_ids, max_chat_history
-    # Default to ../config.json (parent directory) for standalone runs
-    # In Docker, config.json will be copied/mounted to /app/config.json
-    CONFIG_PATH = os.getenv("CONFIG_PATH", "config.json")
+class ChatHistoryType(Enum):
+    """Chat history storage type."""
+    MEMORY = "memory"
+    REDIS = "redis"
 
-    chat_history_enabled = os.getenv("CHAT_HISTORY_ENABLED", False)
-    whitelist_enabled = os.getenv("WHITELIST_ENABLED", True)
+# --- Sub-configs: each feature own its settings ---
+@dataclass
+class WhitelistConfig:
+    enabled: bool = True  # by default turn on the whitelist
+    groups: list[str] = field(default_factory=list)
+    ids: list[str] = field(default_factory=list)
+    
+@dataclass
+class ChatHistoryConfig:
+    enabled: bool = False
+    max_history: int = 1
+    storage_type: ChatHistoryType = ChatHistoryType.MEMORY
 
-    # Try Reading config path
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        logger.warning(f"Config file not found or invalid at {CONFIG_PATH}. Features disabled.")
-        return
+# --- Singleton AppConfig ---
 
-    # Setup Whitelist Config
-    if whitelist_enabled:
-        whitelisted_groups = data.get("whitelisted_groups", [])
-        whitelisted_ids = data.get("whitelisted_ids", [])
-        logger.info("Whitelist Enabled")
-    else:
-        logger.info("Whitelist Disabled")
+class AppConfig:
+    _instance: Optional["AppConfig"] = None
+    
+    def __new__(cls) -> "AppConfig":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.initialized = False
+        return cls._instance
+    
+    def __init__(self) -> None:
+        if not hasattr(self, "_initialized"):
+            self._initialized = False
 
-    # Setup Chat History Config
-    if chat_history_enabled:
-        read_chat_history = data.get("max_chat_history", 1)
-        if read_chat_history < 1:
-            logger.warning("Max Chat History can't be less than 1, changing it to 1")
-            max_chat_history = 1
-        else:
-            max_chat_history = read_chat_history
-        logger.info("Setting Max Chat History to " + str(max_chat_history))
-    else:
-        logger.info("Chat History Disabled")
+    def setup(self) -> None:
+        """Load config from file and environmental variables. Call once at startup."""
+        if self._initialized:
+            logger.warning("AppConfig.setup() called more than once — skipping.")
+            return
+
+        # Default to ../config.json (parent directory) for standalone runs
+        # In Docker, config.json will be copied/mounted to /app/config.json
+        config_path = os.getenv("CONFIG_PATH", "config.json")
+        raw: dict = {}
         
-    logger.info("Config Setup Ready")
+        try:
+            with open(config_path, "r") as f:
+                raw = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            logger.warning(f"Config file not found or invalid at {config_path}. Using defaults.")
+            
+        self.whitelist = self._load_whitelist(raw)
+        self.chat_history = self._load_chat_history(raw)
+        
+        self._initialized = True
+        logger.info("Appconfig ready.")
+        
+    def _load_whitelist(self, raw: dict) -> WhitelistConfig:
+        enabled = os.getenv("WHITELIST_ENABLED", "true").lower() == "true"
+        cfg = WhitelistConfig(enabled=enabled)
+        
+        if enabled:
+            cfg.groups = raw.get("whitelisted_groups", [])
+            cfg.ids = raw.get("whitelisted_ids", [])
+        else:
+            logger.info("Whitelist disabled.")
+        
+        return cfg
+    
+    def _load_chat_history(self, raw: dict) -> ChatHistoryConfig:
+        enabled = os.getenv("CHAT_HISTORY_ENABLED", "false").lower() == "true"
+        cfg = ChatHistoryConfig(enabled=enabled)
+        
+        if enabled:
+            max_history = raw.get("max_chat_history", 1)
+            if max_history < 1:
+                logger.warning("max_chat_history < 1, clamping to 1")
+                max_history = 1
+            cfg.max_history = max_history
+            
+            storage_type_raw = os.getenv("CHAT_HISTORY_TYPE", ChatHistoryType.MEMORY.value)
+            try:
+                cfg.storage_type = ChatHistoryType(storage_type_raw)
+            except ValueError:
+                logger.warning(f"Unknown CHAT_HISTORY_TYPE '{storage_type_raw}', defaulting to MEMORY.")
+                cfg.storage_type = ChatHistoryType.MEMORY
+
+            logger.info(f"Chat history enabled — max={cfg.max_history}, storage={cfg.storage_type.value}.")
+        else:
+            logger.info("Chat history disabled.")
+            
+        return cfg
+
+config = AppConfig()

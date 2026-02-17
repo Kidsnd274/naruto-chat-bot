@@ -1,9 +1,9 @@
 import asyncio
-import config
-import chat_history
+from chat_history import chat_history
 import logging
 import os
 
+from config import config
 from dotenv import load_dotenv
 from openai.types.responses import response
 from telegram import Update
@@ -47,13 +47,13 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.debug(f"Message received: chat_id={chat_id}, user_id={user.id}, type={chat_type}")
 
     # Whitelist check - explicit handling for each chat type
-    if config.whitelist_enabled:
+    if config.whitelist.enabled:
         if chat_type in ("group", "supergroup"):
-            if update.message.chat_id not in config.whitelisted_groups:
+            if update.message.chat_id not in config.whitelist.groups:
                 logger.warning(f"Blocked group chat {chat_id} - not in whitelist")
                 return
         elif chat_type == "private":
-            if update.message.chat_id not in config.whitelisted_ids:
+            if update.message.chat_id not in config.whitelist.ids:
                 logger.warning(f"Blocked private chat from user {user.id} (@{user.username}) - not in whitelist")
                 return
         else:

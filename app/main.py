@@ -23,8 +23,12 @@ if __name__ == '__main__':
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN. Put it in .env or export it in your shell.")
     
     logger.info("Setting up config")
-    import config
+    from config import config
     config.setup()
+    
+    logger.info("Setting up Chat History")
+    import chat_history
+    chat_history.setup()
     
     logger.info("Creating AI Client")
     import ai_client

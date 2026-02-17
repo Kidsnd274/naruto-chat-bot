@@ -1,0 +1,1 @@
+docker run -v %cd%/config.json:/app/config.json --env-file .env naruto-chat-bot

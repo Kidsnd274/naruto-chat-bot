@@ -1,0 +1,5 @@
+{
+    "whitelisted_groups": [123, 456],
+    "whitelisted_ids": [111, 222],
+    "max_chat_history": 200
+}

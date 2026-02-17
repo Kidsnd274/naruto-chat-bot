@@ -1,11 +1,9 @@
-import ai_client
-import bot
-
 from dotenv import load_dotenv
 import os
 import logging
 
 if __name__ == '__main__':
+    logger = logging.getLogger("Starter")
     load_dotenv()  # reads .env in the current working directory (if present)
 
     # AI Client Variables
@@ -23,10 +21,16 @@ if __name__ == '__main__':
 
     if not _token:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN. Put it in .env or export it in your shell.")
-
-    logger = logging.getLogger("Starter")
+    
+    logger.info("Setting up config")
+    import config
+    config.setup()
+    
     logger.info("Creating AI Client")
+    import ai_client
     ai_client.setup(_base_url, _api_key, _model)
 
+    logger.info("Setting up Telegram Bot")
+    import bot
     logger.info("Creating Telegram Bot Connection")
     bot.setup(_token)

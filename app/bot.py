@@ -1,7 +1,8 @@
 import asyncio
+import config
+import chat_history
 import logging
 import os
-from collections import defaultdict, deque
 
 from dotenv import load_dotenv
 from openai.types.responses import response
@@ -23,22 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telegram_bot")
 
-try:
-    from config import whitelist, whitelisted_groups, whitelisted_ids, max_chat_history
-    if max_chat_history < 1:
-        logger.warning("Max Chat History can't be less than 1, changing it to 1")
-        max_chat_history = 1
-except ImportError:
-    logger.warning("config.py not found, please create the file according to the example. Whitelist disabled.")
-    logger.warning("Chat History Disabled")
-    whitelist = False
-    whitelisted_groups = []
-    whitelisted_ids = []
-    max_chat_history = 1
-
-# Initializing Conversation History
-conversation_history = defaultdict(lambda: deque(maxlen=max_chat_history))
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
@@ -49,7 +34,7 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
     logger.info(f"/clear command received from user {user.id} (@{user.username}) in chat {chat_id}")
-    conversation_history[chat_id].clear()
+    chat_history.clear(chat_id)
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # This will now respond to any text message
@@ -62,13 +47,13 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.debug(f"Message received: chat_id={chat_id}, user_id={user.id}, type={chat_type}")
 
     # Whitelist check - explicit handling for each chat type
-    if whitelist:
+    if config.whitelist_enabled:
         if chat_type in ("group", "supergroup"):
-            if update.message.chat_id not in whitelisted_groups:
+            if update.message.chat_id not in config.whitelisted_groups:
                 logger.warning(f"Blocked group chat {chat_id} - not in whitelist")
                 return
         elif chat_type == "private":
-            if update.message.chat_id not in whitelisted_ids:
+            if update.message.chat_id not in config.whitelisted_ids:
                 logger.warning(f"Blocked private chat from user {user.id} (@{user.username}) - not in whitelist")
                 return
         else:
@@ -78,11 +63,9 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Add user message to history  
     sender_name = user.first_name or user.username or f"User {user.id}"
-    conversation_history[chat_id].append({
-        "role": "user",
-        "content": f"{sender_name}: {user_message}"
-    })
+    chat_history.add_user_message(chat_id, sender_name, user_message)
 
+    # Check if received message should be ignored
     if chat_type in ("group", "supergroup"):
         bot_username = context.bot.username
         if f"@{bot_username}" not in user_message:
@@ -112,20 +95,23 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #     logger.info(f"  [{i}] {msg['role']}: {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
     # logger.info("=== End history ===")
 
+    # Send Message to AI
     try:
-        response = await ai_client.chat(list(conversation_history[chat_id]))
+        response = await ai_client.chat(chat_history.get_chat_history(chat_id))
+    except Exception as e:
+        logger.error(f"Error getting AI response for chat {chat_id}: error={e}")
+        return
+        
     finally:
         typing_task.cancel()
 
+    # Check AI response
     if response is None or not hasattr(response, 'choices') or not response.choices:
         logger.error(f"Invalid AI response for chat {chat_id}: response={response}")
         bot_response = "Sorry, I couldn't get a response right now. Please try again later."
     else:
         bot_response = response.choices[0].message.content
-        conversation_history[chat_id].append({
-            "role": "assistant",
-            "content": bot_response
-        })
+        chat_history.add_assistant_message(chat_id, bot_response)
     
     if chat_type not in ("group", "supergroup"):
         user_message_id = None
@@ -165,7 +151,7 @@ def setup(token):
 
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # Outdated usage
     load_dotenv()  # reads .env in the current working directory (if present)
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:

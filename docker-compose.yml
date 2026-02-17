@@ -7,21 +7,23 @@ services:
       dockerfile: Dockerfile
     container_name: naruto-chat-bot
     restart: unless-stopped
+    depends_on:
+      - redis
     env_file:
       - .env
     volumes:
       - ./config.json:/app/config.json:ro
 
-    # redis:
-    #   image: redis:8.6-alpine
-    #   container_name: naruto-redis
-    #   restart: unless-stopped
-    #   # Optional: persist data (uncomment if needed and uncomment below volumes)
-    #   # volumes:
-    #   #   - redis-data:/data
-    #   # ports:
-    #   #   - "6379:6379"  # only needed if accessing Redis from *outside* Docker (e.g., local dev tools)
-    #   command: ["redis-server"]
+  redis:
+    image: redis:8.6-alpine
+    container_name: naruto-redis
+    restart: unless-stopped
+    # Optional: persist data (uncomment if needed and uncomment below volumes)
+    # volumes:
+    #   - redis-data:/data
+    # ports:
+    #   - "6379:6379"  # only needed if accessing Redis from *outside* Docker (e.g., local dev tools)
+    command: ["redis-server"]
 
 # volumes:
 #   redis-data:

@@ -95,10 +95,10 @@ class AppConfig:
         cfg = ChatHistoryConfig(enabled=enabled)
         
         if enabled:
-            max_history = raw.get("max_chat_history", 1)
-            if max_history < 1:
-                logger.warning("max_chat_history < 1, clamping to 1")
-                max_history = 1
+            max_history = raw.get("max_chat_history", 3)
+            if max_history < 3:
+                logger.warning("max_chat_history < 3, clamping to 3")
+                max_history = 3
             cfg.max_history = max_history
             
             storage_type_raw = os.getenv("CHAT_HISTORY_TYPE", ChatHistoryType.MEMORY.value)
@@ -111,6 +111,8 @@ class AppConfig:
             logger.info(f"Chat history enabled — max={cfg.max_history}, storage={cfg.storage_type.value}.")
         else:
             logger.info("Chat history disabled.")
+            cfg.max_history = 1
+            cfg.storage_type = ChatHistoryType.MEMORY  # Disable Redis since it's unnecessary
             
         return cfg
     

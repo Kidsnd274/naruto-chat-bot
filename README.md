@@ -30,6 +30,22 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
 
 ## Docker
 
+### Using Docker Compose (Recommended)
+
+The [`docker-compose.yml`](docker-compose.yml) file is provided for easy deployment with all dependencies.
+
+1. Ensure you have a `.env` file with the required environment variables (see [Environment Variables](#environment-variables))
+2. Ensure you have a `config.json` file (optional)
+3. Run:
+
+    ```bash
+    docker-compose up -d
+    ```
+
+### Manual Docker (Legacy)
+
+If you prefer not to use Docker Compose:
+
 1. Build image: `docker build --no-cache -t naruto-chat-bot .`
 2. Run container: `docker run -v %cd%/config.json:/app/config.json --env-file .env naruto-chat-bot`
 
@@ -40,23 +56,21 @@ Or use the batch files:
 
 ## Docker with Redis (Chat History)
 
-To use Redis for persistent chat history in Docker, update your `docker-compose.yml`:
+Redis is included by default in [`docker-compose.yml`](docker-compose.yml). No additional configuration is needed - just enable chat history in your `.env`:
 
-1. Uncomment the Redis service in [`docker-compose.yml`](docker-compose.yml)
-2. Add to your `.env`:
-
-    ```env
-    CHAT_HISTORY_ENABLED=true
-    CHAT_HISTORY_TYPE=redis
-    ```
+```env
+CHAT_HISTORY_ENABLED=true
+CHAT_HISTORY_TYPE=redis
+```
 
 > The app automatically detects if you are running in Docker and sets the Redis Host & Port automatically
 
 ### Specify Own Redis Server
 
-Add this to the `.env`:
+If you want to use an external Redis server instead of the included one, add this to your `.env`:
+
 ```env
-REDIS_HOST=redis
+REDIS_HOST=your-redis-host
 REDIS_PORT=6379
 REDIS_DB=0
 ```

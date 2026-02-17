@@ -1,10 +1,21 @@
 from dotenv import load_dotenv
 import os
 import logging
+import util
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
     logger = logging.getLogger("Starter")
     load_dotenv()  # reads .env in the current working directory (if present)
+
+    logger.info("Hello!")
+
+    # Check if running in Docker
+    if util.is_docker():
+        logger.info("You are running in Docker!")
 
     # AI Client Variables
     _base_url = os.getenv("OPENAI_BASE_URL")

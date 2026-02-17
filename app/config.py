@@ -1,14 +1,11 @@
 import json
 import logging
 import os
+import util
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 logger = logging.getLogger("config")
 
 whitelist_enabled = False
@@ -33,6 +30,14 @@ class ChatHistoryConfig:
     enabled: bool = False
     max_history: int = 1
     storage_type: ChatHistoryType = ChatHistoryType.MEMORY
+    
+@dataclass
+class RedisConfig:
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    
+_DockerRedisDefault = RedisConfig(host="redis", port=6379, db=0)
 
 # --- Singleton AppConfig ---
 
@@ -68,6 +73,7 @@ class AppConfig:
             
         self.whitelist = self._load_whitelist(raw)
         self.chat_history = self._load_chat_history(raw)
+        self.redis_config = self._load_redis_config()
         
         self._initialized = True
         logger.info("Appconfig ready.")
@@ -107,5 +113,21 @@ class AppConfig:
             logger.info("Chat history disabled.")
             
         return cfg
+    
+    def _load_redis_config(self) -> RedisConfig:
+        is_docker = util.is_docker()
+        cfg = RedisConfig()
+        
+        host = os.getenv("REDIS_HOST", _DockerRedisDefault.host if is_docker else "localhost")
+        port = os.getenv("REDIS_PORT", _DockerRedisDefault.port if is_docker else 6379)
+        db = os.getenv("REDIS_DB", _DockerRedisDefault.db if is_docker else 0)
+        
+        cfg.host = host
+        cfg.port = port
+        cfg.db = db
+        
+        return cfg
+        
+        
 
 config = AppConfig()

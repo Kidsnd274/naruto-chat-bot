@@ -2,6 +2,7 @@ from collections import defaultdict, deque
 from typing import Optional
 from config import config, ChatHistoryType
 import logging
+import redis
 
 logger = logging.getLogger("chat_history")
 
@@ -37,6 +38,35 @@ class InMemoryChatHistory(IChatHistory):
     
     def __init__(self):
         self._history = defaultdict(lambda: deque(maxlen=config.chat_history.max_history))
+    
+    def clear(self, chat_id: int):
+        logger.info("Clearing Chat History")
+        self._history[chat_id].clear()
+    
+    def add_user_message(self, chat_id: int, sender_name, sender_message) -> None:
+        self._history[chat_id].append({
+            "role": "user",
+            "content": f"{sender_name}: {sender_message}"
+        })
+    
+    def add_assistant_message(self, chat_id: int, bot_response: str) -> None:
+        self._history[chat_id].append({
+            "role": "assistant",
+            "content": bot_response
+        })
+    
+    def get_chat_history(self, chat_id: int) -> list:
+        return list(self._history[chat_id])
+    
+# ==================== Implementation: In-Memory (Deque) ====================
+class RedisChatHistory(IChatHistory):
+    """In-memory chat history using Redis"""
+    
+    def __init__(self):
+        host = config.redis_config.host
+        port = config.redis_config.port
+        db = config.redis_config.db
+        self.r = redis.Redis(host=host, port=port, db=db, decode_responses=True)
     
     def clear(self, chat_id: int):
         logger.info("Clearing Chat History")

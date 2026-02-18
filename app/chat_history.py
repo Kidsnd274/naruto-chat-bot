@@ -61,7 +61,7 @@ class InMemoryChatHistory(IChatHistory):
         })
     
     def get_chat_history(self, chat_id: int) -> list:
-        return list(self._history[chat_id])
+        return merge_consecutive_roles(list(self._history[chat_id]))
     
     def get_curr_len(self, chat_id: int) -> int:
         return len(self._history[chat_id])
@@ -111,7 +111,7 @@ class RedisChatHistory(IChatHistory):
         key = f"{REDIS_CHAT_PREFIX}{chat_id}"
         
         messages = self.r.lrange(key, 0, -1)
-        return [json.loads(msg) for msg in messages]
+        return merge_consecutive_roles([json.loads(msg) for msg in messages])
     
     def get_curr_len(self, chat_id):
         key = f"{REDIS_CHAT_PREFIX}{chat_id}"
@@ -123,6 +123,17 @@ class RedisChatHistory(IChatHistory):
         pipe.ltrim(key, -config.chat_history.max_history, -1)
         pipe.execute()
 
+
+// --------- Util Functions ---------
+def merge_consecutive_roles(messages: list) -> list:
+    merged_messages = []
+    for message in messages:
+        if merged_messages and merged_messages[-1]['role'] == message['role']:
+            merged_messages[-1]['content'] += message['content']
+            # merged_messages[-1]['content'] = '\n'.join([merged_messages[-1]['content'], message['content']])
+        else:
+            merged_messages.append(message)
+    return merged_messages
 
 # Factory Pattern
 def create_chat_history() -> IChatHistory:

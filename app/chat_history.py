@@ -129,8 +129,8 @@ def merge_consecutive_roles(messages: list) -> list:
     merged_messages = []
     for message in messages:
         if merged_messages and merged_messages[-1]['role'] == message['role']:
-            merged_messages[-1]['content'] += message['content']
-            # merged_messages[-1]['content'] = '\n'.join([merged_messages[-1]['content'], message['content']])
+            # merged_messages[-1]['content'] += message['content']
+            merged_messages[-1]['content'] = '\n'.join([merged_messages[-1]['content'], message['content']])
         else:
             merged_messages.append(message)
     return merged_messages

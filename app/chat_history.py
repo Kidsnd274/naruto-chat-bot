@@ -124,7 +124,7 @@ class RedisChatHistory(IChatHistory):
         pipe.execute()
 
 
-// --------- Util Functions ---------
+# --------- Util Functions ---------
 def merge_consecutive_roles(messages: list) -> list:
     merged_messages = []
     for message in messages:

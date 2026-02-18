@@ -30,6 +30,7 @@ class ChatHistoryConfig:
     enabled: bool = False
     max_history: int = 1
     storage_type: ChatHistoryType = ChatHistoryType.MEMORY
+    debug: bool = False
     
 @dataclass
 class RedisConfig:
@@ -92,7 +93,8 @@ class AppConfig:
     
     def _load_chat_history(self, raw: dict) -> ChatHistoryConfig:
         enabled = os.getenv("CHAT_HISTORY_ENABLED", "false").lower() == "true"
-        cfg = ChatHistoryConfig(enabled=enabled)
+        debug = os.getenv("DEBUG_CHAT_HISTORY", "false").lower() == "true"
+        cfg = ChatHistoryConfig(enabled=enabled, debug=debug)
         
         if enabled:
             max_history = raw.get("max_chat_history", 3)

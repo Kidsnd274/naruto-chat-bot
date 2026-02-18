@@ -86,6 +86,7 @@ REDIS_DB=0
 | `WHITELIST_ENABLED` | Enable whitelist checking | `true` |
 | `CHAT_HISTORY_ENABLED` | Enable chat history | `false` |
 | `CHAT_HISTORY_TYPE` | Storage type: `memory` or `redis` | `memory` |
+| `DEBUG_CHAT_HISTORY` | Log conversation history before each AI request | `false` |
 | `MAX_CHAT_HISTORY` | Max messages per chat (in memory mode) | `1` |
 | `CONFIG_PATH` | Path to config.json | `config.json` |
 | **Redis (optional)** | | |

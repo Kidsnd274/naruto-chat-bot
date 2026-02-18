@@ -89,11 +89,12 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     typing_task = asyncio.create_task(keep_typing())
 
-    # # DEBUG: Print conversation history
-    # logger.info(f"=== Conversation history for chat {chat_id} ({chat_history.get_curr_len(chat_id)} messages) ===")
-    # for i, msg in enumerate(chat_history.get_chat_history(chat_id)):
-    #     logger.info(f"  [{i}] {msg['role']}: {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
-    # logger.info("=== End history ===")
+    # DEBUG: Print conversation history
+    if config.chat_history.debug:
+        logger.info(f"=== Conversation history for chat {chat_id} ({chat_history.get_curr_len(chat_id)} messages) ===")
+        for i, msg in enumerate(chat_history.get_chat_history(chat_id)):
+            logger.info(f"  [{i}] {msg['role']}: {msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}")
+        logger.info("=== End history ===")
 
     # Send Message to AI
     try:

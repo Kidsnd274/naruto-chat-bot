@@ -35,6 +35,7 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info(f"/clear command received from user {user.id} (@{user.username}) in chat {chat_id}")
     chat_history.clear(chat_id)
+    await context.bot.send_message(chat_id=chat_id, text="My memory is wiped!")
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # This will now respond to any text message
@@ -163,8 +164,10 @@ if __name__ == '__main__':  # Outdated usage
     
     start_handler = CommandHandler('start', start)
     respond_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, respond)
+    clear_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, clear)
 
     application.add_handler(start_handler)
     application.add_handler(respond_handler)
+    application.add_handler(clear_handler)
     
     application.run_polling()

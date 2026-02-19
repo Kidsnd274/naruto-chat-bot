@@ -163,9 +163,9 @@ if __name__ == '__main__':  # Outdated usage
     application = ApplicationBuilder().token(token).build()
     
     start_handler = CommandHandler('start', start)
+    clear_handler = CommandHandler('clear', clear)
     respond_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, respond)
-    clear_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, clear)
-
+    
     application.add_handler(start_handler)
     application.add_handler(respond_handler)
     application.add_handler(clear_handler)

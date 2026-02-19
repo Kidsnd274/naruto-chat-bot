@@ -141,9 +141,11 @@ def setup(token):
     application = ApplicationBuilder().token(token).build()
     
     start_handler = CommandHandler('start', start)
+    clear_handler = CommandHandler('clear', clear)
     respond_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, respond)
 
     application.add_handler(start_handler)
+    application.add_handler(clear_handler)
     application.add_handler(respond_handler)
     
     logger.info("Bot handlers registered, starting polling...")
@@ -167,7 +169,7 @@ if __name__ == '__main__':  # Outdated usage
     respond_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, respond)
     
     application.add_handler(start_handler)
-    application.add_handler(respond_handler)
     application.add_handler(clear_handler)
+    application.add_handler(respond_handler)
     
     application.run_polling()

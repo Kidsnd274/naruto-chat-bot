@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-from httpx._transports import base
 import openai
 
 from dotenv import load_dotenv

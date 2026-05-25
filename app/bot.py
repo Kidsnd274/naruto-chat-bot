@@ -5,8 +5,7 @@ import os
 
 from config import config
 from dotenv import load_dotenv
-from openai.types.responses import response
-from telegram import Update
+from telegram import ReplyParameters, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -115,23 +114,26 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_response = response.choices[0].message.content
         chat_history.add_assistant_message(chat_id, bot_response)
     
-    if chat_type not in ("group", "supergroup"):
-        user_message_id = None
+    reply_params = (
+        ReplyParameters(message_id=user_message_id)
+        if chat_type in ("group", "supergroup")
+        else None
+    )
 
     try:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id, 
+            chat_id=update.effective_chat.id,
             text=bot_response,
             parse_mode="Markdown",
-            reply_to_message_id=user_message_id
+            reply_parameters=reply_params,
         )
     except Exception as e:
         # Fallback to plain text if markdown parsing fails
         logger.warning(f"Markdown parsing failed: {e}")
         await context.bot.send_message(
-            chat_id=update.effective_chat.id, 
+            chat_id=update.effective_chat.id,
             text=bot_response,
-            reply_to_message_id=user_message_id
+            reply_parameters=reply_params,
         )
 
 def setup(token):

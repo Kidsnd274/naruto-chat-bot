@@ -22,8 +22,8 @@ class ChatHistoryType(Enum):
 @dataclass
 class WhitelistConfig:
     enabled: bool = True  # by default turn on the whitelist
-    groups: list[str] = field(default_factory=list)
-    ids: list[str] = field(default_factory=list)
+    groups: list[int] = field(default_factory=list)
+    ids: list[int] = field(default_factory=list)
     
 @dataclass
 class ChatHistoryConfig:
@@ -48,7 +48,7 @@ class AppConfig:
     def __new__(cls) -> "AppConfig":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.initialized = False
+            cls._instance._initialized = False
         return cls._instance
     
     def __init__(self) -> None:
@@ -122,14 +122,10 @@ class AppConfig:
         is_docker = util.is_docker()
         cfg = RedisConfig()
         
-        host = os.getenv("REDIS_HOST", _DockerRedisDefault.host if is_docker else "localhost")
-        port = os.getenv("REDIS_PORT", _DockerRedisDefault.port if is_docker else 6379)
-        db = os.getenv("REDIS_DB", _DockerRedisDefault.db if is_docker else 0)
-        
-        cfg.host = host
-        cfg.port = port
-        cfg.db = db
-        
+        cfg.host = os.getenv("REDIS_HOST", _DockerRedisDefault.host if is_docker else "localhost")
+        cfg.port = int(os.getenv("REDIS_PORT", _DockerRedisDefault.port if is_docker else 6379))
+        cfg.db = int(os.getenv("REDIS_DB", _DockerRedisDefault.db if is_docker else 0))
+
         return cfg
         
         

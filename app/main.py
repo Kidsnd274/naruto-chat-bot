@@ -40,7 +40,11 @@ if __name__ == '__main__':
     logger.info("Setting up Chat History")
     import chat_history
     chat_history.setup()
-    
+
+    logger.info("Setting up Chat Metadata")
+    import chat_metadata
+    chat_metadata.setup()
+
     logger.info("Creating AI Client")
     import ai_client
     ai_client.setup(_base_url, _api_key, _model)

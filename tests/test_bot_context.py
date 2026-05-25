@@ -44,17 +44,6 @@ def test_context_includes_time(bot_module):
     assert "14:30" in msg["content"]
 
 
-def test_context_includes_bot_handle(bot_module):
-    msg = bot_module.build_context_message(
-        chat_info={"chat_name": "X", "users": []},
-        chat_type="private",
-        bot_username="naruto_bot",
-        current_speaker={"display_name": "Alice", "username": "alice123"},
-        now=_now(),
-    )
-    assert "@naruto_bot" in msg["content"]
-
-
 def test_context_includes_current_speaker(bot_module):
     msg = bot_module.build_context_message(
         chat_info={"chat_name": "X", "users": []},
@@ -121,3 +110,33 @@ def test_context_falls_back_when_no_chat_name(bot_module):
         now=_now(),
     )
     assert "Chat type: private" in msg["content"]
+
+
+def test_context_includes_reply_behavior_instruction(bot_module):
+    msg = bot_module.build_context_message(
+        chat_info={"chat_name": "X", "users": []},
+        chat_type="group",
+        bot_username="naruto_bot",
+        current_speaker={"display_name": "Alice", "username": "alice123"},
+        now=_now(),
+    )
+    assert "## Reply behavior" in msg["content"]
+    assert "[REPLY]" in msg["content"]
+
+
+# ---------- parse_reply_marker ----------
+
+@pytest.mark.parametrize("text,expected_should_reply,expected_clean", [
+    ("[REPLY] hello", True, "hello"),
+    ("[reply] hello", True, "hello"),
+    ("[Reply]hello", True, "hello"),
+    ("  [REPLY]   hello world  ", True, "hello world  "),
+    ("**[REPLY]** sure thing", True, "sure thing"),
+    ("hello [REPLY] world", False, "hello [REPLY] world"),
+    ("hello world", False, "hello world"),
+    ("", False, ""),
+])
+def test_parse_reply_marker(bot_module, text, expected_should_reply, expected_clean):
+    should_reply, cleaned = bot_module.parse_reply_marker(text)
+    assert should_reply is expected_should_reply
+    assert cleaned == expected_clean

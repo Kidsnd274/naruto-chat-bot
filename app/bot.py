@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 import logging
 import os
+import re
 
 from chat_history import chat_history
 from chat_metadata import chat_metadata
@@ -27,6 +28,22 @@ logger = logging.getLogger("telegram_bot")
 
 NUDGE_HINT = "(nudge — no message text; look at recent chat and respond appropriately)"
 
+# Optional [REPLY] prefix the LLM can use to ask Telegram to thread its
+# response as a reply to the triggering message. Tolerates whitespace and
+# common markdown wrapping (e.g. **[REPLY]**) since local models sometimes
+# decorate the marker.
+_REPLY_MARKER = re.compile(r'^\s*\**\s*\[reply\]\s*\**\s*', re.IGNORECASE)
+
+
+def parse_reply_marker(text: str) -> tuple[bool, str]:
+    """Detect a leading [REPLY] marker. Returns (should_reply, cleaned_text)."""
+    if not text:
+        return False, text
+    m = _REPLY_MARKER.match(text)
+    if m:
+        return True, text[m.end():]
+    return False, text
+
 
 def build_context_message(
     chat_info: dict,
@@ -49,7 +66,6 @@ def build_context_message(
         lines.append(f"Chat type: {chat_type}")
 
     lines.append(f"Time: {now.strftime('%Y-%m-%d %H:%M %z').strip()}")
-    lines.append(f"You are: @{bot_username}")
 
     speaker_username = current_speaker.get("username")
     speaker_display = current_speaker.get("display_name") or "Unknown"
@@ -68,6 +84,18 @@ def build_context_message(
             if u.get("aliases"):
                 alias_part = f" [aliases: {', '.join(u['aliases'])}]"
             lines.append(f"- {u['display_name']} ({handle}){alias_part}")
+
+    lines.append("")
+    lines.append("## Reply behavior")
+    lines.append(
+        "By default your message is sent as a normal chat message. "
+        "If you want Telegram to thread your response as a reply to the "
+        "triggering message (e.g. you're directly answering a question or "
+        "addressing the user who pinged you), START your response with the "
+        "literal token [REPLY] followed by a space. Do not use [REPLY] for "
+        "general chatter or asides — only when you're directly responding to "
+        "the most recent message."
+    )
 
     return {"role": "system", "content": "\n".join(lines)}
 
@@ -292,13 +320,17 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if response is None or not hasattr(response, 'choices') or not response.choices:
         logger.error(f"Invalid AI response for chat {chat_id}: response={response}")
         bot_response = "Sorry, I couldn't get a response right now. Please try again later."
+        should_reply = False
     else:
-        bot_response = response.choices[0].message.content
+        raw_response = response.choices[0].message.content
+        should_reply, bot_response = parse_reply_marker(raw_response)
+        # Store the cleaned response (without the marker) in history so it
+        # doesn't influence future turns or leak into the visible transcript.
         chat_history.add_assistant_message(chat_id, bot_response)
 
     reply_params = (
         ReplyParameters(message_id=user_message_id)
-        if chat_type in ("group", "supergroup")
+        if should_reply and chat_type in ("group", "supergroup")
         else None
     )
 

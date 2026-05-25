@@ -180,12 +180,10 @@ async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"/group_info from user {user.id} (@{user.username}) in chat {chat_id}")
 
     info = chat_metadata.get_chat_info(chat_id)
-    bot_username = context.bot.username
 
     lines = []
     chat_name = info.get("chat_name") or "(unknown)"
     lines.append(f"Chat: {chat_name} ({chat_type})")
-    lines.append(f"Bot: @{bot_username}")
     lines.append(f"History length: {chat_history.get_curr_len(chat_id)} messages")
 
     users = info.get("users") or []

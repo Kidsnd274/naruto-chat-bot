@@ -90,13 +90,23 @@ def build_context_message(
     bot_username: str,
     current_speaker: dict,
     now: datetime,
+    persona: str = "",
 ) -> dict:
-    """Assemble the per-call system context block.
+    """Assemble the per-call system message.
+
+    Combines an optional persona prompt with the runtime chat-context block
+    into a single `system` message — keeping the array shape friendly to
+    local models that don't love multiple consecutive system messages.
 
     chat_info: output of chat_metadata.get_chat_info(chat_id)
     current_speaker: {"display_name": str, "username": Optional[str]}
+    persona: optional system prompt loaded from disk (config.system_prompt)
     """
-    lines = ["## Chat Context"]
+    lines = []
+    if persona:
+        lines.append(persona)
+        lines.append("")
+    lines.append("## Chat Context")
 
     chat_name = chat_info.get("chat_name") or ""
     if chat_name:
@@ -344,6 +354,7 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_username=context.bot.username,
         current_speaker={"display_name": display_name, "username": user.username},
         now=datetime.now().astimezone(),
+        persona=config.system_prompt,
     )
     messages = [context_msg] + chat_history.get_chat_history(chat_id)
 

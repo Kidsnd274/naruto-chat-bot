@@ -11,6 +11,7 @@ services:
       - .env
     volumes:
       - ./config.json:/app/config.json:ro
+      - ./system_prompt.md:/app/system_prompt.md:ro
 
   redis:
     image: redis:8.6-alpine

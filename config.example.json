@@ -1,5 +1,13 @@
 {
     "whitelisted_groups": [123, 456],
     "whitelisted_ids": [111, 222],
-    "max_chat_history": 200
+    "max_chat_history": 200,
+    "model_params": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 40,
+        "min_p": 0.05,
+        "repeat_penalty": 1.1,
+        "chat_template_kwargs": {"enable_thinking": false}
+    }
 }

@@ -25,11 +25,14 @@ def fresh_config(monkeypatch, tmp_path):
         "REDIS_PORT",
         "REDIS_DB",
         "CONFIG_PATH",
+        "SYSTEM_PROMPT_PATH",
     ]:
         monkeypatch.delenv(var, raising=False)
 
-    # Point CONFIG_PATH at a non-existent file so setup() uses defaults
+    # Point CONFIG_PATH and SYSTEM_PROMPT_PATH at non-existent files so
+    # setup() uses defaults rather than picking up files from CWD.
     monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "no-such-config.json"))
+    monkeypatch.setenv("SYSTEM_PROMPT_PATH", str(tmp_path / "no-such-system-prompt.md"))
 
     # Drop cached modules so the singleton resets
     for mod in ("config", "chat_history"):

@@ -47,7 +47,7 @@ if __name__ == '__main__':
 
     logger.info("Creating AI Client")
     import ai_client
-    ai_client.setup(_base_url, _api_key, _model)
+    ai_client.setup(_base_url, _api_key, _model, config.model_params)
 
     logger.info("Setting up Telegram Bot")
     import bot

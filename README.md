@@ -14,19 +14,35 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
     WHITELIST_ENABLED=true
     ```
 
-2. Create `config.json` (optional - for whitelist & chat history)
+2. Create `config.json` (optional - for whitelist, chat history & model sampling params)
 
     ```json
     {
         "whitelisted_groups": [123, 456],
         "whitelisted_ids": [111, 222],
-        "max_chat_history": 200
+        "max_chat_history": 200,
+        "model_params": {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "top_k": 40,
+            "min_p": 0.05,
+            "repeat_penalty": 1.1,
+            "chat_template_kwargs": {"enable_thinking": false}
+        }
     }
     ```
 
    See [`config.example.json`](config.example.json) for reference.
 
-3. Run `python3 ./app/main.py`
+   Every field under `model_params` is optional. Omit any field and the inference server's own default applies. Names are passed through verbatim (so `repeat_penalty` matches llama.cpp / Lemonade conventions). Non-standard params (`top_k`, `min_p`, `repeat_penalty`, `chat_template_kwargs`) are sent via `extra_body`.
+
+3. Edit `system_prompt.md` (optional - for persona)
+
+    The repo ships an empty `system_prompt.md` at the project root. Drop your persona prompt into it and it gets prepended to the per-call chat-context block as a single system message. See [`system_prompt.example.md`](system_prompt.example.md) for a template. If the file is empty, the bot runs without a persona.
+
+    > For Docker users: `docker-compose.yml` mounts `system_prompt.md` from the host into the container, so the file must exist on the host before `docker-compose up` (Linux will error if the path doesn't exist — the empty file shipped in the repo satisfies this).
+
+4. Run `python3 ./app/main.py`
 
 ## Docker
 
@@ -89,6 +105,7 @@ REDIS_DB=0
 | `DEBUG_CHAT_HISTORY` | Log conversation history before each AI request | `false` |
 | `MAX_CHAT_HISTORY` | Max messages per chat (in memory mode) | `1` |
 | `CONFIG_PATH` | Path to config.json | `config.json` |
+| `SYSTEM_PROMPT_PATH` | Path to the persona prompt file (optional) | `system_prompt.md` |
 | **Redis (optional)** | | |
 | `REDIS_HOST` | Redis server hostname | `localhost` (Docker: `redis`) |
 | `REDIS_PORT` | Redis port | `6379` |

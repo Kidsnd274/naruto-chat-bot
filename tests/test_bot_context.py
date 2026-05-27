@@ -124,6 +124,45 @@ def test_context_includes_reply_behavior_instruction(bot_module):
     assert "[REPLY]" in msg["content"]
 
 
+# ---------- persona ----------
+
+def test_context_includes_persona_when_provided(bot_module):
+    persona = "You are Naruto Uzumaki. Dattebayo!"
+    msg = bot_module.build_context_message(
+        chat_info={"chat_name": "X", "users": []},
+        chat_type="group",
+        bot_username="naruto_bot",
+        current_speaker={"display_name": "Alice", "username": "alice123"},
+        now=_now(),
+        persona=persona,
+    )
+    content = msg["content"]
+    # Persona at the top, followed by a blank line, then the context block.
+    assert content.startswith(persona + "\n\n## Chat Context")
+
+
+def test_context_omits_persona_when_empty(bot_module):
+    msg_with_empty = bot_module.build_context_message(
+        chat_info={"chat_name": "X", "users": []},
+        chat_type="group",
+        bot_username="naruto_bot",
+        current_speaker={"display_name": "Alice", "username": "alice123"},
+        now=_now(),
+        persona="",
+    )
+    msg_without = bot_module.build_context_message(
+        chat_info={"chat_name": "X", "users": []},
+        chat_type="group",
+        bot_username="naruto_bot",
+        current_speaker={"display_name": "Alice", "username": "alice123"},
+        now=_now(),
+    )
+    # Empty persona produces byte-identical output to no persona at all,
+    # and starts directly with the context header (no leading blank line).
+    assert msg_with_empty["content"] == msg_without["content"]
+    assert msg_with_empty["content"].startswith("## Chat Context")
+
+
 # ---------- parse_reply_marker ----------
 
 @pytest.mark.parametrize("text,expected_should_reply,expected_clean", [

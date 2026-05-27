@@ -37,7 +37,18 @@ class RedisConfig:
     host: str = "localhost"
     port: int = 6379
     db: int = 0
-    
+
+@dataclass
+class ModelParams:
+    """Optional sampling overrides. Any field left as None is omitted from
+    the request entirely so the inference server's default is used."""
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    min_p: Optional[float] = None
+    repeat_penalty: Optional[float] = None
+    chat_template_kwargs: Optional[dict] = None
+
 _DockerRedisDefault = RedisConfig(host="redis", port=6379, db=0)
 
 # --- Singleton AppConfig ---
@@ -75,7 +86,9 @@ class AppConfig:
         self.whitelist = self._load_whitelist(raw)
         self.chat_history = self._load_chat_history(raw)
         self.redis_config = self._load_redis_config()
-        
+        self.system_prompt = self._load_system_prompt()
+        self.model_params = self._load_model_params(raw)
+
         self._initialized = True
         logger.info("Appconfig ready.")
         
@@ -118,6 +131,37 @@ class AppConfig:
             
         return cfg
     
+    def _load_system_prompt(self) -> str:
+        path = os.getenv("SYSTEM_PROMPT_PATH", "system_prompt.md")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                prompt = f.read().strip()
+        except FileNotFoundError:
+            logger.info(f"No system prompt file at {path} — proceeding without persona.")
+            return ""
+        if not prompt:
+            logger.warning(f"System prompt at {path} is empty — proceeding without persona.")
+            return ""
+        logger.info(f"Loaded system prompt from {path} ({len(prompt)} chars).")
+        return prompt
+
+    def _load_model_params(self, raw: dict) -> ModelParams:
+        block = raw.get("model_params") or {}
+        params = ModelParams(
+            temperature=block.get("temperature"),
+            top_p=block.get("top_p"),
+            top_k=block.get("top_k"),
+            min_p=block.get("min_p"),
+            repeat_penalty=block.get("repeat_penalty"),
+            chat_template_kwargs=block.get("chat_template_kwargs"),
+        )
+        set_fields = [k for k, v in params.__dict__.items() if v is not None]
+        if set_fields:
+            logger.info(f"Model params set: {', '.join(set_fields)}")
+        else:
+            logger.info("No model_params configured — server defaults will apply.")
+        return params
+
     def _load_redis_config(self) -> RedisConfig:
         is_docker = util.is_docker()
         cfg = RedisConfig()

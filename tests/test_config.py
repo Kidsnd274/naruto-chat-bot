@@ -111,3 +111,85 @@ def test_singleton_returns_same_instance(fresh_config):
     a = fresh_config.AppConfig()
     b = fresh_config.AppConfig()
     assert a is b
+
+
+# ---------- system_prompt ----------
+
+def test_system_prompt_defaults_to_empty_when_file_missing(initialized_config):
+    assert initialized_config.config.system_prompt == ""
+
+
+def test_system_prompt_loads_from_file(fresh_config, tmp_path, monkeypatch):
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("You are Naruto. Dattebayo!\n\n", encoding="utf-8")
+    monkeypatch.setenv("SYSTEM_PROMPT_PATH", str(prompt_path))
+
+    fresh_config.config.setup()
+
+    # Trailing whitespace stripped.
+    assert fresh_config.config.system_prompt == "You are Naruto. Dattebayo!"
+
+
+def test_system_prompt_empty_file_treated_as_unset(fresh_config, tmp_path, monkeypatch):
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("   \n  \n", encoding="utf-8")
+    monkeypatch.setenv("SYSTEM_PROMPT_PATH", str(prompt_path))
+
+    fresh_config.config.setup()
+
+    assert fresh_config.config.system_prompt == ""
+
+
+# ---------- model_params ----------
+
+def test_model_params_defaults_to_all_none(initialized_config):
+    mp = initialized_config.config.model_params
+    assert mp.temperature is None
+    assert mp.top_p is None
+    assert mp.top_k is None
+    assert mp.min_p is None
+    assert mp.repeat_penalty is None
+    assert mp.chat_template_kwargs is None
+
+
+def test_model_params_loads_partial(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "model_params": {"temperature": 0.7}
+    }))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+
+    fresh_config.config.setup()
+
+    mp = fresh_config.config.model_params
+    assert mp.temperature == 0.7
+    assert mp.top_p is None
+    assert mp.top_k is None
+    assert mp.min_p is None
+    assert mp.repeat_penalty is None
+    assert mp.chat_template_kwargs is None
+
+
+def test_model_params_loads_all_fields_including_nested(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "model_params": {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "top_k": 40,
+            "min_p": 0.05,
+            "repeat_penalty": 1.1,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+    }))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+
+    fresh_config.config.setup()
+
+    mp = fresh_config.config.model_params
+    assert mp.temperature == 0.7
+    assert mp.top_p == 0.9
+    assert mp.top_k == 40
+    assert mp.min_p == 0.05
+    assert mp.repeat_penalty == 1.1
+    assert mp.chat_template_kwargs == {"enable_thinking": False}

@@ -45,6 +45,45 @@ def parse_reply_marker(text: str) -> tuple[bool, str]:
     return False, text
 
 
+# message_id of the most recent message we've seen per chat — either an
+# incoming user message we processed or an outgoing bot reply we sent.
+# Used to suppress redundant `[replying to ...]` prefixes when a user replies
+# to the immediately preceding message. In-memory only; resets on restart.
+_last_seen_message_id: dict[int, int] = {}
+
+
+def build_reply_prefix(
+    reply_to_message,
+    bot_id: int,
+    last_seen_message_id: int | None,
+) -> str:
+    """Return `[replying to X: "..."] ` if this message is a Telegram reply
+    AND the referent isn't the previous entry in this chat. Returns "" when
+    not a reply, or when the referent is the most recently-seen message
+    (in which case the prefix would just be noise — the LLM can see the
+    referent on the line above)."""
+    if reply_to_message is None:
+        return ""
+    if (
+        last_seen_message_id is not None
+        and reply_to_message.message_id == last_seen_message_id
+    ):
+        return ""
+
+    from_user = reply_to_message.from_user
+    if from_user and from_user.id == bot_id:
+        quoted_name = "you"
+    elif from_user:
+        quoted_name = from_user.full_name or from_user.username or "someone"
+    else:
+        quoted_name = "someone"
+
+    quoted_text = (reply_to_message.text or reply_to_message.caption or "").strip()
+    if quoted_text:
+        return f'[replying to {quoted_name}: "{quoted_text}"] '
+    return f"[replying to {quoted_name}] "
+
+
 def build_context_message(
     chat_info: dict,
     chat_type: str,
@@ -260,9 +299,16 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = update.effective_chat.title or update.effective_chat.first_name or ""
     chat_metadata.set_chat_name(chat_id, chat_title)
 
-    # Add user message to history
+    # Add user message to history, annotating Telegram replies so the LLM
+    # can see what the user is responding to.
     sender_name = display_name
-    chat_history.add_user_message(chat_id, sender_name, user_message)
+    reply_prefix = build_reply_prefix(
+        update.message.reply_to_message,
+        context.bot.id,
+        _last_seen_message_id.get(chat_id),
+    )
+    chat_history.add_user_message(chat_id, sender_name, reply_prefix + user_message)
+    _last_seen_message_id[chat_id] = update.message.message_id
 
     # Trigger logic for groups: must include @bot_username. Bare mention -> nudge.
     if chat_type in ("group", "supergroup"):
@@ -335,7 +381,7 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        await context.bot.send_message(
+        sent = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=bot_response,
             parse_mode="Markdown",
@@ -343,11 +389,12 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.warning(f"Markdown parsing failed: {e}")
-        await context.bot.send_message(
+        sent = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=bot_response,
             reply_parameters=reply_params,
         )
+    _last_seen_message_id[chat_id] = sent.message_id
 
 
 def setup(token):

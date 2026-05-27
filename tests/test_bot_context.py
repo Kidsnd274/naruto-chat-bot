@@ -140,3 +140,110 @@ def test_parse_reply_marker(bot_module, text, expected_should_reply, expected_cl
     should_reply, cleaned = bot_module.parse_reply_marker(text)
     assert should_reply is expected_should_reply
     assert cleaned == expected_clean
+
+
+# ---------- build_reply_prefix ----------
+
+class _FakeUser:
+    def __init__(self, full_name=None, username=None, id=None):
+        self.full_name = full_name
+        self.username = username
+        self.id = id
+
+
+class _FakeMsg:
+    def __init__(self, message_id=999, text=None, caption=None, from_user=None):
+        self.message_id = message_id
+        self.text = text
+        self.caption = caption
+        self.from_user = from_user
+
+
+BOT_ID = 42
+
+
+def test_reply_prefix_none_when_not_a_reply(bot_module):
+    assert bot_module.build_reply_prefix(None, BOT_ID, None) == ""
+
+
+def test_reply_prefix_includes_full_snippet_for_other_user(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        text="what's your favourite ramen?",
+        from_user=_FakeUser(full_name="Bob", id=7),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=50) == (
+        '[replying to Bob: "what\'s your favourite ramen?"] '
+    )
+
+
+def test_reply_prefix_uses_you_when_replying_to_bot(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        text="I'm gonna be Hokage!",
+        from_user=_FakeUser(full_name="Naruto Bot", id=BOT_ID),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=50) == (
+        '[replying to you: "I\'m gonna be Hokage!"] '
+    )
+
+
+def test_reply_prefix_falls_back_to_username_when_no_full_name(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        text="hi",
+        from_user=_FakeUser(username="alice123", id=7),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == '[replying to alice123: "hi"] '
+
+
+def test_reply_prefix_uses_someone_when_no_user_info(bot_module):
+    msg = _FakeMsg(message_id=100, text="hi", from_user=None)
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == '[replying to someone: "hi"] '
+
+
+def test_reply_prefix_uses_caption_when_no_text(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        caption="check this photo",
+        from_user=_FakeUser(full_name="Bob", id=7),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == (
+        '[replying to Bob: "check this photo"] '
+    )
+
+
+def test_reply_prefix_omits_snippet_when_no_text_or_caption(bot_module):
+    msg = _FakeMsg(message_id=100, from_user=_FakeUser(full_name="Bob", id=7))
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == "[replying to Bob] "
+
+
+def test_reply_prefix_skips_when_referent_is_last_seen(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        text="hi",
+        from_user=_FakeUser(full_name="Bob", id=7),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=100) == ""
+
+
+def test_reply_prefix_included_when_referent_is_older(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        text="hi",
+        from_user=_FakeUser(full_name="Bob", id=7),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=200) == (
+        '[replying to Bob: "hi"] '
+    )
+
+
+def test_reply_prefix_included_when_no_last_seen(bot_module):
+    msg = _FakeMsg(
+        message_id=100,
+        text="hi",
+        from_user=_FakeUser(full_name="Bob", id=7),
+    )
+    assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=None) == (
+        '[replying to Bob: "hi"] '
+    )

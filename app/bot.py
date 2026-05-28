@@ -107,6 +107,7 @@ def build_context_message(
         lines.append(persona)
         lines.append("")
     lines.append("## Chat Context")
+    lines.append(f"You are @{bot_username} — when messages contain that handle, they're addressed to you.")
 
     chat_name = chat_info.get("chat_name") or ""
     if chat_name:
@@ -320,16 +321,25 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_history.add_user_message(chat_id, sender_name, reply_prefix + user_message)
     _last_seen_message_id[chat_id] = update.message.message_id
 
-    # Trigger logic for groups: must include @bot_username. Bare mention -> nudge.
+    # Trigger logic for groups: must @mention the bot OR reply to one of its messages.
     if chat_type in ("group", "supergroup"):
         bot_username = context.bot.username
-        if f"@{bot_username}" not in user_message:
-            logger.debug(f"Ignoring group message without bot mention in chat {chat_id}")
+        is_reply_to_bot = (
+            update.message.reply_to_message is not None
+            and update.message.reply_to_message.from_user is not None
+            and update.message.reply_to_message.from_user.id == context.bot.id
+        )
+        has_mention = f"@{bot_username}" in user_message
+        if not has_mention and not is_reply_to_bot:
+            logger.debug(f"Ignoring group message without bot mention or reply in chat {chat_id}")
             return
-        user_message = user_message.replace(f"@{bot_username}", "").strip()
-        if not user_message:
-            logger.info(f"Bare @mention nudge from user {user.id} in chat {chat_id}")
-            user_message = NUDGE_HINT
+        # Letting the bot see its own @handle in user turns — the identity hint
+        # in build_context_message tells it that @{bot_username} refers to
+        # itself. Uncomment to revert to stripping.
+        # user_message = user_message.replace(f"@{bot_username}", "").strip()
+        # if not user_message:
+        #     logger.info(f"Bare @mention nudge from user {user.id} in chat {chat_id}")
+        #     user_message = NUDGE_HINT
 
     if not user_message:
         logger.debug(f"Empty message after processing, ignoring (chat {chat_id})")

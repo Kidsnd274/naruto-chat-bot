@@ -45,6 +45,22 @@ def parse_reply_marker(text: str) -> tuple[bool, str]:
     return False, text
 
 
+def _strip_bot_mentions(messages: list[dict], bot_username: str) -> list[dict]:
+    """Return a copy of `messages` with `@{bot_username}` removed from each
+    content string. History stays faithful to what users typed; we just hide
+    the handle from the LLM at call time because local models tend to mirror
+    it back into their own responses."""
+    token = f"@{bot_username}"
+    cleaned = []
+    for m in messages:
+        content = m.get("content", "")
+        if token in content:
+            content = content.replace(token, "")
+            content = re.sub(r" {2,}", " ", content)
+        cleaned.append({**m, "content": content})
+    return cleaned
+
+
 # message_id of the most recent message we've seen per chat — either an
 # incoming user message we processed or an outgoing bot reply we sent.
 # Used to suppress redundant `[replying to ...]` prefixes when a user replies
@@ -107,7 +123,6 @@ def build_context_message(
         lines.append(persona)
         lines.append("")
     lines.append("## Chat Context")
-    lines.append(f"You are @{bot_username} — when messages contain that handle, they're addressed to you.")
 
     chat_name = chat_info.get("chat_name") or ""
     if chat_name:
@@ -367,6 +382,7 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         persona=config.system_prompt,
     )
     messages = [context_msg] + chat_history.get_chat_history(chat_id)
+    messages = _strip_bot_mentions(messages, context.bot.username)
 
     if config.chat_history.debug:
         logger.info(f"=== Conversation for chat {chat_id} ({len(messages)} messages incl. context) ===")

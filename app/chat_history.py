@@ -124,10 +124,12 @@ def merge_consecutive_roles(messages: list) -> list:
     merged_messages = []
     for message in messages:
         if merged_messages and merged_messages[-1]['role'] == message['role']:
-            # merged_messages[-1]['content'] += message['content']
             merged_messages[-1]['content'] = '\n'.join([merged_messages[-1]['content'], message['content']])
         else:
-            merged_messages.append(message)
+            # Copy so the in-place content merge above never mutates the
+            # caller's stored dicts (the in-memory deque hands out live
+            # references; mutating them duplicates/corrupts history on reads).
+            merged_messages.append(dict(message))
     return merged_messages
 
 # Factory Pattern

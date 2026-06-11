@@ -326,7 +326,9 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_metadata.set_chat_name(chat_id, chat_title)
 
     # Add user message to history, annotating Telegram replies so the LLM
-    # can see what the user is responding to.
+    # can see what the user is responding to. Done BEFORE the trigger checks
+    # so the bot observes the whole group conversation, not only the messages
+    # that ping it — otherwise it loses all the surrounding context.
     sender_name = display_name
     reply_prefix = build_reply_prefix(
         update.message.reply_to_message,

@@ -115,6 +115,26 @@ def test_in_memory_merges_consecutive_user_messages_on_read(chat_history_with_me
     assert "Bob: second" in history[0]["content"]
 
 
+def test_in_memory_get_is_idempotent(chat_history_with_memory):
+    """Reading history must not mutate stored state. Regression test: the
+    merge step used to write back into the deque's own dicts, so each read
+    duplicated the consecutive run of messages."""
+    ch = chat_history_with_memory.InMemoryChatHistory()
+    ch.add_user_message(1, "Alice", "hey")
+    ch.add_user_message(1, "Bob", "yo")
+    ch.add_user_message(1, "Alice", "what did Bob say?")
+
+    first = ch.get_chat_history(1)
+    second = ch.get_chat_history(1)
+    third = ch.get_chat_history(1)
+
+    assert first == second == third
+    # The merged content must contain each message exactly once.
+    content = third[0]["content"]
+    assert content.count("Bob: yo") == 1
+    assert content.count("what did Bob say?") == 1
+
+
 def test_in_memory_factory_returns_in_memory(chat_history_with_memory):
     inst = chat_history_with_memory.create_chat_history()
     assert isinstance(inst, chat_history_with_memory.InMemoryChatHistory)

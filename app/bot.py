@@ -5,7 +5,11 @@ import os
 import re
 from typing import NamedTuple
 
-from chat_history import chat_history, merge_consecutive_roles
+from chat_history import (
+    chat_history,
+    merge_consecutive_roles,
+    render_history_message,
+)
 from chat_metadata import chat_metadata
 from config import config
 from dotenv import load_dotenv
@@ -20,12 +24,24 @@ from telegram.ext import (
 )
 
 import ai_client
+import media
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger("telegram_bot")
+
+SUPPORTED_MESSAGE_FILTER = (
+    filters.TEXT
+    | filters.PHOTO
+    | filters.Sticker.ALL
+    | filters.ANIMATION
+    | filters.VIDEO
+    | filters.VIDEO_NOTE
+    | filters.Document.IMAGE
+    | filters.Document.VIDEO
+) & ~filters.COMMAND
 
 NUDGE_HINT = "(nudge — no message text; look at recent chat and respond appropriately)"
 
@@ -62,9 +78,16 @@ def _strip_bot_mentions(messages: list[dict], bot_username: str) -> list[dict]:
     cleaned = []
     for m in messages:
         content = m.get("content", "")
-        if token in content:
-            content = content.replace(token, "")
-            content = re.sub(r" {2,}", " ", content)
+        if isinstance(content, str):
+            if token in content:
+                content = content.replace(token, "")
+                content = re.sub(r" {2,}", " ", content)
+        elif isinstance(content, list):
+            content = [dict(part) for part in content]
+            for part in content:
+                if part.get("type") == "text" and token in part.get("text", ""):
+                    text = part["text"].replace(token, "")
+                    part["text"] = re.sub(r" {2,}", " ", text)
         cleaned.append({**m, "content": content})
     return cleaned
 
@@ -81,12 +104,54 @@ def estimate_message_tokens(messages: list[dict]) -> int:
     """Estimate request tokens without depending on a model-specific tokenizer."""
     estimated = _ESTIMATED_REPLY_PRIMER_TOKENS
     for message in messages:
-        content_bytes = len(str(message.get("content", "")).encode("utf-8"))
+        content = message.get("content", "")
+        image_count = 0
+        if isinstance(content, list):
+            text_content = "".join(
+                part.get("text", "")
+                for part in content
+                if part.get("type") == "text"
+            )
+            image_count = sum(
+                1 for part in content if part.get("type") == "image_url"
+            )
+        else:
+            text_content = str(content)
+            image_count = len(message.get("attachments") or [])
+        content_bytes = len(text_content.encode("utf-8"))
         content_tokens = (
             content_bytes + _ESTIMATED_BYTES_PER_TOKEN - 1
         ) // _ESTIMATED_BYTES_PER_TOKEN
-        estimated += _ESTIMATED_MESSAGE_OVERHEAD_TOKENS + content_tokens
+        estimated += (
+            _ESTIMATED_MESSAGE_OVERHEAD_TOKENS
+            + content_tokens
+            + image_count * config.media.estimated_image_tokens
+        )
     return estimated
+
+
+def format_message_for_debug(message: dict, max_text: int = 200) -> str:
+    """Format a model message without ever returning image data URLs."""
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content[:max_text] + ("..." if len(content) > max_text else "")
+
+    summaries = []
+    for part in content:
+        if part.get("type") == "text":
+            text = part.get("text", "")
+            summaries.append(text[:max_text] + ("..." if len(text) > max_text else ""))
+            continue
+        if part.get("type") == "image_url":
+            url = (part.get("image_url") or {}).get("url", "")
+            mime_type = "image"
+            byte_count = 0
+            if url.startswith("data:") and ";base64," in url:
+                header, encoded = url.split(",", 1)
+                mime_type = header[5:].split(";", 1)[0] or "image"
+                byte_count = max((len(encoded) * 3 // 4) - encoded.count("="), 0)
+            summaries.append(f"<{mime_type}, {byte_count / 1024:.0f} KB>")
+    return " ".join(summaries)
 
 
 def build_llm_messages(
@@ -110,7 +175,8 @@ def build_llm_messages(
         dropped += 1
 
     def assemble() -> list[dict]:
-        return [dict(context_message)] + merge_consecutive_roles(retained)
+        rendered = [render_history_message(message) for message in retained]
+        return [dict(context_message)] + merge_consecutive_roles(rendered)
 
     messages = assemble()
     estimated_before = estimate_message_tokens(messages)
@@ -182,9 +248,18 @@ def build_reply_prefix(
         quoted_name = "someone"
 
     quoted_text = (reply_to_message.text or reply_to_message.caption or "").strip()
+    message_id = reply_to_message.message_id
+    media_kind = media.reply_media_kind(reply_to_message)
+    media_part = f" ({media_kind.replace('_', ' ')})" if media_kind else ""
     if quoted_text:
-        return f'[replying to {quoted_name}: "{quoted_text}"] '
-    return f"[replying to {quoted_name}] "
+        return (
+            f'[replying to Telegram message {message_id} from '
+            f'{quoted_name}{media_part}: "{quoted_text}"] '
+        )
+    return (
+        f"[replying to Telegram message {message_id} from "
+        f"{quoted_name}{media_part}] "
+    )
 
 
 def build_context_message(
@@ -247,6 +322,13 @@ def build_context_message(
         "literal token [REPLY] followed by a space. Do not use [REPLY] for "
         "general chatter or asides — only when you're directly responding to "
         "the most recent message."
+    )
+    lines.append("")
+    lines.append("## Image placement")
+    lines.append(
+        "Each image belongs to the labeled Telegram message immediately "
+        "preceding it. Treat the image and that message's sender, caption, "
+        "reply annotation, and message ID as one chronological chat event."
     )
 
     return {"role": "system", "content": "\n".join(lines)}
@@ -384,8 +466,14 @@ async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    user_message_id = update.message.id
+    message = update.message
+    contains_media = media.has_supported_media(message)
+    if contains_media and not config.media.enabled:
+        return
+
+    text_or_caption = message.text or message.caption or ""
+    user_message = text_or_caption or media.media_label(message)
+    user_message_id = message.message_id
     chat_type = update.effective_chat.type
     chat_id = update.effective_chat.id
     user = update.effective_user
@@ -412,28 +500,50 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = update.effective_chat.title or update.effective_chat.first_name or ""
     chat_metadata.set_chat_name(chat_id, chat_title)
 
+    attachments = []
+    if contains_media:
+        attachments, failure_marker = await media.extract_attachments(
+            message,
+            max_bytes=config.media.max_bytes,
+        )
+        if failure_marker:
+            user_message = f"{user_message}\n{failure_marker}"
+
     # Add user message to history, annotating Telegram replies so the LLM
     # can see what the user is responding to. Done BEFORE the trigger checks
     # so the bot observes the whole group conversation, not only the messages
     # that ping it — otherwise it loses all the surrounding context.
     sender_name = display_name
     reply_prefix = build_reply_prefix(
-        update.message.reply_to_message,
+        message.reply_to_message,
         context.bot.id,
         _last_seen_message_id.get(chat_id),
     )
-    chat_history.add_user_message(chat_id, sender_name, reply_prefix + user_message)
-    _last_seen_message_id[chat_id] = update.message.message_id
+    chat_history.add_user_message(
+        chat_id,
+        sender_name,
+        reply_prefix + user_message,
+        telegram_message_id=message.message_id,
+        reply_to_message_id=(
+            message.reply_to_message.message_id
+            if message.reply_to_message is not None
+            else None
+        ),
+        attachments=attachments,
+    )
+    _last_seen_message_id[chat_id] = message.message_id
 
     # Trigger logic for groups: must @mention the bot OR reply to one of its messages.
     if chat_type in ("group", "supergroup"):
         bot_username = context.bot.username
         is_reply_to_bot = (
-            update.message.reply_to_message is not None
-            and update.message.reply_to_message.from_user is not None
-            and update.message.reply_to_message.from_user.id == context.bot.id
+            message.reply_to_message is not None
+            and message.reply_to_message.from_user is not None
+            and message.reply_to_message.from_user.id == context.bot.id
         )
-        has_mention = f"@{bot_username}" in user_message
+        # Bare group media is retained silently. Only its real caption can
+        # mention the bot; generated media labels never trigger inference.
+        has_mention = f"@{bot_username}" in text_or_caption
         if not has_mention and not is_reply_to_bot:
             logger.debug(f"Ignoring group message without bot mention or reply in chat {chat_id}")
             return
@@ -502,21 +612,34 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if config.chat_history.debug:
         logger.info(f"=== Conversation for chat {chat_id} ({len(messages)} messages incl. context) ===")
         for i, msg in enumerate(messages):
-            logger.info(f"  [{i}] {msg['role']}: {msg['content'][:200]}{'...' if len(msg['content']) > 200 else ''}")
+            logger.info(
+                "  [%s] %s: %s",
+                i,
+                msg["role"],
+                format_message_for_debug(msg),
+            )
         logger.info("=== End ===")
 
     # Send to AI
     try:
         response = await ai_client.chat(messages)
     except Exception as e:
-        logger.error(f"Error getting AI response for chat {chat_id}: error={e}")
+        logger.error(
+            "Error getting AI response for chat %s (%s)",
+            chat_id,
+            type(e).__name__,
+        )
         typing_task.cancel()
         return
     finally:
         typing_task.cancel()
 
     if response is None or not hasattr(response, 'choices') or not response.choices:
-        logger.error(f"Invalid AI response for chat {chat_id}: response={response}")
+        logger.error(
+            "Invalid AI response for chat %s (%s)",
+            chat_id,
+            type(response).__name__,
+        )
         bot_response = "Sorry, I couldn't get a response right now. Please try again later."
         should_reply = False
     else:
@@ -561,7 +684,7 @@ def setup(token):
     application.add_handler(CommandHandler('removealias', removealias))
     application.add_handler(CommandHandler('clearaliases', clearaliases))
     application.add_handler(CommandHandler('group_info', group_info))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
+    application.add_handler(MessageHandler(SUPPORTED_MESSAGE_FILTER, respond))
 
     logger.info("Bot handlers registered, starting polling...")
     application.run_polling()
@@ -583,6 +706,6 @@ if __name__ == '__main__':  # Outdated usage
     application.add_handler(CommandHandler('removealias', removealias))
     application.add_handler(CommandHandler('clearaliases', clearaliases))
     application.add_handler(CommandHandler('group_info', group_info))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, respond))
+    application.add_handler(MessageHandler(SUPPORTED_MESSAGE_FILTER, respond))
 
     application.run_polling()

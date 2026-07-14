@@ -39,6 +39,12 @@ class RedisConfig:
     db: int = 0
 
 @dataclass
+class MediaConfig:
+    enabled: bool = False
+    max_bytes: int = 20 * 1024 * 1024
+    estimated_image_tokens: int = 2048
+
+@dataclass
 class ModelParams:
     """Optional sampling overrides. Any field left as None is omitted from
     the request entirely so the inference server's default is used."""
@@ -88,6 +94,7 @@ class AppConfig:
         self.redis_config = self._load_redis_config()
         self.system_prompt = self._load_system_prompt()
         self.max_model_tokens = self._load_max_model_tokens(raw)
+        self.media = self._load_media_config(raw)
         self.model_params = self._load_model_params(raw)
 
         self._initialized = True
@@ -172,6 +179,52 @@ class AppConfig:
 
         logger.info(f"Model input context limit set to approximately {max_tokens} tokens.")
         return max_tokens
+
+    def _load_media_config(self, raw: dict) -> MediaConfig:
+        """Load opt-in media ingestion and image token accounting settings."""
+        enabled = os.getenv("MEDIA_ENABLED", "false").lower() == "true"
+        max_bytes = self._positive_int_setting(
+            os.getenv("MAX_MEDIA_BYTES", raw.get("max_media_bytes")),
+            default=20 * 1024 * 1024,
+            name="max_media_bytes",
+        )
+        estimated_tokens = self._positive_int_setting(
+            os.getenv(
+                "ESTIMATED_IMAGE_TOKENS",
+                raw.get("estimated_image_tokens"),
+            ),
+            default=2048,
+            name="estimated_image_tokens",
+        )
+        cfg = MediaConfig(
+            enabled=enabled,
+            max_bytes=max_bytes,
+            estimated_image_tokens=estimated_tokens,
+        )
+        logger.info(
+            "Media ingestion %s — max_bytes=%s, estimated_image_tokens=%s.",
+            "enabled" if enabled else "disabled",
+            max_bytes,
+            estimated_tokens,
+        )
+        return cfg
+
+    @staticmethod
+    def _positive_int_setting(value, default: int, name: str) -> int:
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            logger.warning("Invalid %s value; using %s.", name, default)
+            return default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            logger.warning("Invalid %s value %r; using %s.", name, value, default)
+            return default
+        if parsed <= 0:
+            logger.warning("%s must be greater than zero; using %s.", name, default)
+            return default
+        return parsed
 
     def _load_model_params(self, raw: dict) -> ModelParams:
         block = raw.get("model_params") or {}

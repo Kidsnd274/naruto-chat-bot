@@ -62,6 +62,50 @@ def test_merge_consecutive_roles_joins_consecutive_assistants(chat_history_modul
     assert merged == [{"role": "assistant", "content": "one\ntwo"}]
 
 
+def test_structured_user_merge_preserves_image_position(chat_history_module):
+    first = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "message 10"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
+        ],
+    }
+    second = {"role": "user", "content": "message 11"}
+
+    merged = chat_history_module.merge_consecutive_roles([first, second])
+
+    assert [part["type"] for part in merged[0]["content"]] == [
+        "text", "image_url", "text", "text",
+    ]
+    assert merged[0]["content"][1]["image_url"]["url"].endswith("AAA")
+    assert merged[0]["content"][-1]["text"] == "message 11"
+
+
+def test_render_history_message_labels_image_owner(chat_history_module):
+    rendered = chat_history_module.render_history_message({
+        "role": "user",
+        "content": "Alice: Look at this",
+        "sender_name": "Alice",
+        "telegram_message_id": 123,
+        "reply_to_message_id": None,
+        "attachments": [{
+            "kind": "photo",
+            "mime_type": "image/jpeg",
+            "base64": "SENTINEL",
+            "width": 1280,
+            "height": 720,
+        }],
+    })
+
+    assert rendered["content"][0] == {
+        "type": "text",
+        "text": "[Telegram message 123 from Alice]\nAlice: Look at this\n[Image 1 follows]",
+    }
+    assert rendered["content"][1]["image_url"]["url"] == (
+        "data:image/jpeg;base64,SENTINEL"
+    )
+
+
 # ---------- InMemoryChatHistory ----------
 
 def test_in_memory_add_and_get(chat_history_with_memory):
@@ -151,6 +195,21 @@ def test_in_memory_factory_returns_in_memory(chat_history_with_memory):
     assert isinstance(inst, chat_history_with_memory.InMemoryChatHistory)
 
 
+def test_in_memory_attachment_is_evicted_with_record(chat_history_with_memory):
+    ch = chat_history_with_memory.InMemoryChatHistory()
+    ch.add_user_message(
+        1,
+        "Alice",
+        "photo",
+        telegram_message_id=1,
+        attachments=[{"kind": "photo", "mime_type": "image/jpeg", "base64": "EVICT_ME"}],
+    )
+    for i in range(2, 7):
+        ch.add_user_message(1, "Alice", str(i), telegram_message_id=i, attachments=[])
+
+    assert "EVICT_ME" not in json.dumps(ch.get_raw_chat_history(1))
+
+
 # ---------- RedisChatHistory (via fakeredis) ----------
 
 @pytest.fixture
@@ -219,6 +278,25 @@ def test_redis_isolated_per_chat(redis_chat_history):
     ch.add_user_message(2, "B", "in chat 2")
     assert ch.get_curr_len(1) == 1
     assert ch.get_curr_len(2) == 1
+
+
+def test_redis_ltrim_and_clear_remove_embedded_media(redis_chat_history):
+    ch = redis_chat_history.RedisChatHistory()
+    ch.add_user_message(
+        1,
+        "Alice",
+        "photo",
+        telegram_message_id=1,
+        attachments=[{"kind": "photo", "mime_type": "image/jpeg", "base64": "EVICT_ME"}],
+    )
+    for i in range(2, 7):
+        ch.add_user_message(1, "Alice", str(i), telegram_message_id=i, attachments=[])
+
+    assert "EVICT_ME" not in json.dumps(ch.get_raw_chat_history(1))
+    assert ch.r.keys("*") == [b"chat:history:1"] or ch.r.keys("*") == ["chat:history:1"]
+
+    ch.clear(1)
+    assert ch.r.keys("*") == []
 
 
 # ---------- IChatHistory is abstract ----------

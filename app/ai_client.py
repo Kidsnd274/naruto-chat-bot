@@ -15,6 +15,7 @@ model = os.getenv("OPENAI_MODEL", "qwen3-30b-a3b-2507-instruct-unsloth-settings"
 
 client = None
 model_params: ModelParams = ModelParams()
+_chat_lock = asyncio.Lock()
 
 # Sampling params the OpenAI Python SDK validates and accepts as kwargs.
 _STANDARD_PARAMS = ("temperature", "top_p")
@@ -26,7 +27,7 @@ _EXTRA_BODY_PARAMS = ("top_k", "min_p", "repeat_penalty", "chat_template_kwargs"
 async def chat(messages) -> str:
     """
     messages format:
-      [{"role":"system|user|assistant", "content":"..."}]
+      [{"role":"system|user|assistant", "content":"..." or [content parts]}]
     """
     kwargs = {"model": model, "messages": messages}
     extra_body = {}
@@ -44,7 +45,11 @@ async def chat(messages) -> str:
     if extra_body:
         kwargs["extra_body"] = extra_body
 
-    resp = await client.chat.completions.create(**kwargs)
+    # A local inference server generally has one useful execution slot. Keep
+    # all callers process-wide single-flight so concurrent Telegram triggers
+    # queue here instead of competing for GPU/CPU resources.
+    async with _chat_lock:
+        resp = await client.chat.completions.create(**kwargs)
     return resp
 
 async def _test_connection():

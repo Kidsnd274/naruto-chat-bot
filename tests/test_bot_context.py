@@ -163,6 +163,17 @@ def test_context_omits_persona_when_empty(bot_module):
     assert msg_with_empty["content"].startswith("## Chat Context")
 
 
+def test_context_explains_image_ownership(bot_module):
+    msg = bot_module.build_context_message(
+        chat_info={"chat_name": "X", "users": []},
+        chat_type="group",
+        bot_username="naruto_bot",
+        current_speaker={"display_name": "Alice", "username": "alice"},
+        now=_now(),
+    )
+    assert "Each image belongs to the labeled Telegram message immediately preceding it" in msg["content"]
+
+
 # ---------- LLM message assembly ----------
 
 def test_llm_messages_drop_orphaned_leading_assistant(bot_module):
@@ -239,6 +250,68 @@ def test_llm_messages_report_unavoidable_overflow(bot_module):
     assert result.dropped_history_messages == 0
 
 
+def test_llm_messages_keep_text_image_text_chronology(bot_module):
+    context = {"role": "system", "content": "context"}
+    history = [
+        {
+            "role": "user",
+            "content": "Alice: Look",
+            "sender_name": "Alice",
+            "telegram_message_id": 10,
+            "reply_to_message_id": None,
+            "attachments": [{
+                "kind": "photo",
+                "mime_type": "image/jpeg",
+                "base64": "IMAGE_DATA",
+                "width": 10,
+                "height": 10,
+            }],
+        },
+        {
+            "role": "user",
+            "content": "Bob: funny",
+            "sender_name": "Bob",
+            "telegram_message_id": 11,
+            "reply_to_message_id": None,
+            "attachments": [],
+        },
+    ]
+
+    result = bot_module.build_llm_messages(context, history, None)
+    parts = result.messages[1]["content"]
+
+    assert parts[0]["text"].startswith("[Telegram message 10 from Alice]")
+    assert parts[1]["image_url"]["url"].endswith("IMAGE_DATA")
+    assert parts[-1]["text"].startswith("[Telegram message 11 from Bob]")
+
+
+def test_token_estimate_uses_configured_image_cost_not_base64_length(bot_module):
+    bot_module.config.media.estimated_image_tokens = 321
+    short = [{"role": "user", "content": [
+        {"type": "text", "text": "x"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,A"}},
+    ]}]
+    long = [{"role": "user", "content": [
+        {"type": "text", "text": "x"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + "A" * 100000}},
+    ]}]
+
+    assert bot_module.estimate_message_tokens(short) == bot_module.estimate_message_tokens(long)
+    assert bot_module.estimate_message_tokens(short) >= 321
+
+
+def test_debug_format_never_contains_base64(bot_module):
+    message = {"role": "user", "content": [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,SECRET_SENTINEL"}},
+    ]}
+
+    formatted = bot_module.format_message_for_debug(message)
+
+    assert "SECRET_SENTINEL" not in formatted
+    assert "image/jpeg" in formatted
+
+
 # ---------- parse_reply_marker ----------
 
 @pytest.mark.parametrize("text,expected_should_reply,expected_clean", [
@@ -288,7 +361,7 @@ def test_reply_prefix_includes_full_snippet_for_other_user(bot_module):
         from_user=_FakeUser(full_name="Bob", id=7),
     )
     assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=50) == (
-        '[replying to Bob: "what\'s your favourite ramen?"] '
+        '[replying to Telegram message 100 from Bob: "what\'s your favourite ramen?"] '
     )
 
 
@@ -299,7 +372,7 @@ def test_reply_prefix_uses_you_when_replying_to_bot(bot_module):
         from_user=_FakeUser(full_name="Naruto Bot", id=BOT_ID),
     )
     assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=50) == (
-        '[replying to you: "I\'m gonna be Hokage!"] '
+        '[replying to Telegram message 100 from you: "I\'m gonna be Hokage!"] '
     )
 
 
@@ -309,12 +382,12 @@ def test_reply_prefix_falls_back_to_username_when_no_full_name(bot_module):
         text="hi",
         from_user=_FakeUser(username="alice123", id=7),
     )
-    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == '[replying to alice123: "hi"] '
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == '[replying to Telegram message 100 from alice123: "hi"] '
 
 
 def test_reply_prefix_uses_someone_when_no_user_info(bot_module):
     msg = _FakeMsg(message_id=100, text="hi", from_user=None)
-    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == '[replying to someone: "hi"] '
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == '[replying to Telegram message 100 from someone: "hi"] '
 
 
 def test_reply_prefix_uses_caption_when_no_text(bot_module):
@@ -324,13 +397,13 @@ def test_reply_prefix_uses_caption_when_no_text(bot_module):
         from_user=_FakeUser(full_name="Bob", id=7),
     )
     assert bot_module.build_reply_prefix(msg, BOT_ID, None) == (
-        '[replying to Bob: "check this photo"] '
+        '[replying to Telegram message 100 from Bob: "check this photo"] '
     )
 
 
 def test_reply_prefix_omits_snippet_when_no_text_or_caption(bot_module):
     msg = _FakeMsg(message_id=100, from_user=_FakeUser(full_name="Bob", id=7))
-    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == "[replying to Bob] "
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == "[replying to Telegram message 100 from Bob] "
 
 
 def test_reply_prefix_skips_when_referent_is_last_seen(bot_module):
@@ -349,7 +422,7 @@ def test_reply_prefix_included_when_referent_is_older(bot_module):
         from_user=_FakeUser(full_name="Bob", id=7),
     )
     assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=200) == (
-        '[replying to Bob: "hi"] '
+        '[replying to Telegram message 100 from Bob: "hi"] '
     )
 
 
@@ -360,5 +433,14 @@ def test_reply_prefix_included_when_no_last_seen(bot_module):
         from_user=_FakeUser(full_name="Bob", id=7),
     )
     assert bot_module.build_reply_prefix(msg, BOT_ID, last_seen_message_id=None) == (
-        '[replying to Bob: "hi"] '
+        '[replying to Telegram message 100 from Bob: "hi"] '
+    )
+
+
+def test_reply_prefix_identifies_photo(bot_module):
+    msg = _FakeMsg(message_id=100, from_user=_FakeUser(full_name="Bob", id=7))
+    msg.photo = [object()]
+
+    assert bot_module.build_reply_prefix(msg, BOT_ID, None) == (
+        "[replying to Telegram message 100 from Bob (photo)] "
     )

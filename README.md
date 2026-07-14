@@ -11,6 +11,7 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
     OPENAI_BASE_URL=https://chat.xxx
     OPENAI_MODEL=naruto-chat-bot
     CHAT_HISTORY_ENABLED=true
+    MEDIA_ENABLED=true
     WHITELIST_ENABLED=true
     ```
 
@@ -22,6 +23,8 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
         "whitelisted_ids": [111, 222],
         "max_chat_history": 200,
         "max_model_tokens": 32768,
+        "max_media_bytes": 20971520,
+        "estimated_image_tokens": 2048,
         "model_params": {
             "temperature": 0.7,
             "top_p": 0.9,
@@ -37,6 +40,8 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
 
    `max_model_tokens` is an optional input-context budget. When the estimated request size reaches it, the bot logs a warning and drops the oldest complete chat turns while preserving the system context and current message. Token counts are estimated because OpenAI-compatible backends can use different tokenizers. `MAX_MODEL_TOKENS` can override the JSON value.
 
+   Set `MEDIA_ENABLED=true` to retain Telegram photos, image documents, stickers, animations, videos, video notes, and video documents. Images (or one still frame for moving media) are stored as Base64 in the same history record as the message and are sent to the local model only as part of a normal triggered request. Redis `LTRIM`, in-memory history eviction, and `/clear` therefore remove the image and text together. The configured model/server must support OpenAI Chat Completions [`image_url` content parts with Base64 data URLs](https://developers.openai.com/api/docs/guides/images-vision).
+
    Every field under `model_params` is optional. Omit any field and the inference server's own default applies. Names are passed through verbatim (so `repeat_penalty` matches llama.cpp / Lemonade conventions). Non-standard params (`top_k`, `min_p`, `repeat_penalty`, `chat_template_kwargs`) are sent via `extra_body`.
 
 3. Edit `system_prompt.md` (optional - for persona)
@@ -46,6 +51,8 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
     > For Docker users: `docker-compose.yml` mounts `system_prompt.md` from the host into the container, so the file must exist on the host before `docker-compose up` (Linux will error if the path doesn't exist — the empty file shipped in the repo satisfies this).
 
 4. Run `python3 ./app/main.py`
+
+   For non-Docker installs, put `ffmpeg` on `PATH` so moving media without a Telegram thumbnail can be decoded. The Docker image installs it automatically.
 
 ## Docker
 
@@ -108,6 +115,9 @@ REDIS_DB=0
 | `DEBUG_CHAT_HISTORY` | Log conversation history before each AI request | `false` |
 | `MAX_CHAT_HISTORY` | Max messages per chat (in memory mode) | `1` |
 | `MAX_MODEL_TOKENS` | Approximate maximum input-context tokens per LLM call; overrides `config.json` | unset |
+| `MEDIA_ENABLED` | Store supported Telegram media and include it in multimodal requests | `false` |
+| `MAX_MEDIA_BYTES` | Maximum original Telegram media size; overrides `config.json` | `20971520` |
+| `ESTIMATED_IMAGE_TOKENS` | Estimated context cost per retained image; overrides `config.json` | `2048` |
 | `CONFIG_PATH` | Path to config.json | `config.json` |
 | `SYSTEM_PROMPT_PATH` | Path to the persona prompt file (optional) | `system_prompt.md` |
 | **Redis (optional)** | | |

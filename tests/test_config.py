@@ -11,6 +11,9 @@ def test_defaults_with_no_config_file(initialized_config):
     assert cfg.chat_history.max_history == 1
     assert cfg.chat_history.storage_type.value == "memory"
     assert cfg.max_model_tokens is None
+    assert cfg.media.enabled is False
+    assert cfg.media.max_bytes == 20 * 1024 * 1024
+    assert cfg.media.estimated_image_tokens == 2048
 
 
 def test_max_model_tokens_loads_from_json(fresh_config, tmp_path, monkeypatch):
@@ -42,6 +45,37 @@ def test_invalid_max_model_tokens_disables_limit(fresh_config, tmp_path, monkeyp
     fresh_config.config.setup()
 
     assert fresh_config.config.max_model_tokens is None
+
+
+def test_media_config_loads_json_and_env(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "max_media_bytes": 12345,
+        "estimated_image_tokens": 777,
+    }))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+    monkeypatch.setenv("MEDIA_ENABLED", "true")
+    monkeypatch.setenv("MAX_MEDIA_BYTES", "54321")
+
+    fresh_config.config.setup()
+
+    assert fresh_config.config.media.enabled is True
+    assert fresh_config.config.media.max_bytes == 54321
+    assert fresh_config.config.media.estimated_image_tokens == 777
+
+
+def test_invalid_media_numbers_use_defaults(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "max_media_bytes": 0,
+        "estimated_image_tokens": "bad",
+    }))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+
+    fresh_config.config.setup()
+
+    assert fresh_config.config.media.max_bytes == 20 * 1024 * 1024
+    assert fresh_config.config.media.estimated_image_tokens == 2048
 
 
 def test_whitelist_loads_from_json(fresh_config, tmp_path, monkeypatch):

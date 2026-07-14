@@ -27,6 +27,9 @@ def fresh_config(monkeypatch, tmp_path):
         "CONFIG_PATH",
         "SYSTEM_PROMPT_PATH",
         "MAX_MODEL_TOKENS",
+        "MEDIA_ENABLED",
+        "MAX_MEDIA_BYTES",
+        "ESTIMATED_IMAGE_TOKENS",
     ]:
         monkeypatch.delenv(var, raising=False)
 

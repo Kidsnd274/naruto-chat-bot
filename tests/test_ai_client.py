@@ -4,6 +4,7 @@ Verify that ModelParams fields land in the right place on the request:
 standard fields as kwargs, non-standard ones inside `extra_body`, and
 unset (None) fields omitted entirely.
 """
+import asyncio
 import importlib
 import sys
 from unittest.mock import AsyncMock, MagicMock
@@ -119,3 +120,24 @@ async def test_chat_temperature_zero_is_passed_through(ai_module):
 
     kwargs = _call_kwargs(fake_client)
     assert kwargs["temperature"] == 0.0
+
+
+async def test_chat_calls_are_process_wide_single_flight(ai_module):
+    ai, fake_client = ai_module
+    active = 0
+    maximum_active = 0
+
+    async def slow_create(**kwargs):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return MagicMock(name="response")
+
+    fake_client.chat.completions.create.side_effect = slow_create
+
+    await asyncio.gather(ai.chat(_MSG), ai.chat(_MSG), ai.chat(_MSG))
+
+    assert maximum_active == 1
+    assert fake_client.chat.completions.create.call_count == 3

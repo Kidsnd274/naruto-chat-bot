@@ -115,6 +115,17 @@ def test_in_memory_merges_consecutive_user_messages_on_read(chat_history_with_me
     assert "Bob: second" in history[0]["content"]
 
 
+def test_in_memory_raw_history_stays_unmerged_and_chronological(chat_history_with_memory):
+    ch = chat_history_with_memory.InMemoryChatHistory()
+    ch.add_user_message(1, "Alice", "first")
+    ch.add_user_message(1, "Bob", "second")
+
+    assert ch.get_raw_chat_history(1) == [
+        {"role": "user", "content": "Alice: first"},
+        {"role": "user", "content": "Bob: second"},
+    ]
+
+
 def test_in_memory_get_is_idempotent(chat_history_with_memory):
     """Reading history must not mutate stored state. Regression test: the
     merge step used to write back into the deque's own dicts, so each read
@@ -174,6 +185,17 @@ def test_redis_add_and_get(redis_chat_history):
     assert history == [
         {"role": "user", "content": "Alice: hello"},
         {"role": "assistant", "content": "hi back"},
+    ]
+
+
+def test_redis_raw_history_stays_unmerged_and_chronological(redis_chat_history):
+    ch = redis_chat_history.RedisChatHistory()
+    ch.add_user_message(1, "Alice", "first")
+    ch.add_user_message(1, "Bob", "second")
+
+    assert ch.get_raw_chat_history(1) == [
+        {"role": "user", "content": "Alice: first"},
+        {"role": "user", "content": "Bob: second"},
     ]
 
 

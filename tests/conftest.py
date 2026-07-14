@@ -26,6 +26,7 @@ def fresh_config(monkeypatch, tmp_path):
         "REDIS_DB",
         "CONFIG_PATH",
         "SYSTEM_PROMPT_PATH",
+        "MAX_MODEL_TOKENS",
     ]:
         monkeypatch.delenv(var, raising=False)
 

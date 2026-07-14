@@ -87,6 +87,7 @@ class AppConfig:
         self.chat_history = self._load_chat_history(raw)
         self.redis_config = self._load_redis_config()
         self.system_prompt = self._load_system_prompt()
+        self.max_model_tokens = self._load_max_model_tokens(raw)
         self.model_params = self._load_model_params(raw)
 
         self._initialized = True
@@ -144,6 +145,33 @@ class AppConfig:
             return ""
         logger.info(f"Loaded system prompt from {path} ({len(prompt)} chars).")
         return prompt
+
+    def _load_max_model_tokens(self, raw: dict) -> Optional[int]:
+        """Load the maximum estimated input tokens allowed per LLM call."""
+        value = os.getenv("MAX_MODEL_TOKENS")
+        if value is None:
+            value = raw.get("max_model_tokens")
+
+        if value is None or value == "":
+            logger.info("No max_model_tokens configured — input context is not token-limited.")
+            return None
+
+        if isinstance(value, bool):
+            logger.warning("Invalid max_model_tokens value; token limiting is disabled.")
+            return None
+
+        try:
+            max_tokens = int(value)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid max_model_tokens '{value}'; token limiting is disabled.")
+            return None
+
+        if max_tokens <= 0:
+            logger.warning("max_model_tokens must be greater than zero; token limiting is disabled.")
+            return None
+
+        logger.info(f"Model input context limit set to approximately {max_tokens} tokens.")
+        return max_tokens
 
     def _load_model_params(self, raw: dict) -> ModelParams:
         block = raw.get("model_params") or {}

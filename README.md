@@ -21,6 +21,7 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
         "whitelisted_groups": [123, 456],
         "whitelisted_ids": [111, 222],
         "max_chat_history": 200,
+        "max_model_tokens": 32768,
         "model_params": {
             "temperature": 0.7,
             "top_p": 0.9,
@@ -33,6 +34,8 @@ A Telegram bot powered by OpenAI API that responds like Naruto.
     ```
 
    See [`config.example.json`](config.example.json) for reference.
+
+   `max_model_tokens` is an optional input-context budget. When the estimated request size reaches it, the bot logs a warning and drops the oldest complete chat turns while preserving the system context and current message. Token counts are estimated because OpenAI-compatible backends can use different tokenizers. `MAX_MODEL_TOKENS` can override the JSON value.
 
    Every field under `model_params` is optional. Omit any field and the inference server's own default applies. Names are passed through verbatim (so `repeat_penalty` matches llama.cpp / Lemonade conventions). Non-standard params (`top_k`, `min_p`, `repeat_penalty`, `chat_template_kwargs`) are sent via `extra_body`.
 
@@ -104,6 +107,7 @@ REDIS_DB=0
 | `CHAT_HISTORY_TYPE` | Storage type: `memory` or `redis` | `memory` |
 | `DEBUG_CHAT_HISTORY` | Log conversation history before each AI request | `false` |
 | `MAX_CHAT_HISTORY` | Max messages per chat (in memory mode) | `1` |
+| `MAX_MODEL_TOKENS` | Approximate maximum input-context tokens per LLM call; overrides `config.json` | unset |
 | `CONFIG_PATH` | Path to config.json | `config.json` |
 | `SYSTEM_PROMPT_PATH` | Path to the persona prompt file (optional) | `system_prompt.md` |
 | **Redis (optional)** | | |

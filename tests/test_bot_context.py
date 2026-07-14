@@ -163,6 +163,82 @@ def test_context_omits_persona_when_empty(bot_module):
     assert msg_with_empty["content"].startswith("## Chat Context")
 
 
+# ---------- LLM message assembly ----------
+
+def test_llm_messages_drop_orphaned_leading_assistant(bot_module):
+    context = {"role": "system", "content": "context"}
+    history = [
+        {"role": "assistant", "content": "orphaned answer"},
+        {"role": "user", "content": "current question"},
+    ]
+
+    result = bot_module.build_llm_messages(context, history, max_model_tokens=None)
+
+    assert result.messages == [
+        context,
+        {"role": "user", "content": "current question"},
+    ]
+    assert result.dropped_history_messages == 1
+
+
+def test_llm_messages_trim_oldest_complete_turn_to_token_budget(bot_module):
+    context = {"role": "system", "content": "context"}
+    current = {"role": "user", "content": "current question"}
+    history = [
+        {"role": "user", "content": "old question " * 20},
+        {"role": "assistant", "content": "old answer " * 20},
+        current,
+    ]
+    minimum = bot_module.estimate_message_tokens([context, current])
+
+    result = bot_module.build_llm_messages(
+        context,
+        history,
+        max_model_tokens=minimum + 1,
+    )
+
+    assert result.limit_reached is True
+    assert result.messages == [context, current]
+    assert result.estimated_tokens_after <= minimum + 1
+    assert result.dropped_history_messages == 2
+
+
+def test_llm_messages_preserve_current_consecutive_user_message(bot_module):
+    context = {"role": "system", "content": "context"}
+    current = {"role": "user", "content": "current question"}
+    history = [
+        {"role": "user", "content": "older group chatter " * 30},
+        current,
+    ]
+    minimum = bot_module.estimate_message_tokens([context, current])
+
+    result = bot_module.build_llm_messages(
+        context,
+        history,
+        max_model_tokens=minimum,
+    )
+
+    assert result.limit_reached is True
+    assert result.messages == [context, current]
+    assert result.dropped_history_messages == 1
+
+
+def test_llm_messages_report_unavoidable_overflow(bot_module):
+    context = {"role": "system", "content": "long context " * 20}
+    current = {"role": "user", "content": "long current message " * 20}
+
+    result = bot_module.build_llm_messages(
+        context,
+        [current],
+        max_model_tokens=1,
+    )
+
+    assert result.limit_reached is True
+    assert result.messages == [context, current]
+    assert result.estimated_tokens_after > 1
+    assert result.dropped_history_messages == 0
+
+
 # ---------- parse_reply_marker ----------
 
 @pytest.mark.parametrize("text,expected_should_reply,expected_clean", [

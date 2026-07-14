@@ -3,8 +3,9 @@ from datetime import datetime
 import logging
 import os
 import re
+from typing import NamedTuple
 
-from chat_history import chat_history
+from chat_history import chat_history, merge_consecutive_roles
 from chat_metadata import chat_metadata
 from config import config
 from dotenv import load_dotenv
@@ -27,6 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger("telegram_bot")
 
 NUDGE_HINT = "(nudge — no message text; look at recent chat and respond appropriately)"
+
+# Portable approximation for OpenAI-compatible servers using different model
+# tokenizers. The actual tokenizer may vary, so logs explicitly call this an
+# estimate. Per-message overhead accounts for role/template delimiters.
+_ESTIMATED_BYTES_PER_TOKEN = 4
+_ESTIMATED_MESSAGE_OVERHEAD_TOKENS = 4
+_ESTIMATED_REPLY_PRIMER_TOKENS = 2
 
 # Optional [REPLY] prefix the LLM can use to ask Telegram to thread its
 # response as a reply to the triggering message. Tolerates whitespace and
@@ -59,6 +67,85 @@ def _strip_bot_mentions(messages: list[dict], bot_username: str) -> list[dict]:
             content = re.sub(r" {2,}", " ", content)
         cleaned.append({**m, "content": content})
     return cleaned
+
+
+class MessageBuildResult(NamedTuple):
+    messages: list[dict]
+    limit_reached: bool
+    estimated_tokens_before: int
+    estimated_tokens_after: int
+    dropped_history_messages: int
+
+
+def estimate_message_tokens(messages: list[dict]) -> int:
+    """Estimate request tokens without depending on a model-specific tokenizer."""
+    estimated = _ESTIMATED_REPLY_PRIMER_TOKENS
+    for message in messages:
+        content_bytes = len(str(message.get("content", "")).encode("utf-8"))
+        content_tokens = (
+            content_bytes + _ESTIMATED_BYTES_PER_TOKEN - 1
+        ) // _ESTIMATED_BYTES_PER_TOKEN
+        estimated += _ESTIMATED_MESSAGE_OVERHEAD_TOKENS + content_tokens
+    return estimated
+
+
+def build_llm_messages(
+    context_message: dict,
+    raw_history: list[dict],
+    max_model_tokens: int | None,
+) -> MessageBuildResult:
+    """Build a valid, bounded LLM transcript from chronological raw history.
+
+    The system message and newest history message are always preserved. Oldest
+    messages are removed first, and any assistant message orphaned by storage
+    or token trimming is removed with its preceding user turn.
+    """
+    retained = [dict(message) for message in raw_history]
+    dropped = 0
+
+    # A fixed-size store can cut through a turn. Never send an assistant reply
+    # whose corresponding user message has already been evicted.
+    while retained and retained[0].get("role") == "assistant":
+        retained.pop(0)
+        dropped += 1
+
+    def assemble() -> list[dict]:
+        return [dict(context_message)] + merge_consecutive_roles(retained)
+
+    messages = assemble()
+    estimated_before = estimate_message_tokens(messages)
+    limit_reached = (
+        max_model_tokens is not None
+        and estimated_before >= max_model_tokens
+    )
+
+    # Keep at least the newest raw history entry (normally the current user
+    # message). If that plus the system context is too large, send both and let
+    # the warning log make the unavoidable overflow visible.
+    while (
+        max_model_tokens is not None
+        and estimate_message_tokens(messages) > max_model_tokens
+        and len(retained) > 1
+    ):
+        retained.pop(0)
+        dropped += 1
+
+        # Removing a user entry can expose its assistant response. Drop that
+        # response too so the remaining transcript begins with a user turn.
+        while len(retained) > 1 and retained[0].get("role") == "assistant":
+            retained.pop(0)
+            dropped += 1
+
+        messages = assemble()
+
+    estimated_after = estimate_message_tokens(messages)
+    return MessageBuildResult(
+        messages=messages,
+        limit_reached=limit_reached,
+        estimated_tokens_before=estimated_before,
+        estimated_tokens_after=estimated_after,
+        dropped_history_messages=dropped,
+    )
 
 
 # message_id of the most recent message we've seen per chat — either an
@@ -383,8 +470,34 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now=datetime.now().astimezone(),
         persona=config.system_prompt,
     )
-    messages = [context_msg] + chat_history.get_chat_history(chat_id)
-    messages = _strip_bot_mentions(messages, context.bot.username)
+    raw_messages = _strip_bot_mentions(
+        [context_msg] + chat_history.get_raw_chat_history(chat_id),
+        context.bot.username,
+    )
+    message_build = build_llm_messages(
+        context_message=raw_messages[0],
+        raw_history=raw_messages[1:],
+        max_model_tokens=config.max_model_tokens,
+    )
+    messages = message_build.messages
+
+    if message_build.limit_reached:
+        unavoidable = (
+            " System context and the current message alone exceed the limit."
+            if message_build.estimated_tokens_after > config.max_model_tokens
+            else ""
+        )
+        logger.warning(
+            "Max model token count reached for chat %s: limit=%s, "
+            "estimated_before=%s, estimated_after=%s, "
+            "dropped_history_messages=%s.%s",
+            chat_id,
+            config.max_model_tokens,
+            message_build.estimated_tokens_before,
+            message_build.estimated_tokens_after,
+            message_build.dropped_history_messages,
+            unavoidable,
+        )
 
     if config.chat_history.debug:
         logger.info(f"=== Conversation for chat {chat_id} ({len(messages)} messages incl. context) ===")

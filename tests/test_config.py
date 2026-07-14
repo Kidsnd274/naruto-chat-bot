@@ -10,6 +10,38 @@ def test_defaults_with_no_config_file(initialized_config):
     assert cfg.chat_history.enabled is False
     assert cfg.chat_history.max_history == 1
     assert cfg.chat_history.storage_type.value == "memory"
+    assert cfg.max_model_tokens is None
+
+
+def test_max_model_tokens_loads_from_json(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"max_model_tokens": 32768}))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+
+    fresh_config.config.setup()
+
+    assert fresh_config.config.max_model_tokens == 32768
+
+
+def test_max_model_tokens_env_overrides_json(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"max_model_tokens": 32768}))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+    monkeypatch.setenv("MAX_MODEL_TOKENS", "8192")
+
+    fresh_config.config.setup()
+
+    assert fresh_config.config.max_model_tokens == 8192
+
+
+def test_invalid_max_model_tokens_disables_limit(fresh_config, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"max_model_tokens": 0}))
+    monkeypatch.setenv("CONFIG_PATH", str(cfg_path))
+
+    fresh_config.config.setup()
+
+    assert fresh_config.config.max_model_tokens is None
 
 
 def test_whitelist_loads_from_json(fresh_config, tmp_path, monkeypatch):

@@ -29,6 +29,10 @@ class IChatHistory(ABC):
         """Get chat history for a specific chat."""
 
     @abstractmethod
+    def get_raw_chat_history(self, chat_id: int) -> list:
+        """Get unmerged chat history in chronological storage order."""
+
+    @abstractmethod
     def get_curr_len(self, chat_id: int) -> int:
         """Get chat history length for a specific chat."""
     
@@ -56,7 +60,10 @@ class InMemoryChatHistory(IChatHistory):
         })
     
     def get_chat_history(self, chat_id: int) -> list:
-        return merge_consecutive_roles(list(self._history[chat_id]))
+        return merge_consecutive_roles(self.get_raw_chat_history(chat_id))
+
+    def get_raw_chat_history(self, chat_id: int) -> list:
+        return [dict(message) for message in self._history[chat_id]]
     
     def get_curr_len(self, chat_id: int) -> int:
         return len(self._history[chat_id])
@@ -103,10 +110,12 @@ class RedisChatHistory(IChatHistory):
 
     
     def get_chat_history(self, chat_id: int) -> list:
+        return merge_consecutive_roles(self.get_raw_chat_history(chat_id))
+
+    def get_raw_chat_history(self, chat_id: int) -> list:
         key = f"{REDIS_CHAT_PREFIX}{chat_id}"
-        
         messages = self.r.lrange(key, 0, -1)
-        return merge_consecutive_roles([json.loads(msg) for msg in messages])
+        return [json.loads(msg) for msg in messages]
     
     def get_curr_len(self, chat_id):
         key = f"{REDIS_CHAT_PREFIX}{chat_id}"

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block content %}
+<h1>Logs</h1>
+<form class="filters" method="get" action="/logs">
+  <select name="level">
+    {% for level in levels %}<option value="{{ level }}" {{ 'selected' if filters.level == level else '' }}>{{ level }} and above</option>{% endfor %}
+  </select>
+  <select name="chat">
+    <option value="">All chats</option>
+    {% for chat_id in chat_ids %}
+      <option value="{{ chat_id }}" {{ 'selected' if filters.chat == chat_id else '' }}>{{ chat_titles.get(chat_id, chat_id) }}</option>
+    {% endfor %}
+  </select>
+  <input name="logger" value="{{ filters.logger }}" placeholder="Logger, e.g. naruto.tg">
+  <label class="small"><input type="checkbox" name="live" value="1" {{ 'checked' if filters.live else '' }}> Live</label>
+  <button type="submit">Apply</button>
+</form>
+<div class="table-wrap">
+<table class="logs compact">
+  <thead><tr><th>Time</th><th>Level</th><th>Logger</th><th>Chat</th><th>Message</th></tr></thead>
+  <tbody id="log-rows" {% if filters.live %}hx-get="/logs/rows?{{ query }}" hx-trigger="every 3s" hx-swap="innerHTML"{% endif %}>
+    {% include "_log_rows.html" %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

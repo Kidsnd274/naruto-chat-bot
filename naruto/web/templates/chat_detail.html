@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ chat.display_title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/chats">Chats</a> /</p>
+<div class="title-row">
+  <h1>{{ chat.display_title }} <span class="badge {{ chat.status }}">{{ chat.status }}</span></h1>
+  <div class="actions">
+    {% if chat.status != "enabled" %}
+      <form method="post" action="/chats/{{ chat.chat_id }}/enable">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="back" value="detail">
+        <button type="submit" class="primary">Enable</button>
+      </form>
+    {% endif %}
+    {% if chat.status != "disabled" %}
+      <form method="post" action="/chats/{{ chat.chat_id }}/disable">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="back" value="detail">
+        <button type="submit">Disable</button>
+      </form>
+    {% endif %}
+    <form method="post" action="/chats/{{ chat.chat_id }}/rights">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="back" value="detail">
+      <button type="submit">Check admin rights</button>
+    </form>
+    {% if chat.membership not in ("left", "kicked") %}
+      <a class="button danger" href="/chats/{{ chat.chat_id }}/leave">Leave</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Details</h2>
+    <dl class="facts">
+      <dt>Chat ID</dt><dd class="mono">{{ chat.chat_id }}</dd>
+      {% if aliases %}<dt>Old IDs</dt><dd class="mono">{{ aliases|join(", ") }} <span class="muted">(before the upgrade to supergroup)</span></dd>{% endif %}
+      <dt>Type</dt><dd>{{ chat.type }}</dd>
+      <dt>Bot membership</dt><dd>{{ chat.membership }}</dd>
+      <dt>Admin rights</dt>
+      <dd>
+        {% if chat.rights_checked_at is none %}not checked yet
+        {% else %}
+          pin {{ '✓' if chat.can_pin else '✗' }}, delete {{ '✓' if chat.can_delete else '✗' }}
+          <span class="muted">(checked {{ chat.rights_checked_at|ago }})</span>
+        {% endif %}
+        {% if chat.missing_rights() %}<div class="error-text small">Missing: {{ chat.missing_rights()|join(", ") }}. Make the bot an admin with “Pin messages”.</div>{% endif %}
+      </dd>
+      {% if chat.added_by_name %}<dt>Added by</dt><dd>{{ chat.added_by_name }}</dd>{% endif %}
+      <dt>First seen</dt><dd>{{ chat.created_at|ts }}</dd>
+      <dt>Messages</dt><dd>{{ live_count }} live, {{ import_count }} imported</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h2>Members</h2>
+    {% if members %}
+      <ul class="plain members">
+        {% for member in members %}
+          <li>
+            <div><strong>{{ member.display_name }}</strong> <span class="muted">{{ member.handle }}{% if member.is_bot %} · bot{% endif %}{% if member.source == "import" %} · from import{% endif %}</span></div>
+            <div class="alias-row">
+              {% for alias in member.aliases %}
+                <form method="post" action="/chats/{{ chat.chat_id }}/members/{{ member.user_id }}/aliases/delete" class="chip">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="alias" value="{{ alias }}">
+                  {{ alias }} <button type="submit" class="link" title="Remove alias">×</button>
+                </form>
+              {% endfor %}
+              <form method="post" action="/chats/{{ chat.chat_id }}/members/{{ member.user_id }}/aliases" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input name="alias" placeholder="add alias" maxlength="64" class="small-input">
+                <button type="submit" class="small">Add</button>
+              </form>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Nobody seen yet.</p>
+    {% endif %}
+  </section>
+</div>
+
+{% block extra_sections %}
+  {% if imports is defined %}{% include "_chat_imports.html" %}{% endif %}
+{% endblock %}
+
+<section class="card">
+  <h2>Messages</h2>
+  <form class="filters" hx-get="/chats/{{ chat.chat_id }}/messages" hx-target="#messages" hx-push-url="false" action="/chats/{{ chat.chat_id }}" method="get">
+    <input type="search" name="q" value="{{ filters.q }}" placeholder="Search text">
+    <select name="sender">
+      <option value="">Anyone</option>
+      {% for sender_id, name, count in senders %}
+        <option value="{{ sender_id }}" {{ 'selected' if filters.sender == sender_id|string else '' }}>{{ name }} ({{ count }})</option>
+      {% endfor %}
+    </select>
+    <select name="source">
+      <option value="">Live and imported</option>
+      <option value="live" {{ 'selected' if filters.source == 'live' else '' }}>Live</option>
+      <option value="import" {{ 'selected' if filters.source == 'import' else '' }}>Imported</option>
+    </select>
+    <label class="small">From <input type="date" name="since" value="{{ filters.since }}"></label>
+    <label class="small">To <input type="date" name="until" value="{{ filters.until }}"></label>
+    <button type="submit">Filter</button>
+  </form>
+  <div id="messages">{% include "_messages.html" %}</div>
+</section>
+
+<section class="card danger-zone">
+  <h2>Delete data</h2>
+  <p class="muted">Deletion is permanent. You'll see how many messages are affected before anything is deleted.</p>
+  <form method="post" action="/chats/{{ chat.chat_id }}/delete-messages" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="scope">
+      <option value="all">All messages</option>
+      <option value="older">Messages older than…</option>
+    </select>
+    <input type="date" name="before" aria-label="Older than">
+    <select name="source">
+      <option value="">Live and imported</option>
+      <option value="live">Live only</option>
+      <option value="import">Imported only</option>
+    </select>
+    <button type="submit" class="danger">Review deletion</button>
+  </form>
+</section>
+{% endblock %}

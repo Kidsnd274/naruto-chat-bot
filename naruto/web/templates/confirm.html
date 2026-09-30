@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Confirm{% endblock %}
+{% block content %}
+<section class="card confirm">
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <form method="post" action="{{ action }}" class="actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for name, value in fields.items() %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    <button type="submit" class="danger">{{ confirm_label }}</button>
+    <a class="button" href="{{ cancel }}">Cancel</a>
+  </form>
+</section>
+{% endblock %}

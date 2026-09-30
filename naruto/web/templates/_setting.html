@@ -1,0 +1,43 @@
+{% set s = card.setting %}
+<article class="card setting{{ ' wide' if s.type in ('text', 'json') else '' }}" id="{{ s.key }}">
+  <form method="post" action="/settings/{{ s.key }}" hx-post="/settings/{{ s.key }}" hx-target="closest .setting" hx-swap="outerHTML">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="setting-head">
+      <label for="input-{{ s.key }}"><strong>{{ s.label }}</strong></label>
+      <span class="mono muted small">{{ s.key }}</span>
+      {% if card.is_default %}<span class="badge muted-badge">default</span>{% else %}<span class="badge custom">custom</span>{% endif %}
+      {% if s.restart_required %}<span class="badge warn-badge">needs restart</span>{% endif %}
+    </div>
+    <p class="muted small">{{ s.description }}
+      {% if s.min is not none and s.type in ("int", "float") %} Range {{ s.min|num }}–{{ s.max|num if s.max is not none else "∞" }}.{% endif %}
+      {% if s.nullable %} Leave empty for the server default.{% endif %}
+    </p>
+    {% if s.type == "bool" %}
+      <label class="switch"><input id="input-{{ s.key }}" type="checkbox" name="value" value="on" {{ 'checked' if card.value else '' }}> Enabled</label>
+    {% elif s.type == "choice" %}
+      <select id="input-{{ s.key }}" name="value">
+        {% for choice in s.choices %}<option value="{{ choice }}" {{ 'selected' if card.form_value == choice else '' }}>{{ choice }}</option>{% endfor %}
+      </select>
+    {% elif s.type in ("text", "json") %}
+      <textarea id="input-{{ s.key }}" name="value" rows="{{ 14 if s.type == 'text' else 4 }}" class="{{ 'mono' if s.type == 'json' else '' }}" spellcheck="{{ 'true' if s.type == 'text' else 'false' }}">{{ card.form_value }}</textarea>
+    {% elif s.type in ("int", "float") %}
+      <input id="input-{{ s.key }}" name="value" value="{{ card.form_value }}" inputmode="decimal" class="narrow">
+    {% else %}
+      <input id="input-{{ s.key }}" name="value" value="{{ card.form_value }}">
+    {% endif %}
+    {% if card.error %}<p class="error-text">{{ card.error }}</p>{% endif %}
+    <div class="setting-actions">
+      <button type="submit" class="small primary">Save</button>
+      {% if card.saved and not card.error %}<span class="ok-text small">Saved</span>{% endif %}
+      {% if not card.is_default %}
+        <button type="submit" class="small" formaction="/settings/{{ s.key }}/reset" hx-post="/settings/{{ s.key }}/reset">Reset to default</button>
+      {% endif %}
+      {% if card.last %}
+        <button type="submit" class="small" formaction="/settings/{{ s.key }}/revert" hx-post="/settings/{{ s.key }}/revert" title="Undo the latest change">Revert</button>
+        <span class="muted small">Changed {{ card.last.changed_at|ago }} by {{ card.last.changed_by }}</span>
+        <button type="button" class="small link" hx-get="/settings/{{ s.key }}/history" hx-target="#history-{{ s.key|replace('.', '-') }}">History</button>
+      {% endif %}
+    </div>
+    <div id="history-{{ s.key|replace('.', '-') }}"></div>
+  </form>
+</article>

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Chats{% endblock %}
+{% block content %}
+<h1>Chats</h1>
+<p class="muted">Every group the bot has seen. Pending and disabled groups get no replies and nothing is recorded.</p>
+
+{% if summaries %}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Group</th><th>Type</th><th>Status</th><th>Admin rights</th>
+      <th class="num">Live</th><th class="num">Imported</th><th>Last activity</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in summaries %}
+    {% set chat = s.chat %}
+    <tr>
+      <td>
+        <a href="/chats/{{ chat.chat_id }}"><strong>{{ chat.display_title }}</strong></a>
+        <div class="muted mono small">{{ chat.chat_id }}{% if s.aliases %} · was {{ s.aliases|join(", ") }}{% endif %}</div>
+      </td>
+      <td>{{ chat.type }}</td>
+      <td>
+        <span class="badge {{ chat.status }}">{{ chat.status }}</span>
+        {% if chat.membership in ("left", "kicked") %}<span class="badge muted-badge">{{ chat.membership }}</span>{% endif %}
+      </td>
+      <td class="small">
+        {% if chat.rights_checked_at is none %}<span class="muted">unknown</span>
+        {% else %}
+          <span class="{{ 'ok-text' if chat.can_pin else 'error-text' }}">{{ '✓' if chat.can_pin else '✗' }} pin</span>
+          <span class="{{ 'ok-text' if chat.can_delete else 'muted' }}">{{ '✓' if chat.can_delete else '✗' }} delete</span>
+        {% endif %}
+      </td>
+      <td class="num">{{ s.live_messages }}</td>
+      <td class="num">{{ s.imported_messages }}</td>
+      <td class="small">{{ (s.last_message_at or chat.last_activity_at)|ago }}</td>
+      <td class="nowrap"><div class="actions">
+        {% if chat.status != "enabled" %}
+          <form method="post" action="/chats/{{ chat.chat_id }}/enable">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="small primary">Enable</button>
+          </form>
+        {% endif %}
+        {% if chat.status != "disabled" %}
+          <form method="post" action="/chats/{{ chat.chat_id }}/disable">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="small">Disable</button>
+          </form>
+        {% endif %}
+        {% if chat.membership not in ("left", "kicked") %}
+          <a class="button small danger" href="/chats/{{ chat.chat_id }}/leave">Leave</a>
+        {% endif %}
+      </div></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+  <p class="card">No chats yet. Add the bot to a group; it appears here as pending.</p>
+{% endif %}
+{% endblock %}

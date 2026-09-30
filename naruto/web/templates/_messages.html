@@ -1,0 +1,32 @@
+<p class="muted small">{{ page.total }} message{{ '' if page.total == 1 else 's' }}{% if page.total %}, showing {{ page.offset + 1 }}–{{ page.offset + page.messages|length }} (newest first){% endif %}</p>
+{% if page.messages %}
+<div class="table-wrap">
+<table class="messages">
+  <thead><tr><th>ID</th><th>Time</th><th>From</th><th>Message</th><th></th></tr></thead>
+  <tbody>
+  {% for m in page.messages %}
+    <tr>
+      <td class="mono small">{{ m.id }}</td>
+      <td class="small nowrap">{{ m.date|ts }}</td>
+      <td class="nowrap">{{ m.sender_name }}{% if m.from_bot %} <span class="badge muted-badge">bot</span>{% endif %}</td>
+      <td class="text">
+        {% if m.reply_to_row_id %}<span class="muted small">↩{{ m.reply_to_row_id }}</span> {% elif m.reply_to_snippet %}<span class="muted small">↩ {{ m.reply_to_snippet }}</span><br>{% endif %}
+        {% if m.forwarded_from %}<span class="muted small">forwarded from {{ m.forwarded_from }}</span><br>{% endif %}
+        <span class="msg-text">{{ m|body }}</span>{% if m.edit_date %} <span class="muted small">(edited)</span>{% endif %}
+      </td>
+      <td><span class="badge {{ 'live' if m.source == 'live' else 'import' }}">{{ m.source }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<div class="pager">
+  {% set base = "/chats/" ~ chat.chat_id ~ "/messages?" ~ filters|urlencode %}
+  {% if page.offset > 0 %}
+    <button class="small" hx-get="{{ base }}&offset={{ [page.offset - page.limit, 0]|max }}" hx-target="#messages">← Newer</button>
+  {% endif %}
+  {% if page.has_more %}
+    <button class="small" hx-get="{{ base }}&offset={{ page.offset + page.limit }}" hx-target="#messages">Older →</button>
+  {% endif %}
+</div>
+{% endif %}

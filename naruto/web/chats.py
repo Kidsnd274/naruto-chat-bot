@@ -1,0 +1,235 @@
+"""Chats list, chat detail (roster, message browser) and data deletion."""
+
+from datetime import date, datetime, time as dtime
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
+
+from naruto.db.chats import DISABLED, ENABLED, Chat
+from naruto.db.messages import IMPORT, LIVE
+from naruto.services import Services
+from naruto.web.auth import require_admin
+
+logger = logging.getLogger(__name__)
+router = APIRouter(dependencies=[Depends(require_admin)])
+
+PAGE_SIZE = 50
+ACTOR = "owner (web admin)"
+
+
+def _services(request: Request) -> Services:
+    return request.app.state.services
+
+
+def _chat_or_404(services: Services, chat_id: int) -> Chat:
+    chat = services.chats.get(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Unknown chat.")
+    return chat
+
+
+def _day_start(services: Services, value: str | None) -> int | None:
+    """YYYY-MM-DD in the configured time zone -> Unix time at midnight."""
+    if not value:
+        return None
+    try:
+        day = date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date {value!r}.") from None
+    return int(datetime.combine(day, dtime.min, services.timezone()).timestamp())
+
+
+def _back(chat_id: int | None = None) -> RedirectResponse:
+    return RedirectResponse(f"/chats/{chat_id}" if chat_id else "/chats", status_code=303)
+
+
+async def _referer_or(request: Request, chat_id: int) -> RedirectResponse:
+    form = await request.form()
+    target = form.get("back")
+    if target == "detail":
+        return _back(chat_id)
+    return _back()
+
+
+# -------------------------------------------------------------------- list
+
+@router.get("/chats")
+async def chats_page(request: Request):
+    services = _services(request)
+    return request.app.state.templates.TemplateResponse(
+        request, "chats.html", {"summaries": services.chats.summaries()})
+
+
+@router.post("/chats/{chat_id}/enable")
+async def enable_chat(request: Request, chat_id: int):
+    services = _services(request)
+    _chat_or_404(services, chat_id)
+    if services.access is not None:
+        await services.access.enable(chat_id, actor=ACTOR)
+    else:
+        services.chats.set_status(chat_id, ENABLED)
+    return await _referer_or(request, chat_id)
+
+
+@router.post("/chats/{chat_id}/disable")
+async def disable_chat(request: Request, chat_id: int):
+    services = _services(request)
+    _chat_or_404(services, chat_id)
+    if services.access is not None:
+        await services.access.disable(chat_id, actor=ACTOR)
+    else:
+        services.chats.set_status(chat_id, DISABLED)
+    return await _referer_or(request, chat_id)
+
+
+@router.post("/chats/{chat_id}/rights")
+async def check_rights(request: Request, chat_id: int):
+    services = _services(request)
+    _chat_or_404(services, chat_id)
+    if services.access is not None:
+        await services.access.check_rights(chat_id)
+    return await _referer_or(request, chat_id)
+
+
+@router.get("/chats/{chat_id}/leave")
+async def leave_confirm(request: Request, chat_id: int):
+    services = _services(request)
+    chat = _chat_or_404(services, chat_id)
+    return request.app.state.templates.TemplateResponse(request, "confirm.html", {
+        "title": f"Leave {chat.display_title}?",
+        "message": "The bot leaves the group and the chat is marked disabled. Stored "
+                   "messages are kept; delete them separately if you want.",
+        "action": f"/chats/{chat.chat_id}/leave",
+        "fields": {},
+        "confirm_label": "Leave group",
+        "cancel": f"/chats/{chat.chat_id}",
+    })
+
+
+@router.post("/chats/{chat_id}/leave")
+async def leave_chat(request: Request, chat_id: int):
+    services = _services(request)
+    _chat_or_404(services, chat_id)
+    if services.access is None:
+        raise HTTPException(status_code=503, detail="The Telegram bot is not running.")
+    await services.access.leave(chat_id, actor=ACTOR)
+    return _back(chat_id)
+
+
+# ------------------------------------------------------------------ detail
+
+def _browse(services: Services, chat: Chat, params) -> dict:
+    try:
+        offset = max(int(params.get("offset") or 0), 0)
+        sender = int(params["sender"]) if params.get("sender") else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filter.") from None
+    source = params.get("source") if params.get("source") in (LIVE, IMPORT) else None
+    since = _day_start(services, params.get("since"))
+    until = _day_start(services, params.get("until"))
+    if until is not None:
+        until += 86400  # inclusive end day
+    query = (params.get("q") or "").strip()
+    page = services.messages.browse(chat.chat_id, query=query or None, sender_id=sender,
+                                    source=source, since=since, until=until,
+                                    offset=offset, limit=PAGE_SIZE)
+    filters = {"q": query, "sender": params.get("sender") or "",
+               "source": source or "", "since": params.get("since") or "",
+               "until": params.get("until") or ""}
+    return {"page": page, "filters": filters}
+
+
+@router.get("/chats/{chat_id}")
+async def chat_detail(request: Request, chat_id: int):
+    services = _services(request)
+    chat = _chat_or_404(services, chat_id)
+    if chat.chat_id != chat_id:
+        return RedirectResponse(f"/chats/{chat.chat_id}", status_code=303)
+    bot = services.status.bot
+    context = {
+        "chat": chat,
+        "aliases": services.chats.aliases_for(chat.chat_id),
+        "members": [m for m in services.members.list(chat.chat_id)
+                    if bot is None or m.user_id != bot.id],
+        "senders": services.messages.senders(chat.chat_id),
+        "live_count": services.messages.count(chat.chat_id, LIVE),
+        "import_count": services.messages.count(chat.chat_id, IMPORT),
+        **_browse(services, chat, request.query_params),
+        **(await _extra_detail(request, chat)),
+    }
+    return request.app.state.templates.TemplateResponse(request, "chat_detail.html", context)
+
+
+async def _extra_detail(request: Request, chat: Chat) -> dict:
+    """Hook for sections added by later features (imports)."""
+    providers = getattr(request.app.state, "chat_detail_extras", [])
+    context: dict = {}
+    for provider in providers:
+        context.update(provider(request.app.state.services, chat))
+    return context
+
+
+@router.get("/chats/{chat_id}/messages")
+async def messages_partial(request: Request, chat_id: int):
+    services = _services(request)
+    chat = _chat_or_404(services, chat_id)
+    context = {"chat": chat, **_browse(services, chat, request.query_params)}
+    return request.app.state.templates.TemplateResponse(request, "_messages.html", context)
+
+
+@router.post("/chats/{chat_id}/members/{user_id}/aliases")
+async def add_alias(request: Request, chat_id: int, user_id: int):
+    services = _services(request)
+    chat = _chat_or_404(services, chat_id)
+    alias = ((await request.form()).get("alias") or "").strip()
+    if alias:
+        services.members.add_alias(chat.chat_id, user_id, alias)
+    return _back(chat.chat_id)
+
+
+@router.post("/chats/{chat_id}/members/{user_id}/aliases/delete")
+async def remove_alias(request: Request, chat_id: int, user_id: int):
+    services = _services(request)
+    chat = _chat_or_404(services, chat_id)
+    alias = (await request.form()).get("alias") or ""
+    services.members.remove_alias(chat.chat_id, user_id, alias)
+    return _back(chat.chat_id)
+
+
+# ------------------------------------------------------------------ delete
+
+@router.post("/chats/{chat_id}/delete-messages")
+async def delete_messages(request: Request, chat_id: int):
+    """Two steps: the first POST shows how many messages would go; the
+    second (confirm=yes) deletes them."""
+    services = _services(request)
+    chat = _chat_or_404(services, chat_id)
+    form = await request.form()
+    scope = form.get("scope") or "all"
+    before_raw = form.get("before") or ""
+    source = form.get("source") if form.get("source") in (LIVE, IMPORT) else None
+    before = _day_start(services, before_raw) if scope == "older" else None
+    if scope == "older" and before is None:
+        raise HTTPException(status_code=400, detail="Choose a date.")
+
+    if form.get("confirm") != "yes":
+        count = services.messages.count_for_delete(chat.chat_id, before=before, source=source)
+        what = {None: "messages", LIVE: "live messages", IMPORT: "imported messages"}[source]
+        when = f" from before {before_raw}" if before is not None else ""
+        return request.app.state.templates.TemplateResponse(request, "confirm.html", {
+            "title": f"Delete {count} {what}{when}?",
+            "message": f"This permanently deletes {count} {what}{when} from "
+                       f"{chat.display_title}. It cannot be undone.",
+            "action": f"/chats/{chat.chat_id}/delete-messages",
+            "fields": {"scope": scope, "before": before_raw, "source": source or "",
+                       "confirm": "yes"},
+            "confirm_label": "Delete",
+            "cancel": f"/chats/{chat.chat_id}",
+        })
+
+    deleted = services.messages.delete_for_chat(chat.chat_id, before=before, source=source)
+    logger.info("Deleted %s messages (%s, before=%s, source=%s) from the web admin",
+                deleted, scope, before_raw or "-", source or "all",
+                extra={"chat_id": chat.chat_id})
+    return _back(chat.chat_id)

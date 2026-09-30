@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · Naruto</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <form method="post" action="/login" class="card login-card">
+    <h1><span aria-hidden="true">🍥</span> Naruto admin</h1>
+    {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+    <button type="submit" class="primary">Log in</button>
+  </form>
+</body>
+</html>

@@ -32,7 +32,8 @@
             <span class="badge {{ 'pending' if r.status == 'pending' else 'done' if r.status == 'sent' else 'disabled' }}">{{ r.status }}</span>
             <span class="small nowrap">{{ r.due_at|ts("%a %d %b, %H:%M") }}</span>
             <span class="small">{{ r.text }}</span>
-            {% if r.error %}<span class="error-text small">{{ r.error }}</span>{% endif %}
+            {% if r.error and r.status == "pending" %}<span class="error-text small">Not sent yet ({{ r.attempts }} {{ "try" if r.attempts == 1 else "tries" }}: {{ r.error }}){% if r.next_attempt_at %}; trying again {{ r.next_attempt_at|ts("%H:%M") }}{% endif %}</span>
+            {% elif r.error %}<span class="error-text small">{{ r.error }}</span>{% endif %}
             {% if r.status == "pending" %}
               <form method="post" action="/chats/{{ chat.chat_id }}/reminders/{{ r.id }}/cancel">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

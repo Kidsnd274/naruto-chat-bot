@@ -172,9 +172,14 @@ class SkillCommands:
             media_file_id=None, media_file_unique_id=None, media_meta={}, forwarded_from=None,
             reply_to_message_id=None, reply_to_row_id=None, reply_to_snippet=None, created_at=now)
         async with self.responder.chat_lock(chat.chat_id):
+            chat = self.responder.enabled_chat(chat.chat_id)
+            if chat is None:
+                return  # disabled while this waited its turn
             outcome = await self.responder.run(context.bot, chat, message, trigger, bot,
                                                skill="catchup", since=since, note=note,
                                                show_typing=False)
+        if not self.responder.still_enabled(chat, outcome):
+            return
         text = outcome.text or ("Nothing much happened since you last spoke."
                                 if outcome.status in ("ok", "empty") else FAILURE_TEXT)
         await self._deliver_privately(context.bot, chat, message, user, text)

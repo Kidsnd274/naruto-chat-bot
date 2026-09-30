@@ -261,8 +261,9 @@ class PeopleRepository:
             person_ids).rowcount
 
     def merge(self, source_id: int, target_id: int) -> Person:
-        """Fold ``source`` into ``target``: accounts and aliases move over; the
-        target keeps its name, or takes the source's if it has none."""
+        """Fold ``source`` into ``target``: accounts, aliases and memory notes
+        (with their history) move over; the target keeps its name, or takes
+        the source's if it has none."""
         if source_id == target_id:
             raise ValueError("Can't merge a person into themselves.")
         source, target = self.get(source_id), self.get(target_id)
@@ -277,6 +278,11 @@ class PeopleRepository:
                 (target_id, source_id))
             if not target.name and source.name:
                 self.db.execute("UPDATE people SET name = ? WHERE id = ?", (source.name, target_id))
+            # Notes are about the person, not one of their accounts. Only who
+            # they're about changes: content, lock and timestamps stay.
+            for table in ("memory_notes", "memory_note_history"):
+                self.db.execute(f"UPDATE {table} SET person_id = ? WHERE person_id = ?",
+                                (target_id, source_id))
             self.db.execute("DELETE FROM people WHERE id = ?", (source_id,))
             self._touch_person(target_id)
         return self.get(target_id)

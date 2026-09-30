@@ -73,6 +73,43 @@ def test_merge_moves_accounts_aliases_and_keeps_a_name(people):
         people.merge(main, main)
 
 
+def test_merging_people_keeps_their_memory_notes(services):
+    people, notes = services.people, services.notes
+    main = people.touch_live(7, "Alice", "alice")
+    second = people.touch_live(70, "Alice (work)", "alice_work")
+    kept = notes.add(A, "Alice is vegetarian", category="preference", person_id=main,
+                     created_by="member", actor="t")
+    moved = notes.add(A, "Alice's birthday is 3 March", category="date", person_id=second,
+                      source_row_ids=[5], created_by="bot", actor="t")
+    notes.set_locked(moved.id, True, actor="owner")
+    before = notes.get(moved.id)
+
+    people.merge(second, main)
+
+    about_alice = notes.for_chat(A, person_id=main)
+    assert {n.id for n in about_alice} == {kept.id, moved.id}
+    after = notes.get(moved.id)
+    assert (after.content, after.category, after.locked, after.source_row_ids,
+            after.created_by, after.updated_at) == (before.content, before.category, True,
+                                                     [5], "bot", before.updated_at)
+    orphans = services.db.scalar(
+        "SELECT COUNT(*) FROM memory_notes WHERE person_id = ?", (second,))
+    history = services.db.scalar(
+        "SELECT COUNT(*) FROM memory_note_history WHERE person_id = ?", (second,))
+    assert orphans == 0 and history == 0
+
+
+def test_moving_someones_last_account_moves_their_notes(services):
+    people, notes = services.people, services.notes
+    alice = people.touch_live(7, "Alice", "alice")
+    bob = people.touch_live(8, "Bob", None)
+    note = notes.add(A, "Bob is always late", category="running_joke", person_id=bob,
+                     created_by="bot", actor="t")
+    people.move_account(8, alice)  # Bob's only account: Bob is merged into Alice
+    assert notes.get(note.id).person_id == alice
+    assert [n.id for n in notes.for_chat(A, person_id=alice)] == [note.id]
+
+
 def test_split_and_move_account(people):
     main = people.touch_live(7, "Alice", "alice")
     other = people.touch_live(70, "Alice work", None)

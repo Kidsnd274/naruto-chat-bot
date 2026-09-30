@@ -71,10 +71,33 @@ class Responder:
                       since: int | None = None, note: str | None = None,
                       force_reply: bool = False) -> None:
         async with self._chat_locks[chat.chat_id]:
-            chat = self.services.chats.get(chat.chat_id) or chat  # may have changed meanwhile
-            outcome = await self.run(telegram_bot, chat, message, trigger, bot, skill=skill,
+            # The chat may have been disabled while this waited its turn.
+            current = self.enabled_chat(chat.chat_id)
+            if current is None:
+                logger.info("Not answering message %s: the chat was disabled meanwhile.",
+                            message.message_id)
+                return
+            outcome = await self.run(telegram_bot, current, message, trigger, bot, skill=skill,
                                      since=since, note=note, force_reply=force_reply)
-            await self.deliver(telegram_bot, chat, message, outcome)
+            if not self.still_enabled(current, outcome):
+                return
+            await self.deliver(telegram_bot, current, message, outcome)
+
+    def enabled_chat(self, chat_id: int) -> Chat | None:
+        """The chat as stored now, if the bot may still work there."""
+        chat = self.services.chats.get(chat_id)
+        return chat if chat is not None and chat.enabled else None
+
+    def still_enabled(self, chat: Chat, outcome: RunOutcome) -> bool:
+        """Checked after a run and before its answer is sent: the chat may
+        have been disabled while the model was busy."""
+        if self.enabled_chat(chat.chat_id) is not None:
+            return True
+        logger.info("Dropping the answer of run %s: the chat was disabled while it ran.",
+                    outcome.run_id)
+        self.services.runs.update(outcome.run_id,
+                                  error="Not sent: the chat was disabled while it ran.")
+        return False
 
     async def run(self, telegram_bot, chat: Chat, message: Message, trigger: StoredMessage,
                   bot: BotIdentity, *, skill: str = "banter", since: int | None = None,

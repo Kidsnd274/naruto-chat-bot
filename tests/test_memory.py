@@ -9,7 +9,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
 
 import fakes
 from fakes import ALICE, BOB, GROUP_ID, OWNER, FakeBot, ScriptedLLM, context, message, tool_call, update
@@ -336,6 +336,70 @@ async def test_due_reminders_are_sent_and_recorded(services, chat, bot):
     assert statuses == ["sent", "sent", "pending"]
     assert services.reminders.get(3).status == "failed"
     assert services.messages.get_live(GROUP_ID, 901).text.startswith("⏰ Reminder")
+
+
+class FlakyBot(FakeBot):
+    """Fails the next sends with the given errors, then works."""
+
+    def __init__(self, *errors):
+        super().__init__()
+        self.errors = list(errors)
+
+    async def send_message(self, chat_id, text, **kwargs):
+        if self.errors:
+            raise self.errors.pop(0)
+        return await super().send_message(chat_id, text, **kwargs)
+
+
+async def test_a_reminder_survives_a_telegram_outage(services, chat, monkeypatch):
+    now = 1_790_000_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    reminder = services.reminders.create(GROUP_ID, "Bring the grill", now - 5, created_by="t")
+    bot = FlakyBot(NetworkError("Connection reset"), TimedOut())
+    sender = ReminderSender(services, Recorder(services))
+
+    assert await sender.send_due(bot) == 0
+    stored = services.reminders.get(reminder.id)
+    assert (stored.status, stored.attempts, stored.next_attempt_at) == ("pending", 1, now + 30)
+    assert await sender.send_due(bot) == 0  # waits for its next attempt
+    now += 30
+    assert await sender.send_due(bot) == 0  # timed out: backs off further
+    stored = services.reminders.get(reminder.id)
+    assert (stored.status, stored.attempts, stored.next_attempt_at) == ("pending", 2, now + 60)
+
+    now += 60  # Telegram is back
+    assert await sender.send_due(bot) == 1
+    stored = services.reminders.get(reminder.id)
+    assert stored.status == "sent" and stored.error is None and stored.next_attempt_at is None
+    assert [s["text"] for s in bot.sent] == ["⏰ Reminder: Bring the grill"]
+    now += 3600
+    assert await sender.send_due(bot) == 0 and len(bot.sent) == 1  # never sent twice
+
+
+@pytest.mark.filterwarnings("ignore::telegram.warnings.PTBDeprecationWarning")  # RetryAfter(42)
+async def test_flood_limits_wait_as_long_as_telegram_asks(services, chat, monkeypatch):
+    now = 1_790_000_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    reminder = services.reminders.create(GROUP_ID, "Vote!", now - 5, created_by="t")
+    bot = FlakyBot(RetryAfter(42))
+    assert await ReminderSender(services, Recorder(services)).send_due(bot) == 0
+    stored = services.reminders.get(reminder.id)
+    assert stored.status == "pending" and stored.next_attempt_at == now + 43
+
+
+async def test_permanent_failures_stay_failed(services, chat, monkeypatch):
+    now = 1_790_000_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    kicked = services.reminders.create(GROUP_ID, "A", now - 5, created_by="t")
+    bot = FlakyBot(Forbidden("bot was kicked from the group chat"),
+                   BadRequest("Chat not found"), BadRequest("Chat not found"))  # + plain text
+    sender = ReminderSender(services, Recorder(services))
+    services.reminders.create(GROUP_ID, "B", now - 4, created_by="t")
+    assert await sender.send_due(bot) == 0
+    assert [r.status for r in services.reminders.for_chat(GROUP_ID)] == ["failed", "failed"]
+    assert services.reminders.get(kicked.id).error == "bot was kicked from the group chat"
+    now += 86400
+    assert await sender.send_due(bot) == 0 and bot.sent == []  # never tried again
 
 
 # ---------------------------------------------------------- describe_image

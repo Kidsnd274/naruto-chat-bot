@@ -407,6 +407,13 @@ ALTER TABLE imports ADD COLUMN notes_added INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE imports ADD COLUMN distill_error TEXT;
 """
 
+_V7_REMINDER_RETRIES = """
+-- A reminder Telegram couldn't take for a passing reason (network, time-out,
+-- flood limit) stays pending and is tried again after next_attempt_at.
+ALTER TABLE reminders ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE reminders ADD COLUMN next_attempt_at INTEGER;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -414,6 +421,7 @@ MIGRATIONS: list[str] = [
     _V4_PEOPLE,
     _V5_AGENT_TOOLS,
     _V6_MEMORY,
+    _V7_REMINDER_RETRIES,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

@@ -251,6 +251,34 @@ async def test_runs_in_one_chat_take_turns(services, wired, bot, chat):
     assert maximum == 1 and len(bot.sent) == 2
 
 
+async def test_a_queued_reply_is_dropped_when_the_chat_is_disabled(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Oi!")
+    msg = message(6, "@naruto_bot you there?")
+    await wired.recorder.on_message(update(msg), context(bot))
+    lock = wired.responder.chat_lock(GROUP_ID)
+    await lock.acquire()  # another run is answering in this chat
+    queued = asyncio.create_task(wired.responder.on_message(update(msg), context(bot)))
+    await asyncio.sleep(0.01)
+    services.chats.set_status(GROUP_ID, "disabled")
+    lock.release()
+    await queued
+    assert services.llm.calls == [] and bot.sent == []
+
+
+async def test_an_answer_is_not_sent_if_the_chat_was_disabled_meanwhile(services, wired, bot,
+                                                                         chat):
+    class DisablingLLM(ScriptedLLM):
+        async def chat(self, messages, **kwargs):
+            services.chats.set_status(GROUP_ID, "disabled")  # the owner, mid-run
+            return await super().chat(messages, **kwargs)
+
+    services.llm = DisablingLLM("Oi!")
+    await say(wired, bot, message(6, "@naruto_bot you there?"))
+    assert len(services.llm.calls) == 1 and bot.sent == []
+    run = services.runs.recent()[0][0]
+    assert run.error == "Not sent: the chat was disabled while it ran."
+
+
 # ----------------------------------------------------------- read tools
 
 def store(services, message_id, text, *, sender=(7, "Alice"), offset=0, source="live"):

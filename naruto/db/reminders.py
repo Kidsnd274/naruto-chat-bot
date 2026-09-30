@@ -25,6 +25,8 @@ class Reminder:
     sent_at: int | None
     sent_message_id: int | None
     error: str | None
+    attempts: int = 0  # failed sends so far
+    next_attempt_at: int | None = None  # after a passing failure
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Reminder":
@@ -66,9 +68,13 @@ class ReminderRepository:
             (chat_id,)) or 0)
 
     def due(self, now: int | None = None, limit: int = 20) -> list[Reminder]:
+        """Pending reminders whose time has come, except those waiting to be
+        tried again after a passing failure."""
+        now = now or now_ts()
         rows = self.db.query(
             "SELECT * FROM reminders WHERE status = 'pending' AND due_at <= ? "
-            "ORDER BY due_at LIMIT ?", (now or now_ts(), limit))
+            "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+            "ORDER BY due_at LIMIT ?", (now, now, limit))
         return [Reminder.from_row(row) for row in rows]
 
     def cancel(self, reminder_id: int) -> bool:
@@ -78,12 +84,19 @@ class ReminderRepository:
 
     def mark_sent(self, reminder_id: int, message_id: int | None) -> None:
         self.db.execute(
-            "UPDATE reminders SET status = 'sent', sent_at = ?, sent_message_id = ?, error = NULL "
-            "WHERE id = ?", (now_ts(), message_id, reminder_id))
+            "UPDATE reminders SET status = 'sent', sent_at = ?, sent_message_id = ?, error = NULL, "
+            "next_attempt_at = NULL WHERE id = ?", (now_ts(), message_id, reminder_id))
 
     def mark_failed(self, reminder_id: int, error: str) -> None:
-        self.db.execute("UPDATE reminders SET status = 'failed', error = ? WHERE id = ?",
+        self.db.execute("UPDATE reminders SET status = 'failed', error = ?, "
+                        "attempts = attempts + 1, next_attempt_at = NULL WHERE id = ?",
                         (error[:300], reminder_id))
+
+    def mark_retry(self, reminder_id: int, error: str, next_attempt_at: int) -> None:
+        """A passing failure: stays pending, tried again from next_attempt_at."""
+        self.db.execute("UPDATE reminders SET error = ?, attempts = attempts + 1, "
+                        "next_attempt_at = ? WHERE id = ? AND status = 'pending'",
+                        (error[:300], next_attempt_at, reminder_id))
 
     def delete_finished_before(self, cutoff: int) -> int:
         return self.db.execute(

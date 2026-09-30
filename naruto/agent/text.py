@@ -8,6 +8,10 @@ import re
 # (e.g. **[REPLY]**) since local models sometimes decorate the marker.
 _REPLY_MARKER = re.compile(r"^\s*\**\s*\[reply\]\s*\**\s*", re.IGNORECASE)
 
+# The model's way to send nothing more, when a tool already posted what was
+# asked for (e.g. a poll).
+_NO_REPLY_MARKER = re.compile(r"[*_]*\[\s*no[ _-]?reply\s*\][*_]*\s*", re.IGNORECASE)
+
 # The model sometimes imitates the transcript format and starts its answer
 # with "[123] Naruto (you) (18:05):".
 _TRANSCRIPT_PREFIX = re.compile(r"^\s*\[\d+\]\s*[^\n:]{0,80}?\([^)\n]*\)\s*:\s*")
@@ -63,9 +67,12 @@ def strip_internal_json(text: str) -> tuple[str, str | None]:
 
 
 def clean_model_output(text: str, bot_name: str = "") -> tuple[bool, str]:
-    """Strip imitated transcript prefixes and the [REPLY] marker (which may
-    come before or after such a prefix). Returns (should_reply, text)."""
-    text = text or ""
+    """Strip imitated transcript prefixes, the [REPLY] marker (which may
+    come before or after such a prefix) and [NO REPLY]: an answer that is
+    only that marker comes back empty. Returns (should_reply, text)."""
+    text = _NO_REPLY_MARKER.sub("", text or "")
+    if not text.strip(" \n*_`"):
+        return False, ""
     should_reply, text = parse_reply_marker(text)
     text = _TRANSCRIPT_PREFIX.sub("", text, count=1)
     if bot_name:
@@ -107,6 +114,26 @@ def estimate_message_tokens(messages: list[dict], image_tokens: int) -> int:
             text = str(content)
         total += _MESSAGE_OVERHEAD_TOKENS + estimate_text_tokens(text) + images * image_tokens
     return total
+
+
+def has_images(messages: list[dict]) -> bool:
+    return any(isinstance(m.get("content"), list)
+               and any(p.get("type") == "image_url" for p in m["content"]) for m in messages)
+
+
+def without_images(messages: list[dict], note: str) -> list[dict]:
+    """Copy of a request with every image replaced by ``note``, for a server
+    that doesn't accept images."""
+    result = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            result.append(message)
+            continue
+        texts = [part.get("text", "") if part.get("type") != "image_url" else note
+                 for part in content]
+        result.append({**message, "content": "\n".join(text for text in texts if text)})
+    return result
 
 
 def without_image_data(messages: list[dict]) -> list[dict]:

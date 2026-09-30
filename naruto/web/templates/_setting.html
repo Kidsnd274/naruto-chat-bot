@@ -16,6 +16,7 @@
       <label class="switch"><input id="input-{{ s.key }}" type="checkbox" name="value" value="on" {{ 'checked' if card.value else '' }}> Enabled</label>
     {% elif s.type == "choice" %}
       <select id="input-{{ s.key }}" name="value">
+        {% if s.nullable %}<option value="" {{ 'selected' if card.form_value == '' else '' }}>(server default)</option>{% endif %}
         {% for choice in s.choices %}<option value="{{ choice }}" {{ 'selected' if card.form_value == choice else '' }}>{{ choice }}</option>{% endfor %}
       </select>
     {% elif s.type in ("text", "json") %}

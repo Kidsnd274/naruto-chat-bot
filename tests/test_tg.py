@@ -346,6 +346,14 @@ def test_is_trigger(services):
     assert is_trigger(message(2, "sure", reply_to=message(1, "x", sender=fakes.BOT_USER)), identity)
     assert not is_trigger(message(3, "hey everyone"), identity)
     assert not is_trigger(message(4, "re", reply_to=message(1, "x", sender=BOB)), identity)
+    # Seen live: pinning the board produced a service message pointing at
+    # the bot's message, which looked like a reply to the bot.
+    board = message(90, "📌 Board", sender=fakes.BOT_USER)
+    pinned = message(91, None, sender=fakes.BOT_USER, reply_to=board, pinned_message=board)
+    assert not is_trigger(pinned, identity)
+    sticker = message(5, None, reply_to=board,
+                      sticker=Sticker("s", "su", 512, 512, False, False, "regular", emoji="😂"))
+    assert is_trigger(sticker, identity)  # a reply with media still counts
 
 
 async def run_message(wired, bot, msg):
@@ -361,7 +369,7 @@ async def test_mention_gets_threaded_reply_and_is_recorded(services, wired, bot)
     await run_message(wired, bot, message(11, "@naruto_bot when is it?"))
 
     assert len(llm.calls) == 1
-    assert llm.calls[0]["reasoning"] is False
+    assert llm.calls[0]["reasoning"] is True  # banter thinks briefly (Settings → reasoning)
     request = llm.calls[0]["messages"]
     assert request[-1]["content"].endswith("when is it?")
     assert "@naruto_bot" not in request[-1]["content"]

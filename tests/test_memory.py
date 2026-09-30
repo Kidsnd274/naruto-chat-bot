@@ -228,12 +228,13 @@ async def test_memory_and_digest_are_background(services, wired, bot, chat):
     await wired.recorder.on_message(update(msg), context(bot))
     await wired.responder.on_message(update(msg), context(bot))
     background = services.llm.calls[0]["messages"][1]["content"]
+    current = services.llm.calls[0]["messages"][2]["content"]
     assert ("Group memory (notes you keep):\n"
             "- [n1] The group does a BBQ every National Day (recurring plan)\n"
             "- [n2] Bob: Bob is vegetarian (group fact)") in background
     assert "What's been going on (digest, updated" in background
     assert "- Planning a BBQ for Sat" in background
-    assert "Pending reminders:\n- reminder 1:" in background and "Bring the grill" in background
+    assert "Pending reminders:\n- reminder 1:" in current and "Bring the grill" in current
 
 
 # ------------------------------------------------------------ memory tools
@@ -283,10 +284,26 @@ def test_parse_when(services):
     assert parse_when("in 2 hours", tz, now) == now + 7200
     assert parse_when("in 3 days", tz, now) == now + 3 * 86400
     assert parse_when("2026-10-02 09:00", tz) == 1_790_931_600  # UTC in the tests
+    # What models and people actually write.
+    assert parse_when("in 1 minute", tz, now) == now + 60
+    assert parse_when("in a minute", tz, now) == now + 60
+    assert parse_when("90 mins", tz, now) == now + 5400
+    assert parse_when("in 1h 30m", tz, now) == now + 5400
+    assert parse_when("in 1 hour and 15 minutes", tz, now) == now + 4500
+    assert parse_when("2 hours from now", tz, now) == now + 7200
+    # now is Mon 21 Sep 2026, 14:13:20 UTC
+    assert parse_when("17:30", tz, now) == 1_790_011_800  # later today
+    assert parse_when("9:00", tz, now) == 1_790_067_600  # already past: tomorrow
+    assert parse_when("tomorrow 9am", tz, now) == 1_790_067_600
+    assert parse_when("today at 5pm", tz, now) == 1_790_010_000
+    assert parse_when("tmr 12pm", tz, now) == 1_790_078_400
     with pytest.raises(Exception, match="Give a time"):
         parse_when("2026-10-02", tz)
     with pytest.raises(Exception, match="must look like"):
         parse_when("next tuesday-ish", tz)
+    for vague in ("5", "25:00", "13pm", "tomorrow"):
+        with pytest.raises(Exception, match="must look like"):
+            parse_when(vague, tz, now)
 
 
 async def test_set_and_cancel_reminders(services, bot, chat):
@@ -477,7 +494,8 @@ async def test_catchup_is_private(services, wired, bot):
     call = services.llm.calls[0]["messages"]
     assert "Your task: catch someone up" in call[0]["content"]
     assert "can you bring chips" in call[1]["content"] and "I'll be late" not in call[1]["content"]
-    assert "## Current request\nAlice (@alice) at" in call[-1]["content"]
+    assert "## Current request\nNow: " in call[-1]["content"]
+    assert "\nAlice (@alice) at" in call[-1]["content"]
     sent = bot.sent[-1]
     assert sent["api_kwargs"]["ephemeral_message_parameters"] == {"receiver_user_id": 7}
     assert sent["api_kwargs"]["reply_parameters"] == {"ephemeral_message_id": 9}

@@ -225,6 +225,15 @@ SETTINGS: tuple[Setting, ...] = (
         "Each skill's reasoning switch sets enable_thinking on top of this.",
         "json", None, nullable=True,
     ),
+    Setting(
+        "model.reasoning_effort", "model", "Reasoning effort",
+        "How much the model thinks when a skill's reasoning is on (sent as "
+        "reasoning_effort). Low keeps replies quick and is enough for picking the right "
+        "tool; higher helps long summaries. Server default: Halogen uses xhigh. Servers "
+        "that don't know it ignore it.",
+        "choice", "low", nullable=True,
+        choices=("none", "minimal", "low", "medium", "high", "xhigh"),
+    ),
     Setting("model.max_output_tokens", "model", "Max output tokens",
             "Upper limit on generated tokens per request, including reasoning.",
             "int", 2048, nullable=True, min=16, max=65536),
@@ -243,8 +252,9 @@ SETTINGS: tuple[Setting, ...] = (
             "Task and output format for normal chat replies.",
             "text", load_prompt("banter"), max=20000),
     Setting("skills.banter.reasoning", "persona", "Banter: reasoning",
-            "Let the model think before answering chat replies (slower).",
-            "bool", False),
+            "Let the model think before answering chat replies. A little slower, but local "
+            "models pick the right tool (reminders, polls, memory) far more reliably.",
+            "bool", True),
     Setting("skills.summarize.instructions", "persona", "Summarize: instructions",
             "Task and output format for /summary and summary requests.",
             "text", load_prompt("summarize"), max=20000),
@@ -280,13 +290,13 @@ SETTINGS: tuple[Setting, ...] = (
             "text", load_prompt("remind"), max=20000),
     Setting("skills.remind.reasoning", "persona", "Reminders: reasoning",
             "Let the model think before answering (slower, often better for this task).",
-            "bool", False),
+            "bool", True),
     Setting("skills.remember.instructions", "persona", "Memory: instructions",
             "Task and output format for /remember and “remember / forget / what do you remember”.",
             "text", load_prompt("remember"), max=20000),
     Setting("skills.remember.reasoning", "persona", "Memory: reasoning",
             "Let the model think before answering (slower, often better for this task).",
-            "bool", False),
+            "bool", True),
     # ------------------------------------------------------------- context
     Setting("context.recent_window", "context", "Recent-window size",
             "Minimum number of earlier messages shown before the current request.",

@@ -1,6 +1,6 @@
 """Prompt layout built by ContextBuilder (plan §9)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -58,8 +58,7 @@ def test_layout_system_context_then_current_request(services, builder, chat):
     skill = services.settings["skills.banter.instructions"]
     assert system["content"] == f"{persona}\n\n{rules}\n\n{skill}"
 
-    assert context["content"].startswith(
-        "## Chat\nGroup: BBQ crew (group)\nNow: Thu 28 May 2026, 21:26 (UTC+00:00)")
+    assert context["content"].startswith("## Chat\nGroup: BBQ crew (group)\n\n## Members\n")
     assert "- Alice (@alice)" in context["content"]
     assert "- Bob (no @username), also called Big B" in context["content"]
     assert "## Recent messages\n— Thu 28 May 2026 —\n" in context["content"]
@@ -67,9 +66,34 @@ def test_layout_system_context_then_current_request(services, builder, chat):
     assert "[2] Naruto (you) (20:27): Saturday!" in context["content"]
 
     assert current["content"] == (
-        "## Current request\n[3] Alice (@alice) at 20:28:\nwhat time?")
+        "## Current request\nNow: Thu 28 May 2026, 21:26 (UTC+00:00)\n"
+        "[3] Alice (@alice) at 20:28:\nwhat time?")
     assert "what time?" not in context["content"]  # the request appears once
     assert prompt.window_size == 2 and prompt.dropped == 0
+
+
+def test_prefix_stays_the_same_as_time_passes_and_people_talk(services, builder, chat):
+    """The server reuses its prompt cache only for an identical prefix: the
+    time now belongs in the current request, and members keep their order
+    whoever spoke last."""
+    add(services, 1, "when's the bbq?", sender=BOB)
+    add(services, 2, "saturday", offset=60)
+    first = add(services, 3, "@naruto_bot what time?", offset=120)
+    early = builder.build(chat, first, bot=services.status.bot, now=NOW)
+    add(services, 4, "ok", sender=BOB, offset=180)
+    services.members.upsert_live(CHAT, 8, "Bob", None, seen_at=T0 + 10**6)  # the latest speaker
+    services.boards.set_section(CHAT, "plans", ["BBQ"], actor="bot")  # the bot acted
+    services.reminders.create(CHAT, "Bring the grill", T0 + 86400, created_by="bot")
+    second = add(services, 5, "@naruto_bot and where?", offset=240)
+    later = builder.build(chat, second, bot=services.status.bot,
+                          now=NOW + timedelta(minutes=7))
+
+    assert later.messages[0] == early.messages[0]
+    assert later.messages[1]["content"].startswith(early.messages[1]["content"])
+    assert "Now: Thu 28 May 2026, 21:33" in later.messages[2]["content"]
+    assert "Bring the grill" in later.messages[2]["content"]
+    members = later.messages[1]["content"].split("## Members\n")[1].split("\n\n")[0]
+    assert members.splitlines() == ["- Alice (@alice)", "- Bob (no @username), also called Big B"]
 
 
 def test_bot_itself_is_not_listed_as_member(services, builder, chat):
@@ -154,10 +178,10 @@ def test_day_headers_follow_the_configured_timezone(services, builder, chat):
     add(services, 1, "late night", offset=0)            # 04:26 +08 on Fri
     add(services, 2, "next day", offset=86400)           # Sat
     trigger = add(services, 3, "@naruto_bot hi", offset=86400 + 60)
-    context = build(builder, services, chat, trigger).messages[1]["content"]
+    _, context, current = (m["content"] for m in build(builder, services, chat, trigger).messages)
     assert "— Fri 29 May 2026 —\n[1] Alice (04:26): late night" in context
     assert "— Sat 30 May 2026 —\n[2] Alice (04:26): next day" in context
-    assert "(UTC+08:00)" in context
+    assert "(UTC+08:00)" in current
 
 
 def test_window_prefix_is_stable_while_messages_arrive(services, builder, chat):

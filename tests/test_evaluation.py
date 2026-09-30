@@ -196,7 +196,8 @@ async def test_evaluate_scores_each_case():
     assert first.prompt[0]["role"] == "system"
     request = client.requests[0]
     assert request["stream"] is True and request["model"] == "fake"
-    assert request["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["extra_body"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["extra_body"]["reasoning_effort"] == "low"
     assert "create_poll" in [tool["function"]["name"] for tool in request["tools"]]
 
 

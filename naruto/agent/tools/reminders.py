@@ -1,6 +1,6 @@
 """Reminder tools: schedule a message in the group, or cancel one."""
 
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta
 import re
 import time
 
@@ -9,17 +9,57 @@ from naruto.db.reminders import PENDING
 
 MAX_PENDING_PER_CHAT = 50
 MAX_AHEAD_DAYS = 366
-_RELATIVE = re.compile(r"^in\s+(\d+)\s*(minute|min|hour|hr|day|week)s?$", re.IGNORECASE)
-_UNITS = {"minute": 60, "min": 60, "hour": 3600, "hr": 3600, "day": 86400, "week": 7 * 86400}
+# "in 2 hours", "in a minute", "90 mins", "1h 30m", "in 1 hour and 15 minutes"
+_AMOUNT = r"(\d+|an?)\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|wks?|w)"
+_RELATIVE = re.compile(rf"^(?:in\s+)?{_AMOUNT}(?:\s*(?:,|and)?\s*{_AMOUNT})?(?:\s+from\s+now)?$",
+                       re.IGNORECASE)
+_UNITS = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+# "17:30", "5:30pm", "5pm", optionally after "today" / "tomorrow"
+_CLOCK = re.compile(r"^(?:(today|tomorrow|tmr)\s+(?:at\s+)?)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?"
+                    r"\s*(am|pm)?$", re.IGNORECASE)
+
+
+def _relative(match: re.Match) -> int:
+    seconds = 0
+    for amount, unit in (match.group(1, 2), match.group(3, 4)):
+        if amount:
+            count = 1 if amount.lower() in ("a", "an") else int(amount)
+            seconds += count * _UNITS[unit[0].lower()]
+    return seconds
+
+
+def _clock(match: re.Match, tz, now: float) -> int | None:
+    day, hour_text, minute_text, half = match.groups()
+    if minute_text is None and half is None:
+        return None  # a bare "5" is not a time
+    hour, minute = int(hour_text), int(minute_text or 0)
+    if half:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if half.lower() == "pm" else 0)
+    if hour > 23 or minute > 59:
+        return None
+    today = datetime.fromtimestamp(now, tz).date()
+    date = today + timedelta(days=1) if day and day.lower() != "today" else today
+    when = datetime.combine(date, dtime(hour, minute), tz)
+    if not day and when.timestamp() <= now:
+        when += timedelta(days=1)  # "17:30" after 17:30 means tomorrow
+    return int(when.timestamp())
 
 
 def parse_when(value: str, tz, now: float | None = None) -> int:
-    """'2026-10-02 09:00' (local time) or 'in 2 hours' -> Unix time."""
+    """'2026-10-02 09:00' (local time), 'in 2 hours', '17:30' or
+    'tomorrow 9am' -> Unix time."""
     text = " ".join((value or "").strip().split())
     now = now or time.time()
     match = _RELATIVE.match(text)
     if match:
-        return int(now + int(match.group(1)) * _UNITS[match.group(2).lower()])
+        return int(now + _relative(match))
+    match = _CLOCK.match(text)
+    if match:
+        when = _clock(match, tz, now)
+        if when is not None:
+            return when
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         raise ToolError("Give a time as well, e.g. 2026-10-02 09:00.")
     try:
@@ -38,7 +78,8 @@ async def set_reminder(ctx: ToolContext, args: dict) -> str:
     due = parse_when(args["when"], tz)
     now = time.time()
     if due <= now + 30:
-        raise ToolError("That time is already past. Check today's date under Chat.")
+        raise ToolError("That time is already past. Check the time now in the current "
+                        "request.")
     if due > now + MAX_AHEAD_DAYS * 86400:
         raise ToolError("Reminders can be at most a year ahead.")
     if services.reminders.pending_count(ctx.chat.chat_id) >= MAX_PENDING_PER_CHAT:
@@ -69,7 +110,8 @@ TOOLS = [
         params({
             "when": {"type": "string",
                      "description": "YYYY-MM-DD HH:MM in the group's time zone, or 'in 30 "
-                                    "minutes' / 'in 2 hours' / 'in 3 days'."},
+                                    "minutes' / 'in 2 hours' / 'in 3 days', or 'tomorrow "
+                                    "09:00'."},
             "text": {"type": "string", "maxLength": 500,
                      "description": "What to remind the group of."},
         }, ("when", "text")),
@@ -77,7 +119,7 @@ TOOLS = [
     ),
     Tool(
         "cancel_reminder",
-        "Cancel a pending reminder (they are listed in the background).",
+        "Cancel a pending reminder (they are listed under Board, plans and reminders).",
         params({"reminder_id": {"type": "integer"}}, ("reminder_id",)),
         cancel_reminder,
     ),

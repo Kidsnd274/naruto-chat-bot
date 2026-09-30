@@ -9,9 +9,11 @@ from telegram import Poll, PollAnswer, PollOption
 
 import fakes
 from fakes import ALICE, BOB, GROUP_ID, FakeBot, ScriptedLLM, context, message, tool_call, update
+from naruto.agent.context import ImageInput
 from naruto.agent.runner import (
     DEADLINE_TEXT,
     FAILURE_TEXT,
+    IMAGES_REFUSED_NOTE,
     LAST_CALL_NOTE,
     STUCK_TEXT,
     AgentRunner,
@@ -353,16 +355,20 @@ def test_board_rendering_and_prompt(services, chat):
     assert board.as_text() == "🗓 Plans (plans)\n  ☑ BBQ\n  ☐ Pit"
 
 
-async def test_board_and_open_plans_are_background(services, wired, bot, chat):
+async def test_board_and_open_plans_come_with_the_request(services, wired, bot, chat):
+    """They change whenever the bot acts, so they sit next to the current
+    request rather than before the transcript (the server's prompt cache)."""
     services.boards.set_section(GROUP_ID, "questions", ["Who brings the grill?"], actor="t")
     services.plans.create(GROUP_ID, "BBQ", ["Sat 6pm"], run_id=None, proposed_for_user_id=7)
     services.llm = ScriptedLLM("Oi!")
     await say(wired, bot, message(6, "@naruto_bot status?"))
-    context_block = services.llm.calls[0]["messages"][1]["content"]
+    _, context_block, current = (m["content"] for m in services.llm.calls[0]["messages"])
+    assert current.startswith("## Board, plans and reminders\nWhat you keep for the group")
     assert "\n\nPinned board:\n❓ Open questions (questions)\n  • Who brings the grill?" \
-        in context_block
-    assert "## Background\nWhat you know beyond the recent messages." in context_block
-    assert "- plan 1: BBQ: Sat 6pm" in context_block
+        in current
+    assert "- plan 1: BBQ: Sat 6pm" in current
+    assert current.index("- plan 1") < current.index("## Current request")
+    assert "Pinned board" not in context_block and "## Background" not in context_block
 
 
 # ----------------------------------------------------------------- plans
@@ -533,3 +539,130 @@ async def test_a_chat_without_background_never_reads_about_one(services, wired, 
     await say(wired, bot, message(6, "@naruto_bot hi"))
     request = json.dumps(services.llm.calls[0]["messages"]).lower()
     assert "digest" not in request and "background" not in request
+
+
+# ------------------------------------------- answers that skip a needed tool
+
+async def test_claimed_reminder_without_the_tool_is_asked_again(services, wired, bot, chat):
+    """Seen live: "I've set a reminder" with no set_reminder call, and the
+    next requests copied that answer from the transcript."""
+    services.llm = ScriptedLLM(
+        "I've set a reminder for you to dance in 1 minute!",
+        [tool_call("set_reminder", {"when": "in 2 minutes", "text": "Dance!"})],
+        "[REPLY] Reminder set for 2 minutes from now!")
+    await say(wired, bot, message(6, "@naruto_bot remind me to dance in 2 minutes"))
+
+    assert bot.sent[-1]["text"] == "Reminder set for 2 minutes from now!"
+    assert [r.text for r in services.reminders.for_chat(GROUP_ID)] == ["Dance!"]
+    second = services.llm.calls[1]["messages"]
+    assert second[-2] == {"role": "assistant",
+                          "content": "I've set a reminder for you to dance in 1 minute!"}
+    assert second[-1]["role"] == "user" and "set_reminder" in second[-1]["content"]
+    run = services.runs.recent()[0][0]
+    assert [s["type"] for s in run.steps] == ["model", "check", "model", "tool", "model"]
+    assert run.status == "ok"
+
+
+async def test_no_second_try_when_the_tool_was_called(services, wired, bot, chat):
+    services.llm = ScriptedLLM(
+        [tool_call("set_reminder", {"when": "in 2 minutes", "text": "Dance!"})],
+        "Reminder set for 2 minutes from now!")
+    await say(wired, bot, message(6, "@naruto_bot remind me to dance in 2 minutes"))
+    assert len(services.llm.calls) == 2
+    assert bot.sent[-1]["text"] == "Reminder set for 2 minutes from now!"
+
+
+async def test_a_clarifying_question_is_not_asked_again(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Sure! What time tomorrow?")
+    await say(wired, bot, message(6, "@naruto_bot remind me to call mum tomorrow"))
+    assert len(services.llm.calls) == 1
+    assert bot.sent[-1]["text"] == "Sure! What time tomorrow?"
+
+
+async def test_the_check_runs_once_and_needs_requests_left(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Noted, I'll remember that!")
+    await say(wired, bot, message(6, "@naruto_bot remember that I'm vegetarian"))
+    assert len(services.llm.calls) == 2  # asked again once, then answered anyway
+    assert bot.sent[-1]["text"] == "Noted, I'll remember that!"
+
+    services.settings.set("agent.max_model_requests", 2, actor="t")
+    services.llm = ScriptedLLM("Noted, I'll remember that!")
+    await say(wired, bot, message(7, "@naruto_bot remember that I'm vegetarian", offset=10))
+    assert len(services.llm.calls) == 1  # no room for a call and an answer
+
+
+async def test_skills_without_the_tool_are_not_checked(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Here's the summary: Sam set a reminder for the pit booking.")
+    await wired.responder.respond(bot, chat, message(6, "/summary"),
+                                  store(services, 6, "/summary"), services.status.bot,
+                                  skill="summarize")
+    assert len(services.llm.calls) == 1
+
+
+# ------------------------------------------------------- [NO REPLY] marker
+
+async def test_no_reply_after_a_poll_sends_nothing_more(services, wired, bot, chat):
+    services.llm = ScriptedLLM(
+        [tool_call("create_poll", {"question": "Sunday or Monday?",
+                                   "options": ["Sunday", "Monday"]})],
+        "[NO REPLY]")
+    await say(wired, bot, message(6, "@naruto_bot make a poll, sunday or monday"))
+    assert len(bot.polls) == 1
+    assert bot.sent == []
+    assert "[NO REPLY]" in tool_results(services.llm, 1)[0]
+    run = services.runs.recent()[0][0]
+    assert run.status == "ok" and run.response is None
+
+
+async def test_no_reply_marker_is_never_posted(services, wired, bot, chat):
+    services.llm = ScriptedLLM(
+        [tool_call("create_poll", {"question": "Q?", "options": ["A", "B"]})],
+        "**[NO REPLY]** Vote away!")
+    await say(wired, bot, message(6, "@naruto_bot poll for A or B"))
+    assert bot.sent[-1]["text"] == "Vote away!"
+
+
+# ------------------------------------------------ servers without vision
+
+async def test_refused_images_are_dropped_and_asked_again(services, wired, bot, chat):
+    services.llm = ScriptedLLM(
+        LLMError("BadRequestError: this server does not accept images: the engine was "
+                 "started without a vision tower"),
+        "I can't see images right now, sorry!")
+    request = RunRequest(chat=chat, trigger=store(services, 6, "@naruto_bot what's this?"),
+                         bot=services.status.bot,
+                         images=[ImageInput(row_id=1, mime_type="image/png", base64="AAAA")])
+    outcome = await AgentRunner(services, bot).run(request)
+
+    assert outcome.text == "I can't see images right now, sorry!"
+    first, second = services.llm.calls
+    assert isinstance(first["messages"][-1]["content"], list)
+    assert second["messages"][-1]["content"].endswith(IMAGES_REFUSED_NOTE)
+    run = services.runs.recent()[0][0]
+    assert run.status == "ok" and run.steps[0]["purpose"].startswith("refused the images")
+
+
+async def test_other_model_errors_are_not_retried(services, wired, bot, chat):
+    services.llm = ScriptedLLM(LLMError("APIConnectionError"), "never")
+    request = RunRequest(chat=chat, trigger=store(services, 6, "@naruto_bot what's this?"),
+                         bot=services.status.bot,
+                         images=[ImageInput(row_id=1, mime_type="image/png", base64="AAAA")])
+    outcome = await AgentRunner(services, bot).run(request)
+    assert outcome.text == FAILURE_TEXT and len(services.llm.calls) == 1
+
+
+# ------------------------------------------------------- reasoning effort
+
+async def test_reasoning_effort_is_sent_only_with_reasoning(services):
+    client = LLMClient(services.settings, "key")
+    services.settings.set("model.name", "m", actor="t")
+    fake = OneShotClient(api_response("hi"))
+    client._get_client = lambda: fake
+    await client.chat([{"role": "user", "content": "x"}], reasoning=True)
+    assert fake.kwargs["extra_body"] == {"reasoning_effort": "low",
+                                         "chat_template_kwargs": {"enable_thinking": True}}
+    await client.chat([{"role": "user", "content": "x"}], reasoning=False)
+    assert fake.kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    services.settings.set("model.reasoning_effort", None, actor="t")  # the server decides
+    await client.chat([{"role": "user", "content": "x"}], reasoning=True)
+    assert "reasoning_effort" not in fake.kwargs["extra_body"]

@@ -45,6 +45,9 @@
       <li>
         {% if step.type == "switch" %}
           <strong>Handed over to the {{ step.skill }} skill</strong> <span class="muted small">(new prompt and tools)</span>
+        {% elif step.type == "check" %}
+          <strong>Asked again</strong> <span class="muted small">— the answer skipped a tool the request needs</span>
+          <pre class="prompt">{{ step.note }}</pre>
         {% elif step.type == "model" %}
           <strong>Model request {{ step.request }}</strong>{% if step.purpose is defined %} <span class="small">— {{ step.purpose }}</span>{% endif %}
           <span class="muted small">

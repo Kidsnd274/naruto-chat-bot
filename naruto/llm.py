@@ -183,6 +183,9 @@ class LLMClient:
         template_kwargs = dict(self.settings["model.chat_template_kwargs"] or {})
         if reasoning is not None:
             template_kwargs["enable_thinking"] = reasoning
+        effort = self.settings["model.reasoning_effort"]
+        if reasoning and effort:
+            extra_body["reasoning_effort"] = effort
         if template_kwargs:
             extra_body["chat_template_kwargs"] = template_kwargs
         if max_tokens is None:

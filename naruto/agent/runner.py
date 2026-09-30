@@ -11,14 +11,19 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 import logging
+import re
 
+from naruto.agent.claims import check_note, missing_actions
 from naruto.agent.context import ContextBuilder, ImageInput
 from naruto.agent.skills import Skill, get_skill
 from naruto.agent.text import (
     clean_model_output,
     estimate_text_tokens,
+    has_images,
+    strip_bot_mention,
     strip_internal_json,
     without_image_data,
+    without_images,
 )
 from naruto.agent.tools import RunState, ToolContext, ToolRegistry, default_registry
 from naruto.agent.tools.base import timed
@@ -34,7 +39,11 @@ DEADLINE_TEXT = "Sorry, that took too long. Please try again."
 STUCK_TEXT = "Sorry, I got stuck on that one. Could you ask again, a bit more specifically?"
 LAST_CALL_NOTE = ("[No more tool calls are available in this response. Write your answer "
                   "now with what you have.]")
+IMAGES_REFUSED_NOTE = "[The image can't be shown: the model server doesn't accept images.]"
 TRACE_TEXT_CHARS = 20_000
+# How OpenAI-compatible servers word a refused image (Halogen without a
+# vision tower, llama.cpp without an mmproj, text-only models).
+_IMAGES_REFUSED = re.compile(r"image|vision|multimodal|mmproj", re.IGNORECASE)
 
 
 @dataclass
@@ -134,11 +143,12 @@ class AgentRunner:
         totals = {"latency_ms": 0, "prompt_tokens": 0, "completion_tokens": 0}
         result: ChatResult | None = None
         switched = False
+        checked = False
 
         while True:
             state.model_requests += 1
             try:
-                result = await self._request(messages, tools, reasoning)
+                result = await self._request(messages, tools, reasoning, state)
             except LLMError as exc:
                 logger.error("Model request failed: %s", exc)
                 state.steps.append({"type": "model", "request": state.model_requests,
@@ -151,6 +161,21 @@ class AgentRunner:
 
             calls = result.tool_calls
             last_request = state.model_requests >= state.max_model_requests
+            if not calls and not checked and state.model_requests + 2 <= state.max_model_requests:
+                # One more try when the answer skipped the tool the request
+                # needs ("Reminder set!" without set_reminder). Two requests
+                # must be left: one for the call, one for the answer.
+                checked = True
+                missing = missing_actions(self._request_text(request), result.text or "",
+                                          allowed, self._done_tools(state))
+                if missing:
+                    note = check_note(missing)
+                    logger.info("The answer skipped a needed tool; asking again (%s).",
+                                ", ".join(check.tools[0] for check in missing))
+                    state.steps.append({"type": "check", "note": note})
+                    messages.append({"role": "assistant", "content": result.text or ""})
+                    messages.append({"role": "user", "content": note})
+                    continue
             if not calls or last_request:
                 if calls:
                     logger.info("Ignoring %s tool calls on the last allowed request.", len(calls))
@@ -198,7 +223,7 @@ class AgentRunner:
             logger.warning("The answer was internal JSON instead of a reply; asking again.")
             state.model_requests += 1
             try:
-                result = await self._request(messages, tools, reasoning)
+                result = await self._request(messages, tools, reasoning, state)
             except LLMError as exc:
                 logger.error("Model request failed: %s", exc)
                 return self._finish(state, status="error", text=FAILURE_TEXT, fallback=True,
@@ -237,10 +262,34 @@ class AgentRunner:
                             threaded=should_reply or request.force_reply,
                             result=result, totals=totals)
 
-    async def _request(self, messages: list[dict], tools: list[dict], reasoning) -> ChatResult:
+    async def _request(self, messages: list[dict], tools: list[dict], reasoning,
+                       state: RunState) -> ChatResult:
         llm = self.llm or self.services.llm
-        return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
-                              stream=self.stream)
+        try:
+            return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
+                                  stream=self.stream)
+        except LLMError as exc:
+            if not (has_images(messages) and _IMAGES_REFUSED.search(str(exc))):
+                raise
+            # A text-only model: answer without the images rather than not at all.
+            logger.warning("The model server refused images (%s); asking without them.", exc)
+            state.steps.append({"type": "model", "request": state.model_requests,
+                                "error": str(exc)[:500],
+                                "purpose": "refused the images; asked again without them"})
+            messages[:] = without_images(messages, IMAGES_REFUSED_NOTE)
+            return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
+                                  stream=self.stream)
+
+    @staticmethod
+    def _request_text(request: RunRequest) -> str:
+        """What the current request asks for, for the action check."""
+        text = strip_bot_mention(request.trigger.text or "", request.bot.username)
+        return f"{text}\n{request.note}" if request.note else text
+
+    @staticmethod
+    def _done_tools(state: RunState) -> set[str]:
+        return {step["name"] for step in state.steps
+                if step.get("type") == "tool" and not step.get("error")}
 
     # --------------------------------------------------------------- traces
 

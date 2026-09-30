@@ -14,6 +14,8 @@ from naruto.tg.plans import render_plan, send_plan
 logger = logging.getLogger(__name__)
 
 MAX_POLL_OPTIONS = 10
+# After posting something the group sees, the model may send nothing more.
+NOTHING_TO_ADD = "If there's nothing to add, answer with just [NO REPLY]; otherwise keep it short."
 
 
 async def update_board(ctx: ToolContext, args: dict) -> str:
@@ -25,7 +27,7 @@ async def update_board(ctx: ToolContext, args: dict) -> str:
     ctx.state.actions.append(f"updated the board ({section})")
     published = await BoardPublisher(ctx.services).publish(ctx.telegram, ctx.chat)
     return (f"{heading} now has {len(board.items(section))} items. {published} "
-            "The group can see the board, so don't repeat it in full.")
+            f"The group can see the board, so don't repeat it in full. {NOTHING_TO_ADD}")
 
 
 async def pin_message(ctx: ToolContext, args: dict) -> str:
@@ -77,8 +79,7 @@ async def propose_plan(ctx: ToolContext, args: dict) -> str:
     replaced = await _replace_older(ctx, plan)
     note = f" It replaces plan {', '.join(map(str, replaced))}." if replaced else ""
     return (f"Posted plan {plan.id} with Confirm / Change buttons.{note} Once someone confirms "
-            "it, it goes on the board. Don't repeat the plan in your answer; a short line is "
-            "enough.")
+            f"it, it goes on the board. Don't repeat the plan in your answer. {NOTHING_TO_ADD}")
 
 
 async def _replace_older(ctx: ToolContext, plan) -> list[int]:
@@ -123,7 +124,7 @@ async def create_poll(ctx: ToolContext, args: dict) -> str:
     ctx.recorded(sent)
     ctx.state.actions.append("created a poll")
     return (f"The poll is up: {kwargs['question']} ({', '.join(options)}). Votes will show "
-            "in the chat history. Keep your answer short.")
+            f"in the chat history. {NOTHING_TO_ADD}")
 
 
 TOOLS = [

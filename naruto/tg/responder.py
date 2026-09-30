@@ -19,7 +19,7 @@ from naruto.agent.runner import FAILURE_TEXT, AgentRunner, RunOutcome, RunReques
 from naruto.db.chats import Chat
 from naruto.db.messages import StoredMessage
 from naruto.services import BotIdentity, Services
-from naruto.tg.recorder import GROUP_TYPES, Recorder
+from naruto.tg.recorder import GROUP_TYPES, Recorder, has_content
 from naruto.tg.sending import send_text, typing
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,11 @@ __all__ = ["FAILURE_TEXT", "Responder", "is_trigger"]
 
 def is_trigger(message, bot: BotIdentity) -> bool:
     """A mention of the bot in the text or caption, or a reply to one of its
-    messages. Bare media without a mention is stored silently."""
+    messages. Bare media without a mention is stored silently; service
+    messages (e.g. "Naruto pinned a message", which points at the pinned
+    bot message) never trigger."""
+    if not has_content(message):
+        return False
     text = (message.text or message.caption or "").lower()
     if bot.username and f"@{bot.username.lower()}" in text:
         return True

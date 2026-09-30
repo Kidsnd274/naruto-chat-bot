@@ -16,13 +16,10 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 
 ### 2. `.env`
 
-`.env` holds only secrets and bootstrap values. Everything else is a setting in the database, edited in the web admin.
+`.env` holds only secrets and bootstrap values. Everything else is a setting in the database, edited in the web admin. Start from the commented template:
 
-```env
-TELEGRAM_BOT_TOKEN=123456:ABC...
-OPENAI_API_KEY=anything-for-a-local-server
-ADMIN_PASSWORD=choose-a-long-password
-OWNER_USER_ID=123456789
+```bash
+cp .env.example .env
 ```
 
 | Variable | Description | Default |

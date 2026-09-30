@@ -27,9 +27,14 @@
     {% else %}
       <p><span class="dot bad"></span> Unreachable</p>
     {% endif %}
-    <p class="muted"><code>{{ endpoint }}</code></p>
-    <p>Model: <code>{{ model_name or (status.llm_models[0] ~ ' (first listed)' if status.llm_models else 'not set') }}</code></p>
-    {% if status.llm_models %}<p class="muted">Served: {{ status.llm_models|join(", ") }}</p>{% endif %}
+    <p class="model-name muted"><code>{{ endpoint }}</code></p>
+    <p class="model-name">Model: <code>{{ model_name or (status.llm_models[0] ~ ' (first listed)' if status.llm_models else 'not set') }}</code></p>
+    {% if status.llm_models %}
+      <p class="muted">Served ({{ status.llm_models|length }}):</p>
+      <ul class="served-models muted small" tabindex="0" aria-label="Served models">
+        {% for model in status.llm_models %}<li>{{ model }}</li>{% endfor %}
+      </ul>
+    {% endif %}
     {% if status.llm_error %}<p class="error-text">{{ status.llm_error }}</p>{% endif %}
     <p class="muted">Requests: {{ llm.in_flight }} running, {{ llm.waiting }} waiting · checked {{ status.llm_checked_at|ago }}</p>
     <button class="small" hx-post="/model/check" hx-target="#status" hx-swap="outerHTML">Check now</button>

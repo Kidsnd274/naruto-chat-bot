@@ -1,0 +1,1 @@
+Describe this image for a group chat assistant who can't see it. Say what it shows: the scene, people and objects, what is happening, and any text in it (quote it exactly). Include the details someone might ask about later. Be factual and concise: at most 120 words of plain text.

@@ -8,16 +8,33 @@ from telegram.ext import ContextTypes
 
 from naruto.db.chats import Chat
 from naruto.services import Services
-from naruto.tg.content import media_of, sender_of, to_new_message
+from naruto.tg.content import ephemeral_message_id, media_of, sender_of, to_new_message
 
 logger = logging.getLogger(__name__)
 
 GROUP_TYPES = ("group", "supergroup")
+# Commands that ask the bot for something the group sees: stored like any
+# message, so the answer has something to reply to and later requests see
+# what was asked. Other commands (and ephemeral ones) are not stored.
+RECORDED_COMMANDS = {"summary", "plan", "questions", "remember", "remind"}
 
 
 def is_command(message) -> bool:
     entities = getattr(message, "entities", None) or ()
     return any(e.type == MessageEntity.BOT_COMMAND and e.offset == 0 for e in entities)
+
+
+def command_name(message) -> str | None:
+    """The command without the slash or bot name: "summary" for "/summary@bot today"."""
+    if not is_command(message):
+        return None
+    word = (message.text or "").split(maxsplit=1)[0]
+    return word[1:].split("@", 1)[0].lower()
+
+
+def records_command(message) -> bool:
+    return (command_name(message) in RECORDED_COMMANDS
+            and ephemeral_message_id(message) is None)
 
 
 def has_content(message) -> bool:
@@ -69,7 +86,7 @@ class Recorder:
                     self.services.members.upsert_live(
                         chat.chat_id, user.id, user.full_name or user.username or f"User {user.id}",
                         user.username, is_bot=user.is_bot)
-        if is_command(message) or not has_content(message):
+        if not has_content(message) or (is_command(message) and not records_command(message)):
             return
         self.record(chat, message)
 

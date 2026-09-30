@@ -38,6 +38,24 @@ def _member(row, person: Person) -> Member:
     )
 
 
+def _names(member: Member) -> list[str]:
+    values = [member.display_name, member.telegram_name or "", member.export_name or "",
+              member.username or "", *member.aliases]
+    return [value.lower() for value in values if value]
+
+
+def match_members(members: list[Member], text: str) -> list[Member]:
+    """Members matching a name, @username or alias. Exact matches win over
+    partial ones (a first name matches "Alice Tan")."""
+    needle = (text or "").strip().lstrip("@").lower()
+    if not needle:
+        return []
+    exact = [m for m in members if needle in _names(m)]
+    if exact:
+        return exact
+    return [m for m in members if any(needle in name for name in _names(m))]
+
+
 class MemberRepository:
     def __init__(self, db: Database, people: PeopleRepository):
         self.db = db

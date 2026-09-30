@@ -6,6 +6,7 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 - **Approve once.** A group the bot is added to stays pending until the owner approves it. Pending and disabled groups get no replies and nothing is recorded.
 - **Remembers the chat.** Every message in an enabled group is stored (text, sender, replies, media as markers such as `[photo]`), with full-text search. Images are only downloaded when someone asks about one.
 - **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, post a plan with Confirm / Change buttons, start polls and pin messages. Each answer is a bounded agent run: a few model requests and tool calls at most.
+- **Remembers the group.** A rolling digest of what's going on and long-term memory notes (people's preferences, traditions, running jokes) survive after old messages are deleted by the retention setting. Members can ask it to remember or forget things, and the owner can edit everything in the web admin.
 - **Web admin** on localhost: dashboard, chats, message browser, board, agent traces, settings, logs.
 
 ## Setup
@@ -87,13 +88,29 @@ What it can do when asked, besides chatting:
 - **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
 - **Pins** ("pin the address").
+- **Memory:** "remember that Sam is vegetarian", "forget that", "what do you remember about me?". It also picks up durable facts on its own while it updates the digest (Settings → Memory → Automatic notes), and never keeps health, money or relationship details unless asked to.
+- **Reminders** ("remind us Saturday at 5pm to bring the grill"), posted in the group when due.
+- **Older images:** "what was in the photo Bob sent this morning?" It downloads the image on demand, describes it once and keeps the description (never the image).
+
+Commands (each goes straight to a focused skill):
+
+| Command | What it does |
+| --- | --- |
+| `/summary` | Summarize the recent discussion. `/summary today`, `/summary yesterday`, `/summary 3h`, `/summary 2 days`, `/summary <topic>`, or reply to a message with `/summary` to summarize everything since it. |
+| `/catchup` | Only you see it (ephemeral): what you missed since you last spoke. If Telegram refuses the private reply, it comes as a DM, or in the group as a last resort. |
+| `/plan` | Pull the plan being discussed together and post it with Confirm / Change buttons, putting open points on the board. |
+| `/questions` | List the open questions and keep them on the board. |
+| `/board` | Show the board again (a new pinned message). |
+| `/remember <fact>` | Save a memory note (or reply to a message with `/remember`). |
+| `/remind <when> <what>` | Set a reminder. |
 
 **Web admin** (`http://127.0.0.1:8765/`):
 
 | Page | What it does |
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
-| Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion. |
+| Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), the digest (view, edit, update now), reminders, the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion (messages, digest, board, memory). |
+| Memory (per chat) | Every memory note: filter by person, category or text; add, edit, lock (the bot and members can't change a locked note) and delete; each note shows who created it, the messages it came from and its change history. |
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
@@ -109,7 +126,9 @@ The bot only sees messages from when it joined. To give it older history:
 3. Under **People in this export**, check the names: each sender is matched to their Telegram account, and the name box starts with the name the export uses (your contact name for them). Pick "Same person as" if someone is really another entry.
 4. Click **Import**.
 
-Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. The uploaded file is deleted when the import finishes. You can also import into a group the bot hasn't joined yet; it is created as pending.
+Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. You can also import into a group the bot hasn't joined yet; it is created as pending.
+
+After the import, the bot reads the **whole** export in chunks, including messages older than the retention period, and turns what's worth remembering into memory notes; if the group has no digest yet, it builds the first one from the import's last two weeks. The Import page shows the progress. This keeps the model busy for a while (replies to people still go first); turn it off under Settings → Import. The uploaded file is deleted when everything is done.
 
 ### Evaluating models
 
@@ -134,7 +153,7 @@ See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the c
 .venv/bin/python -m pytest
 ```
 
-The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `web/` (FastAPI admin), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
+The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls, commands, reminders), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `memory/` (digest and notes upkeep, import distillation), `web/` (FastAPI admin), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
 
 ### Upgrading from the Redis version
 

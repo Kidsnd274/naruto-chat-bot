@@ -38,6 +38,11 @@ class ImportRecord:
     created_at: int
     started_at: int | None
     finished_at: int | None
+    distill_status: str | None = None  # running | done | failed | skipped
+    distill_total: int = 0
+    distill_done: int = 0
+    notes_added: int = 0
+    distill_error: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ImportRecord":
@@ -50,6 +55,12 @@ class ImportRecord:
         if not self.total:
             return 0
         return min(100, int(self.processed * 100 / self.total))
+
+    @property
+    def distill_percent(self) -> int:
+        if not self.distill_total:
+            return 0
+        return min(100, int(self.distill_done * 100 / self.distill_total))
 
 
 class ImportRepository:
@@ -88,4 +99,9 @@ class ImportRepository:
         placeholders = ", ".join("?" for _ in statuses)
         rows = self.db.query(f"SELECT * FROM imports WHERE status IN ({placeholders}) "
                              "ORDER BY id", statuses)
+        return [ImportRecord.from_row(row) for row in rows]
+
+    def with_distill_status(self, status: str) -> list[ImportRecord]:
+        rows = self.db.query("SELECT * FROM imports WHERE distill_status = ? ORDER BY id",
+                             (status,))
         return [ImportRecord.from_row(row) for row in rows]

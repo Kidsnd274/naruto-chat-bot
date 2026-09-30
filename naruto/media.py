@@ -280,3 +280,64 @@ async def extract_attachments(
             type(exc).__name__,
         )
         return [], "[media unavailable: conversion failed]"
+
+
+# Stored media kinds that can be turned into an image, with the MIME type to
+# assume when the stored metadata has none.
+_STORED_KINDS = {
+    "photo": "image/jpeg",
+    "sticker": "image/webp",
+    "animation": "video/mp4",
+    "video": "video/mp4",
+    "video_note": "video/mp4",
+    "document": "",
+}
+
+
+def stored_media_supported(kind: str | None, meta: dict | None) -> bool:
+    if kind not in _STORED_KINDS:
+        return False
+    if kind == "document":
+        mime = (meta or {}).get("mime_type") or ""
+        return mime.startswith("image/") or mime.startswith("video/")
+    return True
+
+
+async def extract_stored(bot, kind: str, file_id: str, meta: dict | None,
+                         max_bytes: int) -> tuple[dict | None, str | None]:
+    """Download a stored message's media by its Telegram file_id and turn it
+    into one image. Returns ``(attachment, failure_marker)``; nothing is
+    kept on disk."""
+    meta = meta or {}
+    mime = meta.get("mime_type") or _STORED_KINDS.get(kind) or "application/octet-stream"
+    if kind == "sticker":
+        mime = ("application/x-tgsticker" if meta.get("animated")
+                else "video/webm" if meta.get("video") else "image/webp")
+    try:
+        declared = meta.get("file_size")
+        if declared and declared > max_bytes:
+            raise MediaTooLarge
+        telegram_file = await bot.get_file(file_id)
+        _check_declared_size(telegram_file, max_bytes)
+        output = BytesIO()
+        await telegram_file.download_to_memory(out=output)
+        data = output.getvalue()
+        if len(data) > max_bytes:
+            raise MediaTooLarge
+        if mime == "application/x-tgsticker":
+            frame = await asyncio.to_thread(_render_tgs_frame, data)
+            converted = await asyncio.to_thread(_normalize_frame, frame)
+        elif mime.startswith("video/") or mime == "image/gif":
+            frame = await asyncio.to_thread(_extract_video_frame, data, mime,
+                                            float(meta.get("duration") or 0))
+            converted = await asyncio.to_thread(_normalize_frame, frame)
+        else:
+            converted = await asyncio.to_thread(_inspect_or_normalize_image, data)
+    except MediaTooLarge:
+        return None, "[media unavailable: too large]"
+    except Exception as exc:
+        logger.warning("Could not download or convert stored %s (%s)", kind, type(exc).__name__)
+        return None, "[media unavailable: download or conversion failed]"
+    data, mime_type, width, height = converted
+    return {"kind": kind, "mime_type": mime_type, "width": width, "height": height,
+            "base64": base64.b64encode(data).decode("ascii")}, None

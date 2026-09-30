@@ -63,17 +63,33 @@ class Responder:
         await self.respond(context.bot, chat, message, trigger, bot)
 
     async def respond(self, telegram_bot, chat: Chat, message: Message,
-                      trigger: StoredMessage, bot: BotIdentity, *, skill: str = "banter") -> None:
+                      trigger: StoredMessage, bot: BotIdentity, *, skill: str = "banter",
+                      since: int | None = None, note: str | None = None,
+                      force_reply: bool = False) -> None:
         async with self._chat_locks[chat.chat_id]:
             chat = self.services.chats.get(chat.chat_id) or chat  # may have changed meanwhile
-            async with typing(telegram_bot, message.chat_id):
-                images = await self._images(message, trigger)
-                runner = AgentRunner(self.services, telegram_bot,
-                                     record_sent=self.recorder.record_sent)
-                outcome = await runner.run(RunRequest(
-                    chat=chat, trigger=trigger, bot=bot, skill=skill, images=images,
-                    trigger_message_id=message.message_id))
+            outcome = await self.run(telegram_bot, chat, message, trigger, bot, skill=skill,
+                                     since=since, note=note, force_reply=force_reply)
             await self.deliver(telegram_bot, chat, message, outcome)
+
+    async def run(self, telegram_bot, chat: Chat, message: Message, trigger: StoredMessage,
+                  bot: BotIdentity, *, skill: str = "banter", since: int | None = None,
+                  note: str | None = None, force_reply: bool = False,
+                  show_typing: bool = True) -> RunOutcome:
+        """One agent run, without sending the answer. Callers that don't use
+        respond() hold chat_lock() around it."""
+        images = await self._images(message, trigger) if trigger.id else []
+        runner = AgentRunner(self.services, telegram_bot, record_sent=self.recorder.record_sent)
+        request = RunRequest(chat=chat, trigger=trigger, bot=bot, skill=skill, images=images,
+                             trigger_message_id=message.message_id or None, since=since,
+                             note=note, force_reply=force_reply)
+        if not show_typing:
+            return await runner.run(request)
+        async with typing(telegram_bot, message.chat_id):
+            return await runner.run(request)
+
+    def chat_lock(self, chat_id: int) -> asyncio.Lock:
+        return self._chat_locks[chat_id]
 
     async def deliver(self, telegram_bot, chat: Chat, message: Message,
                       outcome: RunOutcome) -> list[Message]:

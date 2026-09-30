@@ -418,6 +418,26 @@ class MessageRepository:
             (chat_id, since, before.date, before.date, before.id, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
+    # ------------------------------------------------------ image descriptions
+
+    def descriptions(self, row_ids) -> dict[int, str]:
+        row_ids = [r for r in set(row_ids) if r is not None]
+        if not row_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in row_ids)
+        return {row[0]: row[1] for row in self.db.query(
+            "SELECT message_row_id, description FROM media_descriptions "
+            f"WHERE message_row_id IN ({placeholders})", row_ids)}
+
+    def save_description(self, message: StoredMessage, description: str,
+                         model: str | None) -> None:
+        self.db.execute(
+            "INSERT INTO media_descriptions (message_row_id, chat_id, description, model, "
+            "created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET "
+            "description = excluded.description, model = excluded.model, "
+            "created_at = excluded.created_at",
+            (message.id, message.chat_id, description, model, now_ts()))
+
     def update_media_meta(self, row_id: int, meta: dict) -> None:
         self.db.execute("UPDATE messages SET media_meta = ? WHERE id = ?",
                         (json.dumps(meta, ensure_ascii=False), row_id))

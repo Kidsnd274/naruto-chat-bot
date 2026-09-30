@@ -141,6 +141,16 @@ async def import_progress(request: Request, import_id: int):
         request, "_import_progress.html", {"record": record})
 
 
+@router.get("/import/{import_id}/distill")
+async def distill_progress(request: Request, import_id: int):
+    importer = _importer(request)
+    record = importer.repo.get(import_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Unknown import.")
+    return request.app.state.templates.TemplateResponse(
+        request, "_import_distill.html", {"record": record})
+
+
 @router.post("/import/{import_id}/start")
 async def start_import(request: Request, import_id: int):
     importer = _importer(request)

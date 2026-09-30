@@ -266,11 +266,12 @@ def store(services, message_id, text, *, sender=(7, "Alice"), offset=0, source="
     return services.messages.insert_live(record)
 
 
-async def run_tools(services, bot, chat, *calls, trigger_text="@naruto_bot go"):
+async def run_tools(services, bot, chat, *calls, trigger_text="@naruto_bot go", skill="banter"):
     trigger = store(services, 999, trigger_text, offset=10_000)
     llm = ScriptedLLM(list(calls), "Done.")
     runner = AgentRunner(services, bot, llm=llm)
-    outcome = await runner.run(RunRequest(chat=chat, trigger=trigger, bot=services.status.bot))
+    outcome = await runner.run(RunRequest(chat=chat, trigger=trigger, bot=services.status.bot,
+                                          skill=skill))
     return outcome, tool_results(llm, 1)
 
 
@@ -296,7 +297,8 @@ async def test_messages_around_and_earlier(services, bot, chat):
     _, results = await run_tools(
         services, bot, chat,
         tool_call("get_messages_around", {"message_id": rows[3].id, "before": 1, "after": 1}, "a"),
-        tool_call("get_earlier_messages", {"before_message_id": rows[2].id, "count": 5}, "b"))
+        tool_call("get_earlier_messages", {"before_message_id": rows[2].id, "count": 5}, "b"),
+        skill="summarize")
     assert [line.split("]")[0] for line in results[0].splitlines()] == [
         f"[{rows[2].id}", f"[{rows[3].id}", f"[{rows[4].id}"]
     assert [line.split(": ", 1)[1] for line in results[1].splitlines()[1:]] == [
@@ -368,7 +370,11 @@ async def test_plan_is_proposed_and_confirmed_onto_the_board(services, wired, bo
     services.llm = ScriptedLLM(
         [tool_call("propose_plan", {"title": "BBQ", "items": ["Sat 6pm", "East Coast"]})],
         "Plan's up!")
-    await say(wired, bot, message(6, "@naruto_bot lock it in"))
+    trigger_message = message(6, "/plan", command=True)
+    await wired.recorder.on_message(update(trigger_message), context(bot))
+    trigger = services.messages.get_live(GROUP_ID, 6)
+    await wired.responder.respond(bot, chat, trigger_message, trigger, services.status.bot,
+                                  skill="plan")
     proposal = bot.sent[-2]
     assert proposal["parse_mode"] == "HTML" and "📋 <b>Plan: BBQ</b>" in proposal["text"]
     buttons = proposal["reply_markup"].inline_keyboard[0]
@@ -399,7 +405,8 @@ async def test_plan_is_proposed_and_confirmed_onto_the_board(services, wired, bo
 async def test_a_new_proposal_replaces_an_open_one_with_the_same_title(services, bot, chat):
     _, results = await run_tools(services, bot, chat,
                                  tool_call("propose_plan", {"title": "BBQ", "items": ["Sat"]}, "a"),
-                                 tool_call("propose_plan", {"title": "bbq", "items": ["Sun"]}, "b"))
+                                 tool_call("propose_plan", {"title": "bbq", "items": ["Sun"]}, "b"),
+                                 skill="plan")
     assert "It replaces plan 1." in results[1]
     assert [p.status for p in services.plans.for_chat(GROUP_ID)] == ["proposed", "cancelled"]
     assert "Replaced by a newer plan" in bot.edits[-1]["text"]

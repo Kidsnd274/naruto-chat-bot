@@ -5,9 +5,14 @@
 - Only messages inside the imported-messages retention window are kept.
 - Re-importing a chat replaces its previous import once the new one has
   succeeded, so repeating an import is safe.
-- The uploaded file is deleted when the import finishes or is discarded.
+- Afterwards the whole export (older messages too) is read into group memory
+  notes, and the first digest is built if the chat has none (naruto.memory
+  .distill). Settings → Import can turn this off.
+- The uploaded file is deleted when the import (and distillation) finishes
+  or is discarded.
 
-The heavy work runs in a worker thread so the bot keeps answering.
+The heavy work runs in a worker thread so the bot keeps answering; the
+distillation's model requests wait while people are being answered.
 """
 
 import asyncio
@@ -35,6 +40,9 @@ from naruto.db.imports import (
 )
 from naruto.db.messages import IMPORT, NewMessage
 from naruto.importer.export_parser import ExportError, ExportReader
+from naruto.llm import LLMError
+from naruto.memory.distill import Distiller, DistillStopped
+from naruto.memory.notes import MemoryOutputError
 from naruto.services import Services
 
 logger = logging.getLogger(__name__)
@@ -283,12 +291,37 @@ class ImportService:
             chat, _ = self.services.chats.upsert_seen(chat_id, title=record.export_name)
         self.repo.update(import_id, status=RUNNING, chat_id=chat.chat_id, started_at=now_ts(),
                          processed=0, imported=0)
-        task = asyncio.create_task(asyncio.to_thread(self.run, import_id, chat.chat_id))
+        task = asyncio.create_task(self._job(import_id, chat.chat_id))
         self._tasks[import_id] = task
         task.add_done_callback(lambda _: self._tasks.pop(import_id, None))
 
-    def run(self, import_id: int, chat_id: int) -> None:
-        """The import job (runs in a worker thread)."""
+    async def _job(self, import_id: int, chat_id: int) -> None:
+        distill = self.services.settings["import.distill_memory"]
+        try:
+            ok = await asyncio.to_thread(self.run, import_id, chat_id, keep_file=distill)
+            if ok and distill:
+                await self.distill(import_id, chat_id)
+        finally:
+            self._delete_file(import_id)
+
+    async def distill(self, import_id: int, chat_id: int) -> None:
+        record = self.repo.get(import_id)
+        try:
+            await Distiller(self.services, self.repo).distill(record, chat_id, self._stopping)
+        except DistillStopped:
+            self.repo.update(import_id, distill_status="failed",
+                             distill_error="Stopped because the bot shut down.")
+        except (LLMError, MemoryOutputError) as exc:
+            self.repo.update(import_id, distill_status="failed",
+                             distill_error=f"The model kept failing: {exc}"[:500])
+        except Exception as exc:
+            logger.exception("Distilling import %s failed", import_id, extra={"chat_id": chat_id})
+            self.repo.update(import_id, distill_status="failed",
+                             distill_error=f"{type(exc).__name__}: {exc}"[:500])
+
+    def run(self, import_id: int, chat_id: int, *, keep_file: bool = False) -> bool:
+        """The import job (runs in a worker thread). Returns True on success;
+        ``keep_file`` leaves the upload for the distillation."""
         record = self.repo.get(import_id)
         messages = self.services.messages
         bot = self.services.status.bot
@@ -365,6 +398,7 @@ class ImportService:
             logger.info("Import %s done: %s imported, %s overlapped live history, %s outside "
                         "retention", import_id, counts["imported"], counts["overlap"],
                         counts["retention"], extra={"chat_id": chat_id})
+            return True
         except ImportCancelled:
             messages.delete_import(import_id)
             self.repo.update(import_id, status=FAILED, finished_at=now_ts(),
@@ -377,7 +411,9 @@ class ImportService:
                              error=f"{type(exc).__name__}: {exc}"[:500])
             logger.exception("Import %s failed", import_id, extra={"chat_id": chat_id})
         finally:
-            self._delete_file(import_id)
+            if not keep_file:
+                self._delete_file(import_id)
+        return False
 
     # ------------------------------------------------------------ lifecycle
 
@@ -403,6 +439,11 @@ class ImportService:
                              error="Interrupted by a restart. Upload the file again.")
             self._delete_file(record.id)
             logger.warning("Import %s was interrupted by a restart and rolled back", record.id)
+        for record in self.repo.with_distill_status("running"):
+            self.repo.update(record.id, distill_status="failed",
+                             distill_error="Interrupted by a restart. The messages were "
+                                           "imported; the notes found so far are kept.")
+            self._delete_file(record.id)
 
     def cleanup_stale_previews(self, max_age: int = STALE_PREVIEW_SECONDS) -> int:
         """Discard previews nobody started, so uploaded files don't linger."""

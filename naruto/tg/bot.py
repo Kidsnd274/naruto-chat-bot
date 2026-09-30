@@ -36,7 +36,9 @@ from naruto.tg.commands import GroupCommands
 from naruto.tg.plans import CALLBACK_PREFIX as PLAN_PREFIX, PlanButtons
 from naruto.tg.polls import PollTracker
 from naruto.tg.recorder import Recorder
+from naruto.tg.reminders import ReminderSender
 from naruto.tg.responder import Responder
+from naruto.tg.skill_commands import SkillCommands
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,14 @@ class ResilientBot(ExtBot):
 
 
 GROUP_COMMANDS = [
+    BotCommand("summary", "Summarize the chat: /summary, /summary today, /summary 3h"),
+    BotCommand("catchup", "Only you see it: what you missed since you last spoke",
+               api_kwargs={"is_ephemeral": True}),
+    BotCommand("plan", "Pull the plan together and propose it"),
+    BotCommand("questions", "List the open questions (kept on the board)"),
+    BotCommand("board", "Show the board of plans, decisions and open questions"),
+    BotCommand("remember", "Remember something: /remember Sam is vegetarian"),
+    BotCommand("remind", "Set a reminder: /remind Saturday 5pm bring the grill"),
     BotCommand("group_info", "Show who I know in this chat"),
     BotCommand("alias", "Give someone a nickname: /alias @user name"),
     BotCommand("removealias", "Remove a nickname: /removealias @user name"),
@@ -124,6 +134,8 @@ class TelegramBot:
         self.responder = Responder(services, self.recorder)
         self.plans = PlanButtons(services, self.board)
         self.polls = PollTracker(services)
+        self.skills = SkillCommands(services, self.responder, self.board)
+        self.reminders = ReminderSender(services, self.recorder)
         self._register()
 
     def _register(self) -> None:
@@ -151,6 +163,11 @@ class TelegramBot:
         app.add_handler(CommandHandler("removealias", self.commands.removealias, filters=groups))
         app.add_handler(CommandHandler("clearaliases", self.commands.clearaliases, filters=groups))
         app.add_handler(CommandHandler("group_info", self.commands.group_info, filters=groups))
+        for name, handler in (("summary", self.skills.summary), ("catchup", self.skills.catchup),
+                              ("plan", self.skills.plan), ("questions", self.skills.questions),
+                              ("board", self.skills.show_board),
+                              ("remember", self.skills.remember), ("remind", self.skills.remind)):
+            app.add_handler(CommandHandler(name, handler, filters=groups))
         app.add_handler(MessageHandler(
             filters.UpdateType.MESSAGE & groups & ~filters.COMMAND, self.responder.on_message))
         app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & private,

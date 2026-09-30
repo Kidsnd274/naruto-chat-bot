@@ -16,6 +16,7 @@ from naruto.db import open_database
 from naruto.importer.service import ImportService
 from naruto.jobs import start_background_jobs
 from naruto.logs import flush_periodically, set_level, setup_logging
+from naruto.memory.keeper import MemoryKeeper
 from naruto.services import Services
 from naruto.settings.seed import apply_seed_if_needed, collect_seed
 from naruto.tg.bot import TelegramBot
@@ -71,6 +72,7 @@ async def run() -> None:
     seed = collect_seed()
     services = Services.create(bootstrap, db, seed)
     apply_seed_if_needed(db, services.settings, services.chats, seed)
+    services.keeper = MemoryKeeper(services)
     services.imports = ImportService(
         services, Path(bootstrap.database_path).resolve().parent / "imports")
     services.imports.recover()
@@ -84,7 +86,7 @@ async def run() -> None:
     bot = TelegramBot(services)
     try:
         await bot.start()
-        tasks.extend(start_background_jobs(services))
+        tasks.extend(start_background_jobs(services, reminders=bot.reminders))
         logger.info("Bot started")
         if bootstrap.web_enabled:
             logger.info("Web admin on http://%s:%s/", bootstrap.web_host, bootstrap.web_port)

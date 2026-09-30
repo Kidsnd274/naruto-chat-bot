@@ -170,6 +170,11 @@ class PeopleRepository:
         return {user_id: people[person_id] for user_id, person_id in links.items()
                 if person_id in people}
 
+    def names_by_person(self, person_ids) -> dict[int, str]:
+        """person_id -> display name."""
+        people = self._load([p for p in set(person_ids) if p is not None])
+        return {person_id: person.display_name for person_id, person in people.items()}
+
     def display_names(self, user_ids) -> dict[int, str]:
         return {user_id: person.display_name
                 for user_id, person in self.for_users(user_ids).items()}

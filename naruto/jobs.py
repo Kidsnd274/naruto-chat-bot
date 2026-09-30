@@ -1,5 +1,5 @@
-"""Background jobs: retention cleanup, leaving unapproved groups, and the
-model health check."""
+"""Background jobs: retention cleanup, leaving unapproved groups, the model
+health check, due reminders and memory upkeep (digests and notes)."""
 
 import asyncio
 import logging
@@ -7,6 +7,7 @@ import time
 from typing import Awaitable, Callable
 
 from naruto.db.chats import PENDING
+from naruto.db.messages import IMPORT, LIVE
 from naruto.health import check_model
 from naruto.services import Services
 
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 DAY = 86400
 MAINTENANCE_INTERVAL_SECONDS = 3600
 HEALTH_INTERVAL_SECONDS = 60
+REMINDER_INTERVAL_SECONDS = 30
+UNREAD_GRACE_DAYS = 7
 
 # Extra cleanup steps for features added later. Each gets the services and
 # returns a short description of what it removed, or None.
@@ -36,6 +39,51 @@ def cleanup_agent_runs(services: Services) -> str | None:
         return None
     deleted = services.runs.delete_older_than(time.time() - days * DAY)
     return f"{deleted} agent runs" if deleted else None
+
+
+def _expire_messages(services: Services, source: str, days: int) -> int:
+    """Delete ``source`` messages older than ``days``. Messages the digest
+    hasn't read into memory yet get UNREAD_GRACE_DAYS more, so nothing is
+    lost while the model is busy or down."""
+    cutoff = int(time.time() - days * DAY)
+    grace_cutoff = cutoff - UNREAD_GRACE_DAYS * DAY
+    deleted = 0
+    for (chat_id,) in services.db.query(
+            "SELECT DISTINCT chat_id FROM messages WHERE source = ? AND date < ?",
+            (source, cutoff)):
+        digest = services.digests.get(chat_id)
+        read_until = digest.last_message_date if digest else None
+        if read_until is None:
+            threshold = grace_cutoff
+        else:
+            threshold = min(cutoff, max(read_until + 1, grace_cutoff))
+        deleted += services.messages.delete_for_chat(chat_id, before=threshold, source=source)
+    return deleted
+
+
+def cleanup_live_messages(services: Services) -> str | None:
+    days = services.settings["retention.live_messages_days"]
+    if days <= 0:
+        return None
+    deleted = _expire_messages(services, LIVE, days)
+    return f"{deleted} live messages" if deleted else None
+
+
+def cleanup_imported_messages(services: Services) -> str | None:
+    days = services.settings["retention.imported_messages_days"]
+    if days <= 0:
+        return None
+    deleted = _expire_messages(services, IMPORT, days)
+    return f"{deleted} imported messages" if deleted else None
+
+
+def cleanup_reminders(services: Services) -> str | None:
+    """Sent and cancelled reminders follow the live-message retention."""
+    days = services.settings["retention.live_messages_days"]
+    if days <= 0:
+        return None
+    deleted = services.reminders.delete_finished_before(int(time.time() - days * DAY))
+    return f"{deleted} old reminders" if deleted else None
 
 
 def cleanup_import_previews(services: Services) -> str | None:
@@ -62,7 +110,9 @@ async def leave_stale_pending(services: Services) -> int:
 
 async def run_maintenance(services: Services) -> None:
     done = []
-    for step in [cleanup_logs, cleanup_agent_runs, cleanup_import_previews, *cleanup_steps]:
+    for step in [cleanup_logs, cleanup_agent_runs, cleanup_live_messages,
+                 cleanup_imported_messages, cleanup_reminders, cleanup_import_previews,
+                 *cleanup_steps]:
         try:
             result = step(services)
         except Exception:
@@ -92,9 +142,16 @@ async def every(interval: float, job: Callable[[], Awaitable[None]], *, first_de
         await asyncio.sleep(interval)
 
 
-def start_background_jobs(services: Services) -> list[asyncio.Task]:
-    return [
+def start_background_jobs(services: Services, *, reminders=None) -> list[asyncio.Task]:
+    """``reminders`` sends due reminders (the Telegram bot's ReminderSender)."""
+    tasks = [
         asyncio.create_task(every(MAINTENANCE_INTERVAL_SECONDS,
                                   lambda: run_maintenance(services), first_delay=30)),
         asyncio.create_task(every(HEALTH_INTERVAL_SECONDS, lambda: check_model(services))),
     ]
+    if reminders is not None:
+        tasks.append(asyncio.create_task(every(REMINDER_INTERVAL_SECONDS, reminders.send_due,
+                                               first_delay=5)))
+    if services.keeper is not None:
+        tasks.append(asyncio.create_task(services.keeper.run_forever()))
+    return tasks

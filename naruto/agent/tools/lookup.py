@@ -3,32 +3,20 @@
 from datetime import date, datetime, time as dtime, timedelta
 
 from naruto.agent.tools.base import ToolContext, ToolError
-from naruto.db.members import Member
+from naruto.db.members import Member, match_members
 from naruto.db.messages import StoredMessage
 
 SELF_WORDS = {"me", "myself", "i", "sender"}
 
 
-def _names(member: Member) -> list[str]:
-    values = [member.display_name, member.telegram_name or "", member.export_name or "",
-              member.username or "", *member.aliases]
-    return [value.lower() for value in values if value]
-
-
 def find_members(ctx: ToolContext, text: str) -> list[Member]:
-    """Members of this chat matching a name, @username or alias. Exact
-    matches win over partial ones (a first name matches "Alice Tan")."""
-    needle = (text or "").strip().lstrip("@").lower()
-    if not needle:
-        return []
+    """Members of this chat matching a name, @username or alias; "me" is
+    the person asking."""
     members = [m for m in ctx.services.members.list(ctx.chat.chat_id)
                if m.user_id != ctx.bot.id]
-    if needle in SELF_WORDS and ctx.trigger.sender_id is not None:
+    if (text or "").strip().lower() in SELF_WORDS and ctx.trigger.sender_id is not None:
         return [m for m in members if m.user_id == ctx.trigger.sender_id]
-    exact = [m for m in members if needle in _names(m)]
-    if exact:
-        return exact
-    return [m for m in members if any(needle in name for name in _names(m))]
+    return match_members(members, text)
 
 
 def find_person(ctx: ToolContext, text: str) -> Member:

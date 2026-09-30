@@ -1,0 +1,49 @@
+<div class="grid two">
+  <section class="card" id="digest">
+    <div class="title-row">
+      <h2>Digest</h2>
+      <div class="actions">
+        <a class="button small" href="/chats/{{ chat.chat_id }}/memory">Memory: {{ note_count }} notes</a>
+        <form method="post" action="/chats/{{ chat.chat_id }}/digest/update">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="small">Update now</button>
+        </form>
+      </div>
+    </div>
+    <p class="muted small">
+      What's going on in the group right now, kept up to date as messages arrive and shown to the bot with every request.
+      {% if digest and digest.updated_at %}Updated {{ digest.updated_at|ago }} by {{ digest.updated_by }}.{% endif %}
+      {{ unread }} message{{ "s" if unread != 1 else "" }} not read into it yet.
+    </p>
+    {% if digest and digest.error %}<p class="error-text small">Last update failed {{ digest.failed_at|ago }}: {{ digest.error }}</p>{% endif %}
+    <form method="post" action="/chats/{{ chat.chat_id }}/digest">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <textarea name="text" rows="8" placeholder="No digest yet.">{{ digest.text if digest else "" }}</textarea>
+      <button type="submit" class="small">Save</button>
+    </form>
+  </section>
+
+  <section class="card" id="reminders">
+    <h2>Reminders</h2>
+    {% if reminders %}
+      <ul class="plain">
+        {% for r in reminders %}
+          <li class="row-actions">
+            <span class="badge {{ 'pending' if r.status == 'pending' else 'done' if r.status == 'sent' else 'disabled' }}">{{ r.status }}</span>
+            <span class="small nowrap">{{ r.due_at|ts("%a %d %b, %H:%M") }}</span>
+            <span class="small">{{ r.text }}</span>
+            {% if r.error %}<span class="error-text small">{{ r.error }}</span>{% endif %}
+            {% if r.status == "pending" %}
+              <form method="post" action="/chats/{{ chat.chat_id }}/reminders/{{ r.id }}/cancel">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="link small">Cancel</button>
+              </form>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted small">None. Members set them with /remind or by asking the bot.</p>
+    {% endif %}
+  </section>
+</div>

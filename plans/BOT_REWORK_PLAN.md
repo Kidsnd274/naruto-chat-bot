@@ -1,6 +1,6 @@
 # Bot rework plan
 
-Status: phases 1–3 implemented on branch `bot_rework` (phase 3 on 2026-10-01); phases 4–5 not started. See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
+Status: phases 1–4 implemented on branch `bot_rework` (phases 3–4 on 2026-10-01); phase 5 not started. See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
 
 ## 1. Goal
 
@@ -476,8 +476,26 @@ Checked 2026-09-30:
 - **Evaluation:** every case runs through the agent loop with a recording Telegram stand-in; `tool_calls` expectations are checked and tool calls appear in the report.
 - **Fix:** the web admin loads all templates once at startup (`auto_reload=False`). A running process had picked up an edited `base.html` that called `take_flashes()`, which its older Python code didn't provide ("'take_flashes' is undefined" on the dashboard).
 
+### Built (phase 4, 2026-10-01)
+
+- **Digest** (migration 6, `naruto/memory/keeper.py`): per chat, rewritten in the background once 60 new messages arrived, or 10 or more after a 30-minute quiet gap, or on request (`/summary`, the web admin). Each update reads the messages the digest hasn't seen (bounded by tokens; a long backlog takes several updates), and the model answers with JSON: the new digest plus note changes. Updates run at background priority (replies go first), back off 15 minutes after a failure, and are traced as agent runs (skill `digest`).
+- **Group memory notes:** per chat, attached to people (`person_id`), with category, source messages, creator, lock flag and full change history (deletions keep the last content). Written explicitly (`remember` / `forget` / `search_memory` tools, `/remember`), automatically during digest updates (Settings → Memory → Automatic notes), from imports, and by the owner. Automatic changes add and update but never delete, and never touch locked notes. Up to 40 notes go into each request, those about the people in the conversation and general notes first, in a stable order for the prompt cache.
+- **Prompt background** now also has the notes (`[n12]`), the digest and pending reminders, before the board and open plans (slowest-changing first).
+- **Skills** (`naruto/agent/skills.py`): banter (default), summarize, catchup, plan, questions, decide, remind, remember, each with its own instructions, reasoning switch (on for summarize, catchup, plan and questions) and tool subset. Commands pick a skill directly; for free-form mentions banter can hand over with `use_skill` (summarize, plan, questions, decide), which restarts the run with the new skill's prompt and tools within the same limits.
+- **Commands:** `/summary [today|yesterday|week|3h|2 days|<topic>]` (or as a reply: since that message), `/catchup` (ephemeral: since the sender's last message; falls back to a DM, then the group), `/plan`, `/questions`, `/board`, `/remember`, `/remind`. Visible skill commands are stored in the transcript and answered as a threaded reply.
+- **Reminders:** `set_reminder` / `cancel_reminder` (local `YYYY-MM-DD HH:MM` or "in 2 hours"), sent by a 30-second job (late ones say so), listed and cancellable on the chat page.
+- **describe_image:** downloads an older image by its `file_id`, describes it in a separate request (counted in the run's limits) and caches the description with the message; the transcript then shows `[photo: …]`. Imported media can't be described.
+- **Import distillation** (`naruto/memory/distill.py`): after an import, the whole export (including messages outside retention) is read in chunks into notes, then the first digest is built from the import's last 14 days if the chat has none. Progress and results on the import page; a restart or three failed parts in a row stops it (notes so far are kept).
+- **Retention:** live and imported messages past their retention are deleted by the hourly maintenance job; messages the digest hasn't read yet get 7 more days. Sent and cancelled reminders follow the live-message retention; image descriptions go with their messages.
+- **Web admin:** Memory page per chat; digest (view, edit, update now), reminders and memory link on the chat page; deleting the digest and all notes (two steps); distillation progress on the import page; skill hand-overs and image requests in run traces.
+- **Fix:** web admin notices were lost when a second one was queued before a page was shown (Starlette 1.7 sessions only save changes made through their own methods).
+
 ### Deviations from the plan
 
+- Banter keeps the everyday tools itself (memory, reminders, polls, pins, board, images) and only hands over to summarize, plan, questions and decide, which benefit from their own instructions and reasoning. A hand-over costs a request and a fresh prompt (the system prompt changes), so it is kept for the heavier tasks.
+- Automatic note changes never delete (only `forget` and the owner do), to avoid silently losing memory.
+- Retention runs hourly rather than daily, with a 7-day grace for messages the digest hasn't read.
+- Import distillation doesn't propose an initial board (optional in §6).
 - `get_recent_messages` is `get_earlier_messages` (reads back from a message, default: from the start of the recent window); the recent messages are already in the prompt, and the clearer name keeps the model from calling it for them.
 - `sendRichMessage` has no `reply_markup`, so plan proposals are ordinary HTML messages with an inline keyboard; only the board is a rich message.
 - Tools are offered on every request of a run (not dropped on the last one), because Qwen's chat template puts them in the system prompt and removing them would invalidate the server's prompt cache; the last request is steered by a note instead. `tool_choice` is not sent, since server support varies.
@@ -490,6 +508,10 @@ Checked 2026-09-30:
 
 ### Needs checking against live Telegram and Gufo
 
+- `/catchup`: a non-admin bot may only answer an ephemeral command within 15 seconds, and a catch-up with reasoning usually takes longer; check which fallback (DM or group) people get, or make the bot an admin.
+- Qwen3.8's JSON for digest updates and distillation (parsing tolerates code fences and prose; failures show on the Agent runs page and the chat's digest card), and how long a digest update takes (it holds the model while it runs, so a reply can wait up to that long).
+- Distillation time for a large export (one request per 6,000-token chunk).
+
 - python-telegram-bot 22.8 (latest) knows Bot API 10.0. Ephemeral commands and replies are sent through `api_kwargs` using the 10.3 fields (`BotCommand.is_ephemeral`, `ephemeral_message_parameters`, `reply_parameters.ephemeral_message_id`). Check that `/enable` in a group stays invisible and the reply arrives; if an incoming ephemeral message lacks `message_id`, `ResilientBot` patches it rather than stalling polling.
 - `getMe().can_read_all_group_messages` and pin-right detection in basic groups.
 - Gufo: served model ID (an empty `model.name` uses the first listed model), streaming for time to first token, `reasoning_content`, and image input with Qwen3.8.
@@ -499,6 +521,6 @@ Checked 2026-09-30:
 ### Next
 
 1. Deploy Gufo with Qwen3.8 27B, build ~20 cases from real exports with `python -m naruto.evaluation extract`, run them against 27B and Flash-Next, and settle the model (§11).
-2. Try phase 3 live: ask for a board update, a plan and a poll in a test group, and check the Agent runs page.
-3. Phase 4: digest, group memory and the Memory page, retention for live messages, skills and commands, `/catchup`, reminders, `describe_image`.
+2. Try phases 3–4 live in a test group: a board update, a plan, a poll, `/summary`, `/catchup`, `/remember`, `/remind`, a question about an older photo; then check the Agent runs, Memory and chat pages. Re-import an export to see distillation.
+3. Tune the persona and skill prompts from real use (phase 5), and decide on progress placeholders and per-chat overrides.
 

@@ -85,6 +85,7 @@
 </div>
 
 {% block extra_sections %}
+  {% if digest is defined %}{% include "_chat_memory.html" %}{% endif %}
   {% if board is defined %}{% include "_chat_board.html" %}{% endif %}
   {% if imports is defined %}{% include "_chat_imports.html" %}{% endif %}
 {% endblock %}
@@ -113,7 +114,7 @@
 
 <section class="card danger-zone">
   <h2>Delete data</h2>
-  <p class="muted">Deletion is permanent. You'll see how many messages are affected before anything is deleted.</p>
+  <p class="muted">Deletion is permanent. You'll see what is affected before anything is deleted.</p>
   <form method="post" action="/chats/{{ chat.chat_id }}/delete-messages" class="filters">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <select name="scope">
@@ -128,9 +129,19 @@
     </select>
     <button type="submit" class="danger">Review deletion</button>
   </form>
-  <form method="post" action="/chats/{{ chat.chat_id }}/board/clear" class="filters">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="danger">Clear the board…</button>
-  </form>
+  <div class="actions">
+    <form method="post" action="/chats/{{ chat.chat_id }}/board/clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Clear the board…</button>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/digest/clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Clear the digest…</button>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/memory-clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Delete all memory notes…</button>
+    </form>
+  </div>
 </section>
 {% endblock %}

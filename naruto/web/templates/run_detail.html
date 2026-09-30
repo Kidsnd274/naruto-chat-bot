@@ -27,7 +27,7 @@
       <p><strong>{{ trigger_name }}</strong> <span class="muted small">{{ trigger.date|ts }} · message {{ trigger.id }}</span></p>
       <p class="msg-text">{{ trigger|body }}</p>
     {% else %}
-      <p class="muted">The trigger message is no longer stored.</p>
+      <p class="muted">{{ "None: a background update (digest) or an ephemeral command." if run.trigger_row_id is none else "The trigger message is no longer stored." }}</p>
     {% endif %}
     <h2>Answer</h2>
     {% if run.error %}<p class="notice error">{{ run.error }}</p>{% endif %}
@@ -43,8 +43,10 @@
   <ol class="steps">
     {% for step in run.steps %}
       <li>
-        {% if step.type == "model" %}
-          <strong>Model request {{ step.request }}</strong>
+        {% if step.type == "switch" %}
+          <strong>Handed over to the {{ step.skill }} skill</strong> <span class="muted small">(new prompt and tools)</span>
+        {% elif step.type == "model" %}
+          <strong>Model request {{ step.request }}</strong>{% if step.purpose is defined %} <span class="small">— {{ step.purpose }}</span>{% endif %}
           <span class="muted small">
             {% if step.latency_ms is defined %}{{ "%.2f s"|format(step.latency_ms / 1000) }}{% endif %}
             {% if step.ttft_ms is defined %} · first token {{ "%.2f s"|format(step.ttft_ms / 1000) }}{% endif %}

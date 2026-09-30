@@ -326,14 +326,98 @@ CREATE TABLE plans (
 CREATE INDEX plans_chat ON plans (chat_id, id);
 """
 
+_V6_MEMORY = """
+-- "What's going on now" per chat, rewritten as messages arrive. The cursor
+-- (last_message_date, last_row_id) is the newest message it has read.
+CREATE TABLE digests (
+    chat_id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL DEFAULT '',
+    last_row_id INTEGER,
+    last_message_date INTEGER,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    error TEXT,
+    failed_at INTEGER
+);
+
+-- Group memory: durable facts that outlive message retention. person_id is
+-- who the note is about (people.id), if anyone.
+CREATE TABLE memory_notes (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT NOT NULL,
+    person_id INTEGER,
+    source_row_ids TEXT,
+    created_by TEXT NOT NULL,
+    created_by_user_id INTEGER,
+    locked INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX memory_notes_chat ON memory_notes (chat_id, id);
+
+-- Every change to a note, including deletion (the last content is kept).
+CREATE TABLE memory_note_history (
+    id INTEGER PRIMARY KEY,
+    note_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    content TEXT,
+    category TEXT,
+    person_id INTEGER,
+    changed_at INTEGER NOT NULL,
+    changed_by TEXT NOT NULL
+);
+CREATE INDEX memory_note_history_note ON memory_note_history (note_id, id);
+
+CREATE TABLE reminders (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    due_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sent', 'cancelled', 'failed')),
+    created_by_user_id INTEGER,
+    created_by TEXT NOT NULL,
+    run_id INTEGER,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    sent_message_id INTEGER,
+    error TEXT
+);
+CREATE INDEX reminders_due ON reminders (status, due_at);
+CREATE INDEX reminders_chat ON reminders (chat_id, id);
+
+-- Image descriptions made on demand; they go with their message.
+CREATE TABLE media_descriptions (
+    message_row_id INTEGER PRIMARY KEY REFERENCES messages (id) ON DELETE CASCADE,
+    chat_id INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    model TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX media_descriptions_chat ON media_descriptions (chat_id);
+
+-- Group memory distilled from an import (after its messages are stored).
+ALTER TABLE imports ADD COLUMN distill_status TEXT;
+ALTER TABLE imports ADD COLUMN distill_total INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE imports ADD COLUMN distill_done INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE imports ADD COLUMN notes_added INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE imports ADD COLUMN distill_error TEXT;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
     _V3_IMPORTS,
     _V4_PEOPLE,
     _V5_AGENT_TOOLS,
+    _V6_MEMORY,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
-CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans")
+CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans",
+                      "digests", "memory_notes", "memory_note_history", "reminders",
+                      "media_descriptions")

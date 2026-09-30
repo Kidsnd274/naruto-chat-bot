@@ -23,6 +23,7 @@ NOW = SEP_2 + 5 * 86400
 def importer(services, tmp_path, monkeypatch):
     monkeypatch.setattr(service_module.time, "time", lambda: NOW)
     services.settings.set("retention.imported_messages_days", 0, actor="t")  # keep all
+    services.settings.set("import.distill_memory", False, actor="t")  # see test_memory.py
     return ImportService(services, tmp_path / "imports")
 
 

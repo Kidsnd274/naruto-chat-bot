@@ -7,6 +7,7 @@ error the model can react to (for example by fixing its arguments).
 
 from dataclasses import dataclass, field
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -34,7 +35,8 @@ class RunState:
     tool_calls: int = 0
     steps: list[dict] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)  # what the run did in the chat
-    switch_to_skill: str | None = None
+    switch_to_skill: str | None = None  # set by use_skill
+    switch_since: int | None = None
 
     @property
     def model_requests_left(self) -> int:
@@ -93,8 +95,11 @@ def _coerce(value: Any, spec: dict, where: str) -> Any:
         if spec.get("maxLength") and len(value) > spec["maxLength"]:
             value = value[: spec["maxLength"]]
     elif kind == "integer":
-        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
-            value = int(value.strip())
+        if isinstance(value, str):
+            # "12", and the way IDs are shown to the model: "[12]", "[n12]", "#12".
+            match = re.fullmatch(r"\[?[#n]?(-?\d+)\]?", value.strip(), re.IGNORECASE)
+            if match:
+                value = int(match.group(1))
         if isinstance(value, float) and value.is_integer():
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):

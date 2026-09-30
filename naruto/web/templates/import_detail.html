@@ -111,6 +111,7 @@
       {% if record.first_date %}<li>Imported range: {{ record.first_date|ts("%d %b %Y") }} – {{ record.last_date|ts("%d %b %Y") }}</li>{% endif %}
     </ul>
     {% if record.status == "replaced" %}<p class="muted">A later import of the same group replaced this one.</p>{% endif %}
+    {% include "_import_distill.html" %}
   {% elif record.status == "failed" %}
     <p class="notice error">{{ record.error }}</p>
   {% else %}

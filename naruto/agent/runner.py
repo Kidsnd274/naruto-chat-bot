@@ -9,11 +9,12 @@ the run's ``steps``.
 
 import asyncio
 from dataclasses import dataclass, field
+import json
 import logging
 
 from naruto.agent.context import ContextBuilder, ImageInput
-from naruto.agent.skills import get_skill
-from naruto.agent.text import clean_model_output, without_image_data
+from naruto.agent.skills import Skill, get_skill
+from naruto.agent.text import clean_model_output, estimate_text_tokens, without_image_data
 from naruto.agent.tools import RunState, ToolContext, ToolRegistry, default_registry
 from naruto.agent.tools.base import timed
 from naruto.db.chats import Chat
@@ -39,6 +40,9 @@ class RunRequest:
     skill: str = "banter"
     images: list[ImageInput] = field(default_factory=list)
     trigger_message_id: int | None = None  # the Telegram message ID
+    since: int | None = None  # read every message since then instead of the recent window
+    note: str | None = None  # added to the current request, e.g. what a command asked for
+    force_reply: bool = False  # always thread the answer to the trigger (commands)
 
 
 @dataclass
@@ -68,7 +72,8 @@ class AgentRunner:
         services = self.services
         settings = services.settings
         run_id = services.runs.start(
-            chat_id=request.chat.chat_id, skill=request.skill, trigger_row_id=request.trigger.id,
+            chat_id=request.chat.chat_id, skill=request.skill,
+            trigger_row_id=request.trigger.id or None,  # 0: an ephemeral command, not stored
             trigger_message_id=request.trigger_message_id, user_id=request.trigger.sender_id)
         state = RunState(run_id=run_id, max_model_requests=settings["agent.max_model_requests"])
         try:
@@ -85,31 +90,45 @@ class AgentRunner:
 
     # ----------------------------------------------------------------- loop
 
-    async def _loop(self, request: RunRequest, state: RunState) -> RunOutcome:
+    def _prepare(self, request: RunRequest, skill: Skill, since: int | None,
+                 state: RunState, builder: ContextBuilder) -> tuple:
+        """The first request for ``skill``: prompt, tools and tool context."""
         services = self.services
         settings = services.settings
-        skill = get_skill(request.skill)
-        builder = ContextBuilder(services)
+        allowed = list(skill.tools) if settings["agent.max_tool_calls"] else []
+        tools = self.registry.schemas(allowed)
+        reserved = estimate_text_tokens(json.dumps(tools)) if tools else 0
         prompt = builder.build(request.chat, request.trigger, bot=request.bot,
-                               images=request.images, skill=skill.name)
-        services.runs.update(state.run_id, prompt=without_image_data(prompt.messages),
-                             prompt_tokens=prompt.estimated_tokens, window_size=prompt.window_size,
-                             dropped=prompt.dropped, image_count=prompt.image_count)
+                               images=request.images, skill=skill.name, since=since,
+                               note=request.note, reserved_tokens=reserved)
+        services.runs.update(state.run_id, skill=skill.name,
+                             prompt=without_image_data(prompt.messages),
+                             prompt_tokens=prompt.estimated_tokens + reserved,
+                             window_size=prompt.window_size, dropped=prompt.dropped,
+                             image_count=prompt.image_count)
         if prompt.dropped:
             logger.warning("Dropped %s old messages to fit the input budget (%s tokens).",
                            prompt.dropped, settings["context.input_token_budget"])
-        messages = list(prompt.messages)
-        max_tool_calls = settings["agent.max_tool_calls"]
-        allowed = list(skill.tools) if max_tool_calls else []
-        tools = self.registry.schemas(allowed)
         context = ToolContext(services=services, telegram=self.telegram, chat=request.chat,
                               trigger=request.trigger, bot=request.bot, builder=builder,
                               state=state, skill=skill.name, window_ids=prompt.window_ids,
                               record_sent=self.record_sent)
+        return prompt, list(prompt.messages), allowed, tools, context
+
+    async def _loop(self, request: RunRequest, state: RunState) -> RunOutcome:
+        services = self.services
+        settings = services.settings
+        skill = get_skill(request.skill)
+        since = request.since
+        builder = ContextBuilder(services)
+        prompt, messages, allowed, tools, context = self._prepare(request, skill, since, state,
+                                                                  builder)
+        max_tool_calls = settings["agent.max_tool_calls"]
         max_chars = settings["agent.tool_result_chars"]
         reasoning = settings[f"skills.{skill.name}.reasoning"]
         totals = {"latency_ms": 0, "prompt_tokens": 0, "completion_tokens": 0}
         result: ChatResult | None = None
+        switched = False
 
         while True:
             state.model_requests += 1
@@ -134,9 +153,12 @@ class AgentRunner:
 
             messages.append({"role": "assistant", "content": result.text or "",
                              "tool_calls": [call.as_request_part() for call in calls]})
+            switching = any(call.name == "use_skill" for call in calls) and not switched
             for call in calls:
                 elapsed = timed()
-                if state.tool_calls >= max_tool_calls:
+                if switching and call.name != "use_skill":
+                    content, failed = "Not run: handing over to another mode.", True
+                elif state.tool_calls >= max_tool_calls:
                     content, failed = ("Not run: the tool call limit for this response is "
                                        "reached. Answer with what you have."), True
                 else:
@@ -148,6 +170,17 @@ class AgentRunner:
                                     "arguments": call.arguments, "result": content,
                                     "error": failed, "duration_ms": elapsed()})
                 self._save_progress(state)
+            if state.switch_to_skill and not switched:
+                switched = True
+                skill = get_skill(state.switch_to_skill)
+                since = state.switch_since or since
+                reasoning = settings[f"skills.{skill.name}.reasoning"]
+                state.steps.append({"type": "switch", "skill": skill.name})
+                logger.info("Handing over to the %s skill", skill.name)
+                builder = ContextBuilder(services)
+                prompt, messages, allowed, tools, context = self._prepare(
+                    request, skill, since, state, builder)
+                continue
             if (state.model_requests + 1 >= state.max_model_requests
                     or state.tool_calls >= max_tool_calls):
                 messages[-1]["content"] += f"\n\n{LAST_CALL_NOTE}"
@@ -167,7 +200,10 @@ class AgentRunner:
                     "%s model requests, %s tool calls).", totals["latency_ms"],
                     prompt.estimated_tokens, prompt.window_size, state.model_requests,
                     state.tool_calls)
-        return self._finish(state, status="ok", text=text, threaded=should_reply,
+        if skill.name == "summarize" and services.keeper is not None:
+            services.keeper.request_update(request.chat.chat_id)  # plan: digest on /summary
+        return self._finish(state, status="ok", text=text,
+                            threaded=should_reply or request.force_reply,
                             result=result, totals=totals)
 
     async def _request(self, messages: list[dict], tools: list[dict], reasoning) -> ChatResult:

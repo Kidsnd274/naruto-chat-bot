@@ -1,6 +1,6 @@
 """Tools the model can call during a run. Each skill offers a subset."""
 
-from naruto.agent.tools import group, history
+from naruto.agent.tools import group, history, media, memory, reminders, skills
 from naruto.agent.tools.base import (
     RunState,
     Tool,
@@ -9,7 +9,8 @@ from naruto.agent.tools.base import (
     ToolRegistry,
 )
 
-ALL_TOOLS: list[Tool] = [*history.TOOLS, *group.TOOLS]
+ALL_TOOLS: list[Tool] = [*history.TOOLS, *group.TOOLS, *memory.TOOLS, *reminders.TOOLS,
+                         *media.TOOLS, *skills.TOOLS]
 
 __all__ = ["ALL_TOOLS", "RunState", "Tool", "ToolContext", "ToolError", "ToolRegistry",
            "default_registry"]

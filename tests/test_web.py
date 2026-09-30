@@ -300,6 +300,7 @@ def importer(services, tmp_path):
     from naruto.importer.service import ImportService
 
     services.settings.set("retention.imported_messages_days", 0, actor="t")
+    services.settings.set("import.distill_memory", False, actor="t")
     services.imports = ImportService(services, tmp_path / "imports")
     return services.imports
 
@@ -527,3 +528,80 @@ def test_board_save_without_the_bot(admin, chat, services):
                                         "publish": "1"})
     assert [i.text for i in services.boards.get(CHAT).items("decided")] == ["Splitwise"]
     assert "the board wasn&#39;t sent" in admin.client.get(f"/chats/{CHAT}").text
+
+
+# ------------------------------------------------------------------ memory
+
+def test_memory_page_add_edit_lock_delete(admin, chat, services):
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert 'id="digest"' in page and "Memory: 0 notes" in page and 'id="reminders"' in page
+    person_id = services.people.person_id_for(7)
+    admin.post(f"/chats/{CHAT}/memory", {"content": "Alice is vegetarian",
+                                         "category": "preference", "person": str(person_id),
+                                         "locked": "1"})
+    note = services.notes.for_chat(CHAT)[0]
+    assert note.locked and note.person_id == person_id and note.created_by == "owner"
+    page = admin.client.get(f"/chats/{CHAT}/memory").text
+    assert 'value="Alice is vegetarian"' in page and "locked" in page
+
+    admin.post(f"/chats/{CHAT}/memory/{note.id}", {"content": "Alice is vegan",
+                                                   "category": "preference", "person": ""})
+    note = services.notes.get(note.id)  # the owner may edit locked notes
+    assert note.content == "Alice is vegan" and note.person_id is None
+    admin.post(f"/chats/{CHAT}/memory/{note.id}/lock")
+    assert not services.notes.get(note.id).locked
+    assert "History (4 changes)" in admin.client.get(f"/chats/{CHAT}/memory").text
+    assert "vegan" in admin.client.get(f"/chats/{CHAT}/memory", params={"q": "vegan"}).text
+    assert "No notes match." in admin.client.get(f"/chats/{CHAT}/memory",
+                                                 params={"q": "pizza"}).text
+    assert admin.post(f"/chats/{CHAT}/memory", {"content": "x", "person": "999"}).status_code == 400
+
+    confirm = admin.post(f"/chats/{CHAT}/memory/{note.id}/delete")
+    assert f"Delete note {note.id}?" in confirm.text and services.notes.get(note.id)
+    admin.post(f"/chats/{CHAT}/memory/{note.id}/delete", {"confirm": "yes"})
+    assert services.notes.get(note.id) is None
+
+    services.notes.add(CHAT, "fact", created_by="bot", actor="t")
+    assert "Delete all 1 memory notes?" in admin.post(f"/chats/{CHAT}/memory-clear").text
+    admin.post(f"/chats/{CHAT}/memory-clear", {"confirm": "yes"})
+    assert services.notes.count(CHAT) == 0
+
+
+def test_digest_and_reminders_on_the_chat_page(admin, chat, services):
+    from naruto.memory.keeper import MemoryKeeper
+
+    admin.post(f"/chats/{CHAT}/digest", {"text": "- BBQ on Saturday\r\n- Pit 42"})
+    assert services.digests.get(CHAT).text == "- BBQ on Saturday\n- Pit 42"
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert "- BBQ on Saturday" in page and "3 messages not read into it yet" in page
+
+    services.keeper = MemoryKeeper(services)
+    admin.post(f"/chats/{CHAT}/digest/update")
+    assert "isn&#39;t enabled" in admin.client.get(f"/chats/{CHAT}").text
+    services.chats.set_status(CHAT, "enabled")
+    admin.post(f"/chats/{CHAT}/digest/update")
+    assert CHAT in services.keeper._requested
+
+    assert "Clear the digest?" in admin.post(f"/chats/{CHAT}/digest/clear").text
+    admin.post(f"/chats/{CHAT}/digest/clear", {"confirm": "yes"})
+    assert services.digests.get(CHAT) is None
+
+    reminder = services.reminders.create(CHAT, "Bring the grill", int(time.time()) + 600,
+                                         created_by="t")
+    assert "Bring the grill" in admin.client.get(f"/chats/{CHAT}").text
+    admin.post(f"/chats/{CHAT}/reminders/{reminder.id}/cancel")
+    assert services.reminders.get(reminder.id).status == "cancelled"
+    admin.post(f"/chats/{CHAT}/reminders/{reminder.id}/cancel")
+    page = admin.client.get(f"/chats/{CHAT}").text  # both notices, not just the first
+    assert "Cancelled reminder 1." in page and "Reminder 1 is already cancelled." in page
+
+
+def test_import_page_shows_distillation(admin, importer, services):
+    record = importer.repo.create(file_name="result.json", file_path="/nowhere", file_size=1)
+    importer.repo.update(record.id, status="done", chat_id=CHAT, distill_status="running",
+                         distill_total=4, distill_done=1, notes_added=2)
+    page = admin.client.get(f"/import/{record.id}").text
+    assert "part 1 of 4 (25%), 2 notes so far" in page
+    importer.repo.update(record.id, distill_status="done", notes_added=5)
+    partial = admin.client.get(f"/import/{record.id}/distill").text
+    assert "<strong>5</strong> new memory notes" in partial and "hx-get" not in partial

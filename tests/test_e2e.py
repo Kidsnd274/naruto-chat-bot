@@ -203,3 +203,27 @@ async def test_plan_buttons_and_poll_updates(running):
             break
         await fake.settle(0.02)
     assert stored.media_meta["counts"] == [1, 0] and stored.media_meta["votes"] == {"7": [0]}
+
+
+async def test_skill_commands_through_the_real_bot(running):
+    fake, services = running
+    services.chats.upsert_seen(CHAT, title="BBQ crew")
+    services.chats.set_status(CHAT, "enabled")
+    group_commands = next(p["commands"] for name, p in fake.calls
+                          if name == "setMyCommands" and p["scope"]["type"] == "all_group_chats")
+    names = {c["command"]: c for c in group_commands}
+    assert {"summary", "catchup", "plan", "questions", "board", "remember", "remind"} <= set(names)
+    assert names["catchup"]["is_ephemeral"] is True
+
+    fake.push_message("bbq on saturday?", user=ALICE, message_id=10)
+    fake.push_message("/summary today", user=ALICE, message_id=11, command=True)
+    reply = (await fake.wait_for("sendMessage"))[0]
+    assert reply["reply_parameters"]["message_id"] == 11
+    prompt = services.llm.calls[0]
+    assert "Your task: summarize" in prompt[0]["content"]
+    assert "bbq on saturday?" in prompt[1]["content"]
+
+    fake.push_message("/catchup", user=ALICE, command=True, ephemeral_message_id=4)
+    private = (await fake.wait_for("sendMessage", 2))[1]
+    assert private["ephemeral_message_parameters"] == {"receiver_user_id": 7}
+    assert "Your task: catch someone up" in services.llm.calls[1][0]["content"]

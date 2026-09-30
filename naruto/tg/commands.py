@@ -58,7 +58,8 @@ class GroupCommands:
                                              "send a message in this chat first.")
             return
         self.services.members.add_alias(chat.chat_id, user_id, alias)
-        await self._say(update, context, f"Got it — {username} is now also known as '{alias}'.")
+        await self._say(update, context, f"Got it — {username} is now also known as '{alias}' "
+                                         "(in every chat).")
 
     async def removealias(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = self._enabled_chat(update)
@@ -82,8 +83,14 @@ class GroupCommands:
         chat = self._enabled_chat(update)
         if chat is None:
             return
-        self.services.members.clear_aliases(chat.chat_id)
-        await self._say(update, context, "All aliases cleared in this chat.")
+        user = update.effective_user
+        if not self.services.is_owner(user.id if user else None):
+            await self._say(update, context, "Only the bot's owner can clear aliases: they're "
+                                             "shared by every chat.")
+            return
+        cleared = self.services.members.clear_aliases(chat.chat_id)
+        await self._say(update, context, f"Cleared {cleared} aliases of the people in this chat "
+                                         "(everywhere, since aliases are shared).")
 
     async def group_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = self._enabled_chat(update)

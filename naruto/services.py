@@ -13,6 +13,7 @@ from naruto.db.database import Database
 from naruto.db.logs import LogRepository
 from naruto.db.members import MemberRepository
 from naruto.db.messages import MessageRepository
+from naruto.db.people import PeopleRepository
 from naruto.db.runs import AgentRunRepository
 from naruto.llm import LLMClient
 from naruto.settings.seed import SeedData
@@ -51,6 +52,7 @@ class Services:
     db: Database
     settings: SettingsService
     chats: ChatRepository
+    people: PeopleRepository
     members: MemberRepository
     messages: MessageRepository
     logs: LogRepository
@@ -64,12 +66,14 @@ class Services:
     @classmethod
     def create(cls, bootstrap: Bootstrap, db: Database, seed: SeedData | None = None) -> "Services":
         settings = SettingsService(db)
+        people = PeopleRepository(db)
         return cls(
             bootstrap=bootstrap,
             db=db,
             settings=settings,
             chats=ChatRepository(db),
-            members=MemberRepository(db),
+            people=people,
+            members=MemberRepository(db, people),
             messages=MessageRepository(db),
             logs=LogRepository(db),
             runs=AgentRunRepository(db),

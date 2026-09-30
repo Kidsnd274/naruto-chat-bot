@@ -52,6 +52,7 @@ def _truncate(text: str, limit: int) -> str:
 class ContextBuilder:
     def __init__(self, services: Services):
         self.services = services
+        self._names: dict[int, str] = {}
 
     # ---------------------------------------------------------------- build
 
@@ -81,6 +82,10 @@ class ContextBuilder:
             window=settings["context.recent_window"],
             step=settings["context.window_step"],
         )
+        # One name per person, whatever name a message was stored with (an
+        # export uses the exporter's contact names, live messages Telegram's).
+        self._names = self.services.people.display_names(
+            {m.sender_id for m in window} | {trigger.sender_id})
         current = self._current_request(trigger, window, images, bot, tz)
         header = self._chat_header(chat, now, bot)
 
@@ -160,7 +165,9 @@ class ContextBuilder:
     def _name(self, message: StoredMessage, bot: BotIdentity) -> str:
         if message.from_bot:
             return f"{bot.name} (you)"
-        return message.sender_name
+        if message.sender_id is not None and message.sender_id not in self._names:
+            self._names.update(self.services.people.display_names([message.sender_id]))
+        return self._names.get(message.sender_id, message.sender_name)
 
     def _body(self, message: StoredMessage, bot: BotIdentity, limit: int | None = None) -> str:
         text = strip_bot_mention(message.text, bot.username)
@@ -221,7 +228,7 @@ class ContextBuilder:
     def _current_request(self, trigger: StoredMessage, window: list[StoredMessage],
                          images, bot: BotIdentity, tz: tzinfo) -> str | list[dict]:
         when = datetime.fromtimestamp(trigger.date, tz)
-        who = trigger.sender_name
+        who = self._name(trigger, bot)
         if trigger.sender_username:
             who += f" (@{trigger.sender_username})"
         head = f"[{trigger.id}] {who} at {when.strftime('%H:%M')}"

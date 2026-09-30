@@ -213,3 +213,22 @@ def test_images_follow_the_current_request(services, builder, chat):
     image_tokens = services.settings["media.estimated_image_tokens"]
     assert prompt.estimated_tokens == estimate_message_tokens(prompt.messages, image_tokens)
     assert prompt.estimated_tokens > image_tokens
+
+
+def test_one_name_per_person_across_import_and_live(services, builder, chat):
+    # The export used the owner's contact name; Telegram shows another name.
+    services.members.upsert_imported(CHAT, 8, "Big Bob (contact)", T0 - 86400)
+    services.messages.insert_imported([NewMessage(
+        chat_id=CHAT, origin_chat_id=CHAT, source=IMPORT, message_id=1, sender_id=8,
+        sender_name="Big Bob (contact)", date=T0 - 86400, text="old news", import_id=1)])
+    add(services, 2, "fresh news", sender=BOB)
+    trigger = add(services, 3, "@naruto_bot who said what?", offset=60)
+
+    context = build(builder, services, chat, trigger).messages[1]["content"]
+    assert "Bob (20:26): fresh news" in context
+    assert "Bob (20:26): old news" in context and "Big Bob (contact)" not in context
+
+    services.people.set_name(services.people.person_id_for(8), "Robert")
+    context = build(builder, services, chat, trigger).messages[1]["content"]
+    assert "Robert (20:26): old news" in context and "Robert (20:26): fresh news" in context
+    assert "- Robert (no @username), also called Big B" in context

@@ -529,3 +529,17 @@ async def test_traced_prompt_never_contains_image_data(services, wired, bot, mon
     await run_message(wired, bot, fakes.photo_message(10, caption="@naruto_bot what's this?"))
     run = services.runs.recent()[0][0]
     assert run.image_count == 1 and "SECRETPIXELS" not in str(run.prompt)
+
+
+async def test_clearaliases_is_owner_only(services, bot):
+    commands = GroupCommands(services)
+    enable(services)
+    services.members.upsert_live(GROUP_ID, 8, "Bob", "bobby")
+    services.members.add_alias(GROUP_ID, 8, "Big B")
+    await commands.clearaliases(update(message(1, "/clearaliases", command=True)), context(bot))
+    assert "Only the bot's owner" in bot.sent[-1]["text"]
+    assert services.members.aliases(GROUP_ID, 8) == ["Big B"]
+    await commands.clearaliases(update(message(2, "/clearaliases", sender=OWNER, command=True)),
+                                context(bot))
+    assert "Cleared 1 aliases" in bot.sent[-1]["text"]
+    assert services.members.aliases(GROUP_ID, 8) == []

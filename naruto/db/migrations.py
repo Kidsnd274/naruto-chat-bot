@@ -214,12 +214,82 @@ CREATE TABLE imports (
 CREATE INDEX imports_chat ON imports (chat_id, id);
 """
 
+_V4_PEOPLE = """
+-- A person the owner knows, across every chat. Telegram user IDs are global,
+-- so each account belongs to one person; someone with two accounts is one
+-- person with two accounts. name is chosen by the owner; NULL shows the
+-- account's Telegram name.
+CREATE TABLE people (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+-- Telegram accounts. telegram_name/username are the latest seen live;
+-- export_name is the name a Telegram Desktop export used (the exporting
+-- account's contact name for them).
+CREATE TABLE accounts (
+    user_id INTEGER PRIMARY KEY,
+    person_id INTEGER NOT NULL REFERENCES people (id),
+    telegram_name TEXT,
+    username TEXT,
+    export_name TEXT,
+    is_bot INTEGER NOT NULL DEFAULT 0,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+);
+CREATE INDEX accounts_person ON accounts (person_id);
+CREATE INDEX accounts_username ON accounts (username COLLATE NOCASE);
+
+-- Nicknames, shared by every chat the person is in.
+CREATE TABLE person_aliases (
+    person_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (person_id, alias)
+);
+
+-- Existing roster: one person per account. The first person IDs equal the
+-- user IDs; person IDs are internal and later ones are allocated normally.
+INSERT INTO people (id, name, created_at, updated_at)
+    SELECT user_id, NULL, MIN(first_seen_at), MAX(last_seen_at)
+    FROM members WHERE user_id > 0 GROUP BY user_id;
+INSERT INTO accounts (user_id, person_id, telegram_name, username, export_name, is_bot,
+                      first_seen_at, last_seen_at)
+    SELECT m.user_id, m.user_id,
+        COALESCE(
+            (SELECT display_name FROM members l WHERE l.user_id = m.user_id
+                AND l.source = 'live' ORDER BY l.last_seen_at DESC LIMIT 1),
+            (SELECT sender_name FROM messages x WHERE x.sender_id = m.user_id
+                AND x.source = 'live' ORDER BY x.date DESC LIMIT 1)),
+        (SELECT username FROM members l WHERE l.user_id = m.user_id
+            AND l.source = 'live' AND l.username IS NOT NULL ORDER BY l.last_seen_at DESC LIMIT 1),
+        COALESCE(
+            (SELECT sender_name FROM messages x WHERE x.sender_id = m.user_id
+                AND x.source = 'import' ORDER BY x.date DESC LIMIT 1),
+            (SELECT display_name FROM members i WHERE i.user_id = m.user_id
+                AND i.source = 'import' ORDER BY i.last_seen_at DESC LIMIT 1)),
+        MAX(m.is_bot), MIN(m.first_seen_at), MAX(m.last_seen_at)
+    FROM members m WHERE m.user_id > 0 GROUP BY m.user_id;
+INSERT OR IGNORE INTO person_aliases (person_id, alias, created_at)
+    SELECT user_id, alias, MIN(created_at) FROM member_aliases
+    WHERE user_id IN (SELECT user_id FROM accounts) GROUP BY user_id, alias;
+DROP TABLE member_aliases;
+
+-- members is now only the per-chat roster; names live on accounts.
+ALTER TABLE members DROP COLUMN display_name;
+ALTER TABLE members DROP COLUMN username;
+ALTER TABLE members DROP COLUMN is_bot;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
     _V3_IMPORTS,
+    _V4_PEOPLE,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
-CHAT_SCOPED_TABLES = ("messages", "members", "member_aliases", "imports", "agent_runs")
+CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs")

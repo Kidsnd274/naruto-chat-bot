@@ -5,6 +5,7 @@ import pytest
 from naruto.db import open_database
 from naruto.db.chats import ChatRepository, infer_chat_type
 from naruto.db.members import MemberRepository
+from naruto.db.people import PeopleRepository
 from naruto.db.messages import IMPORT, LIVE, MessageRepository, NewMessage, fts_query
 from naruto.db.migrations import MIGRATIONS
 
@@ -19,7 +20,7 @@ def chats(db):
 
 @pytest.fixture
 def members(db):
-    return MemberRepository(db)
+    return MemberRepository(db, PeopleRepository(db))
 
 
 @pytest.fixture

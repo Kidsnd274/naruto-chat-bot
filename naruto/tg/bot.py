@@ -84,7 +84,7 @@ GROUP_COMMANDS = [
     BotCommand("group_info", "Show who I know in this chat"),
     BotCommand("alias", "Give someone a nickname: /alias @user name"),
     BotCommand("removealias", "Remove a nickname: /removealias @user name"),
-    BotCommand("clearaliases", "Remove all nicknames in this chat"),
+    BotCommand("clearaliases", "Owner only: remove the nicknames of everyone here"),
     BotCommand("enable", "Owner only: let me work in this group",
                api_kwargs={"is_ephemeral": True}),
     BotCommand("disable", "Owner only: stop me in this group",

@@ -21,6 +21,9 @@ Make the bot a useful personal assistant for the group that still feels like Nar
 | Scope | **Group-only.** DMs are used only for owner admin (approvals); no DM assistant features. |
 | Chat history | The bot records every message itself in durable local storage (SQLite). Older history comes from a **manual Telegram Desktop JSON export uploaded through the web admin** (§6). No userbot, no MTProto backfill (most groups are basic groups, where it cannot work). |
 | Admin interface | A small password-protected **web admin** in the same process as the bot (§8). |
+| Retention | **30 days** for raw data: live and imported messages, agent traces and logs. Long-term knowledge survives as **group memory** (§9), which does not expire. |
+| Web admin access | **Localhost only.** |
+| Web search | **Not now.** No external calls. |
 | Settings | **The database is the source of truth for all non-secret settings**, and every setting stored there is editable in the web admin. `.env` keeps only secrets and bootstrap values; `config.json` becomes a one-time seed (§8). |
 | Bot permissions | BotFather **Group Privacy is off** (already the case), so the bot receives all group messages. The bot is also made a group admin with only the **Pin messages** right (optionally **Delete messages**), needed for the pinned board and for ephemeral replies after 15 seconds. |
 | Old plan | Renamed to `OLD_AGENTIC_FEATURE_PLAN.md`. Its "Gemma 12B only" and "no alternate model" decisions no longer apply. |
@@ -104,25 +107,35 @@ Telegram Desktop → open the group → ⋮ → **Export chat history**:
 - Untick photos, videos, voice messages, stickers and files: text only keeps the file small. Imported media becomes a marker such as `[photo]`.
 - Optionally limit the date range.
 
-### Expected format
+### Format (confirmed from a real export, 2026-09-30)
 
-`result.json` has chat-level `name`, `type` (e.g. `private_group`, `private_supergroup`) and `id`, plus a `messages` array. Each message has `id`, `type` (`message` or `service`), `date` / `date_unixtime`, `from`, `from_id` (e.g. `user123456789`), optional `reply_to_message_id`, `edited`, `forwarded_from`, `media_type` / `photo` / `file`, and `text`. `text` is either a string or an array mixing strings and entity objects (`{"type": "bold", "text": "…"}`); `text_entities` holds the same content as a flat list.
+A 40-message sample from a basic group confirmed:
 
-Confirm against a small real export before writing the parser (see open questions).
+- **Top level:** `name`, `type`, `id` (integer), `messages` (array, ascending by `id`).
+- **Chat type and ID mapping:** `type` was `private_group` (basic group) with a 9-digit positive `id`; the Bot API chat ID is **`-id`**. For supergroups (`private_supergroup` / `public_supergroup`) the export `id` is expected to be the channel ID, so the Bot API ID is **`-100` + `id`**. This lets the import page match the target group automatically.
+- **Message IDs** were in the millions and non-contiguous: they are the exporting account's IDs and do not match the bot's (as expected for basic groups).
+- **Per message:** `id`, `type` (`message`), `date` (local time, no time zone), `date_unixtime` (string; **use this** for timestamps), `from` (display name), `from_id` (`user<digits>`), `text`, `text_entities`.
+- **`text`** is usually a string (empty for media without caption) but can be an array mixing strings and entity objects (seen: `{"type": "link", "text": …}`). `text_entities` is a flat list of `{type, text}` (seen: `plain`, `link`). Build the text from `text_entities` or by joining `text` parts.
+- **Optional fields seen:** `edited` / `edited_unixtime`; `forwarded_from` / `forwarded_from_id`; `reactions` (`[{type: "emoji", count, emoji, recent}]`); `photo` (relative path such as `photos/…jpg`, with `photo_file_size`, `width`, `height`); `file` (either a relative path or the string `"(File not included. Change data exporting settings to download.)"`), `file_name`, `file_size`, `media_type` (seen: `animation`, `sticker`), `mime_type`, `duration_seconds`, `sticker_emoji`, `thumbnail`.
+- **Not in the sample:** `reply_to_message_id` and `type: "service"` messages (with `action`, `actor`, `actor_id`). Handle them as documented, and ignore unknown fields rather than failing.
+- **Media:** a `result.json` alone references files that are not present. Store media as markers (`[photo]`, `[sticker 😂]`, `[GIF]`, `[file: name.pdf]`). If a zip of the whole export folder is uploaded later, photos could be described during import; not in the first version.
+
+**Privacy:** the real sample contains friends' messages. It stays outside the repository; tests use a synthetic fixture with the same structure.
 
 ### Import flow in the web admin
 
-1. **Upload** `result.json` on the Import page (size limit; stream-parse large files).
-2. **Preview:** chat name and type from the file, message count, date range, participants, and how much overlaps what the bot already recorded.
-3. **Choose the target group** from the chats the bot knows (pending or enabled). The page suggests a match by name or ID; you confirm.
+1. **Upload** `result.json` on the Import page (size limit from settings; stream-parse large files).
+2. **Preview:** chat name and type from the file, message count, date range, participants, how many messages fall inside the 30-day retention window, and how much overlaps what the bot already recorded.
+3. **Choose the target group.** The page pre-selects the group whose chat ID matches the export (`-id` or `-100id`), falling back to a name match; you confirm.
 4. **Import** in the background with a progress bar:
-   - Only messages **before the first live-recorded message** in that chat, so live and imported history never overlap. This matters because, in a basic group, message IDs in your export are your account's IDs and do not match the bot's.
+   - Only messages **before the first live-recorded message** in that chat, so live and imported history never overlap (export message IDs do not match the bot's).
    - `from_id` `user123` → user ID 123, added to the chat roster with the display name from the export.
    - Stored with `source = import` and the export's IDs kept separately; reply links resolved within the import.
    - Service messages (joins, renames, pins) are skipped or stored as short markers.
    - Re-importing the same chat replaces the previous import, so it is safe to repeat.
-5. **Build the first digest** from the most recent imported period (e.g. 30 days), summarized in chunks. Everything older stays searchable through `search_chat`.
-6. Optionally **propose an initial board** from the digest for you to confirm.
+5. **Distill memory** (§9): the model reads the import in chunks, including messages older than 30 days, and proposes group memory notes (people, preferences, decisions, recurring plans, running jokes). Only the last 30 days of raw messages are kept; older messages are discarded after this step.
+6. **Build the first digest** from the most recent period.
+7. Optionally **propose an initial board** from the digest for you to confirm.
 
 ### End-to-end onboarding with import
 
@@ -148,7 +161,7 @@ Import also works for a chat that is still pending, if you want the history in b
 
 - **FastAPI + Jinja2 templates + HTMX**: server-rendered pages, no JavaScript build step, same Python codebase.
 - Runs **in the same process** as the bot (python-telegram-bot started on the same asyncio loop instead of `run_polling`), sharing the SQLite store and the live log buffer. One container.
-- **Security:** it exposes every stored message of every group. Bind to localhost or the LAN only (or reach it over Tailscale); never expose it to the internet. Single admin password from `.env` → session cookie; CSRF protection on every form.
+- **Access: localhost only.** Bind to `127.0.0.1`. In Docker, publish the port as `127.0.0.1:<port>:<port>` so it is not reachable from the network. For remote use, an SSH tunnel is enough. It still has a single admin password from `.env` (session cookie) and CSRF protection on every form, since it exposes every stored message of every group.
 
 ### Pages
 
@@ -157,12 +170,13 @@ Import also works for a chat that is still pending, if you want the history in b
 | **Dashboard** | Bot online, Telegram connection, Gufo reachable and which model is loaded, requests in progress, recent errors. |
 | **Chats** | Every group the bot has seen: name, ID, type (group / supergroup), status (pending / enabled / disabled), admin rights, stored message counts (live / imported), last activity. Actions: enable, disable, leave, clear memory. |
 | **Chat detail** | Message browser with search and filters (sender, date, live / imported); the digest (view and edit); the current board; import history for this chat. |
+| **Memory** (per chat) | All group memory notes (§9): filter by person or category, add, edit, delete, lock; each note shows where it came from and its change history. |
 | **Import** | The upload wizard from §6, with progress. |
 | **Agent runs** | One row per bot response: trigger message, skill chosen, prompt size, tool calls with arguments and results, model latency, final text, errors. Expand to see the exact prompt sent. This is the main tool for telling "bad context" from "model not smart enough". |
 | **Logs** | Live tail of application logs with level and chat filters. |
 | **Settings** | Every setting stored in the database, grouped by section, with validation, defaults and change history (see below). |
 
-Retention for agent traces is short (e.g. 14 days), since full prompts contain chat content.
+Agent traces follow the 30-day retention like messages, since full prompts contain chat content.
 
 ### Settings in the database
 
@@ -182,11 +196,11 @@ Rule: **anything stored in the database can be viewed and changed in the web adm
 | --- | --- |
 | Model | Endpoint URL, model name, sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`), `chat_template_kwargs`, max output tokens |
 | Persona and skills | Persona prompt (replaces `system_prompt.md`, which only seeds it); per-skill instructions and output templates; reasoning on/off per skill |
-| Context | Recent-window size, input token budget, digest update frequency, digest size |
+| Context and memory | Recent-window size, input token budget, digest update frequency, digest size, automatic memory notes on/off, max notes per chat |
 | Agent limits | Model requests per run, tool calls per run, run deadline |
 | Import | Max upload size, digest window for imports |
 | Media | Enabled, max media size, image description length |
-| Retention | Live messages, imported messages, agent traces, logs |
+| Retention | Days to keep live messages, imported messages, agent traces and logs (default 30 each) |
 | Behaviour | Auto-leave timeout for pending groups, progress placeholders on/off |
 
 **Behaviour:**
@@ -198,17 +212,49 @@ Rule: **anything stored in the database can be viewed and changed in the web adm
 
 ## 9. Memory and prompt
 
-Three layers, in order of use:
+Four kinds of stored knowledge per group:
 
-1. **Recent window** (SQLite): the reply chain + recent messages. Answers most questions.
-2. **Per-chat digest** (stored): active topics, decisions, plans, open questions, people's stated preferences, each with source message IDs. Updated incrementally after N new messages or a quiet gap, and on demand by `/summary`. Gufo's continuous batching lets this run alongside chat requests. Editable in the web admin.
-3. **Search** (SQLite FTS5, live + imported): `search_chat(query, from_user?, since?)`, `get_messages_around(message_id)` for anything older or more specific.
+| Kind | What it holds | Lifetime | Who writes it |
+| --- | --- | --- | --- |
+| **Messages** (live + imported) | Raw chat | 30 days | Recorder, import |
+| **Digest** | "What's going on now": active topics, open threads, short summary | Rolling; replaced as it updates | Bot, after N new messages or a quiet gap, and on `/summary` |
+| **Board** | Plans, decisions, open questions the group sees | Until items are done or removed | Bot (with confirmation), members via commands |
+| **Group memory (notes)** | Durable facts worth remembering | **No expiry**; changed or deleted explicitly | Bot, members, owner |
+
+### Group memory
+
+Because raw messages expire after 30 days, notes are how the bot remembers things long-term. Each note:
+
+- **Content:** one short fact, e.g. "Sam is vegetarian", "The group does a BBQ every National Day", "Jon's birthday is 3 March", "Running joke: Wei is always late".
+- **Category:** person, preference, date, decision, recurring plan, group fact, running joke.
+- **Subject:** the person it is about (user ID), if any.
+- **Source:** message IDs it came from (links work while the messages are within retention), and who created it (bot / member / owner).
+- **Timestamps and history:** created, updated, previous versions.
+- **Lock flag:** the owner can lock a note so the bot will not change or delete it.
+
+How notes are written:
+
+1. **Explicitly:** "@bot remember that…", `/remember`, or the `remember` tool. "@bot forget that…" / `forget` removes one.
+2. **Automatically** during digest updates and imports. The model proposes notes only for durable facts: things people say about themselves, group decisions, recurring events. Contradicting facts update the existing note rather than adding a duplicate. It should not record sensitive details (health, finances, relationships) unless explicitly asked to remember them.
+3. **By the owner** in the web admin.
+
+How notes are used:
+
+- Notes about the people in the current conversation, plus general group notes, go into the prompt as background (bounded by count and tokens).
+- A `search_memory(query)` tool finds other notes.
+- Members can ask "@bot what do you remember about me?" and get their notes back. The bot is open about what it keeps.
+
+`/clear` wipes the group's messages and digest. Memory notes are only wiped from the web admin (or `/clear all`, owner only), so a casual `/clear` does not erase long-term memory.
+
+### Search
+
+SQLite FTS5 over live and imported messages: `search_chat(query, from_user?, since?)` and `get_messages_around(message_id)` for anything older or more specific than the recent window, within the 30-day retention.
 
 Prompt layout, carried forward from the old plan §5:
 
 1. Persona and operating rules (stable, cache-friendly prefix)
 2. Chat info and members
-3. Digest, labelled as background
+3. Group memory notes and digest, labelled as background
 4. Recent messages, one per line: `[id] Name (time): text`, with reply links
 5. **Current request**, clearly labelled, included once
 
@@ -253,15 +299,14 @@ This avoids pinning a new message for every update.
 | `propose_plan(plan)` | Posts the plan with **[✅ Confirm] [✏️ Change]** buttons; on confirm, moves it to the board |
 | `create_poll(question, options)` | Native poll for dates and choices |
 | `set_reminder(when, text)` | Scheduled message in the chat |
-| `remember(fact)` / `forget(fact)` | Explicit notes and preferences in the digest |
+| `remember(fact)` / `forget(fact)`, `search_memory(query)` | Group memory notes (§9) |
 | `describe_image(message_id)` | On-demand vision on a chat image (downloaded via `file_id`, description cached; not available for imported media) |
-| `web_search(query)` | Later phase; needs a provider decision |
 
 Keep the tool set per request small. Each skill exposes only what it needs.
 
 ### Commands (deterministic entry points)
 
-`/summary [today|since <msg>]`, `/catchup` (ephemeral: what happened since you last spoke), `/plan`, `/questions`, `/board`, `/remind`, `/enable`, `/disable`, plus the existing `/clear` and alias commands. A command selects the skill directly, so the model does not have to guess the intent.
+`/summary [today|since <msg>]`, `/remember`, `/catchup` (ephemeral: what happened since you last spoke), `/plan`, `/questions`, `/board`, `/remind`, `/enable`, `/disable`, plus the existing `/clear` and alias commands. A command selects the skill directly, so the model does not have to guess the intent.
 
 ### Skills
 
@@ -306,7 +351,7 @@ Caveat: these model versions are newer than my training data. The recommendation
 
 ### Evaluation (decides the model)
 
-About 20 cases taken from real group chats (the Telegram exports from §6 are a ready source), run against both models through Gufo:
+About 20 cases taken from real group chats (the Telegram exports from §6 are a ready source; keep the evaluation set outside the repository), run against both models through Gufo:
 
 - Answer a direct question in a busy chat without addressing old topics.
 - Summarize a 100-message discussion; extract plan, decisions and open questions.
@@ -356,12 +401,12 @@ In groups:
    - Web admin skeleton: Dashboard, Chats, Chat detail (message browser), Settings, Logs.
    - Gufo running Qwen3.8 27B.
 2. **Import and context:**
-   - Export parser + Import page (§6).
+   - Export parser + Import page (§6), with automatic group matching.
    - New prompt layout (§9); persona prompt v2 (§12).
    - Evaluation set from real exports; run it; settle the model.
 3. **Agent loop + core tools:** bounded loop (limits from the old plan §4); search tools; board as a rich message, pin, propose-plan with buttons, poll; Agent runs page.
-4. **Memory and skills:** digest updates (including from imports); commands and skills; `/catchup` as ephemeral; reminders; on-demand image description.
-5. **Polish:** progress placeholders or simulated streaming in groups (if wanted); per-chat setting overrides; persona tuning from real use; web search if wanted.
+4. **Memory and skills:** digest updates; group memory notes (explicit, automatic, from imports) and the Memory page; 30-day retention job; commands and skills; `/catchup` as ephemeral; reminders; on-demand image description.
+5. **Polish:** progress placeholders or simulated streaming in groups (if wanted); per-chat setting overrides; persona tuning from real use.
 
 ## 15. Handoff notes for implementation
 
@@ -369,15 +414,20 @@ In groups:
 - **Keep working behaviour** while replacing internals: trigger rules (mention or reply to the bot), `[REPLY]` marker threading, bot-mention stripping, aliases and `/group_info`, and the per-chat single-flight gating from the latest commit.
 - **Work in phase order** (§14), keeping the bot runnable at the end of each phase. Extend the existing tests; add tests for the export parser, group-upgrade migration, settings validation and the web admin's auth.
 - **Do not touch production data** (the live Redis instance or the server's `config.json`) without the owner's go-ahead; provide a migration path instead.
-- **Check before relying on:** python-telegram-bot support for Bot API 10.x (rich and ephemeral messages), whether rich messages can be edited and pinned, the export format (open question 1), and Gufo's served model ID and tool-calling behaviour.
-- **Ask the owner** about the open questions below rather than assuming.
+- **Check before relying on:** python-telegram-bot support for Bot API 10.x (rich and ephemeral messages), whether rich messages can be edited and pinned, export fields not present in the sample (replies, service messages, supergroup IDs), and Gufo's served model ID and tool-calling behaviour.
+- **Export sample:** the owner has a real export at `~/Downloads/ChatExport_2026-09-30 (3)/result.json`. Use it to check the parser locally, but never copy it into the repository, tests or logs; build a synthetic fixture instead.
+- **Ask the owner** about anything not settled here rather than assuming.
 
-## 16. Open questions
+## 16. Settled questions
 
-1. **Export sample:** a small real `result.json` (a handful of messages including a reply, an edited message, a photo marker, a sticker and a service message; names can be redacted) to confirm the parser.
-2. **Web admin access:** localhost only, LAN, or Tailscale?
-3. **Retention:** how long to keep recorded and imported messages, per-chat memory and agent traces, and does `/clear` wipe all of them?
-4. **Web search:** needed at all? If so, which provider (it would be the only external call)?
+| Question | Answer (2026-09-30) |
+| --- | --- |
+| Export format | Confirmed from a real sample (§6). |
+| Web admin access | Localhost only. |
+| Retention | 30 days for raw data; group memory notes do not expire (§9). |
+| Web search | Not now. |
+
+Remaining details (e.g. max notes per chat, digest frequency) are settings with defaults, adjustable in the web admin.
 
 ## 17. Sources
 
@@ -386,5 +436,5 @@ Checked 2026-09-30:
 - [Telegram bots overview](https://core.telegram.org/bots#natively-integrate-ai-chatbots) and [Bot Features: AI agents](https://core.telegram.org/bots/features): guest mode, streaming, bot-to-bot, managed bots, business bots, rich and ephemeral messages.
 - Telegram Bot API reference and changelog (via Context7): `sendMessageDraft`, `sendRichMessageDraft`, `sendRichMessage`, ephemeral messages and commands (15-second rule), `readBusinessMessage`, Bot API 10.0 guest mode, Bot API 10.3 `can_stop`, `migrate_to_chat_id`.
 - Telethon's MTProto reference (via Context7): `messages.getHistory` is restricted to user accounts; `messages.getMessages` / `channels.getMessages` are available to bots by ID.
-- Telegram Desktop export format: described from general knowledge; to be confirmed with a real sample.
+- Telegram Desktop export format: confirmed against a 40-message real export from a basic group (structure only; content not recorded here).
 - Gufo figures are from the user-supplied summary of the [gufo-org/gufo README](https://github.com/gufo-org/gufo) and have not been independently verified.

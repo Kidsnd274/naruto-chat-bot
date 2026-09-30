@@ -28,6 +28,11 @@ def make_templates(services: Services) -> Jinja2Templates:
         undefined=jinja2.StrictUndefined,  # template typos fail loudly in tests
         trim_blocks=True,
         lstrip_blocks=True,
+        # Templates must match the Python code this process loaded: a
+        # template edited on disk while the process runs could use helpers
+        # the running code doesn't provide yet. All of them are loaded below.
+        auto_reload=False,
+        cache_size=-1,
     )
 
     def fmt_ts(ts: float | int | None, fmt: str = "%d %b %Y, %H:%M") -> str:
@@ -76,4 +81,7 @@ def make_templates(services: Services) -> Jinja2Templates:
             "now": time.time(),
         }
 
-    return Jinja2Templates(env=env, context_processors=[context])
+    templates = Jinja2Templates(env=env, context_processors=[context])
+    for name in env.list_templates(extensions=["html"]):
+        env.get_template(name)  # compile now: syntax errors show at startup
+    return templates

@@ -77,7 +77,7 @@ python3 -m venv .venv
 - Send `/enable` in the group. It is an ephemeral command: only you and the bot see it, and only the owner can use it. `/disable` stops the bot.
 - Use **Enable** on the web admin's Chats page.
 
-**In a group:** mention the bot or reply to one of its messages. Other commands: `/group_info`, `/alias @user name`, `/removealias @user name`, `/clearaliases`. There is no `/clear`: delete stored messages from the chat's page in the web admin.
+**In a group:** mention the bot or reply to one of its messages. Other commands: `/group_info`, `/alias @user name` and `/removealias @user name` (aliases apply in every chat), and `/clearaliases` (owner only). There is no `/clear`: delete stored messages from the chat's page in the web admin.
 
 **Web admin** (`http://127.0.0.1:8765/`):
 
@@ -85,6 +85,7 @@ python3 -m venv .venv
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
 | Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), a searchable message browser and data deletion. |
+| People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, the answer, timing and errors. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. |
@@ -96,7 +97,8 @@ The bot only sees messages from when it joined. To give it older history:
 
 1. In Telegram Desktop, open the group → ⋮ → **Export chat history**, choose **Machine-readable JSON**, and untick photos, videos, voice messages, stickers and files (media becomes markers such as `[photo]`).
 2. On the web admin's **Import** page, upload `result.json`. The preview shows the message count, date range, participants and how much would be kept, and pre-selects the group by chat ID (or name).
-3. Click **Import**.
+3. Under **People in this export**, check the names: each sender is matched to their Telegram account, and the name box starts with the name the export uses (your contact name for them). Pick "Same person as" if someone is really another entry.
+4. Click **Import**.
 
 Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. The uploaded file is deleted when the import finishes. You can also import into a group the bot hasn't joined yet; it is created as pending.
 

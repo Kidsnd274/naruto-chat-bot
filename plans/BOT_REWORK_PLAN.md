@@ -458,6 +458,12 @@ Checked 2026-09-30:
 - Telegram Desktop import (§6) with automatic group matching, overlap and retention rules, replace-on-reimport and a progress bar.
 - `python -m naruto.evaluation` (`run`, `extract`) for §11's model comparison.
 
+### After the first live test (2026-10-01)
+
+- Fixed: the bot never learned its own identity, because python-telegram-bot only runs `post_init` from `run_polling()`, so it ignored every mention, showed "Not logged in" and skipped rights checks. End-to-end tests now run the real bot against a fake Bot API.
+- `/enable`, `/disable`, the DM buttons and the web admin now say when a chat is already in that state.
+- Added global **people** (migration 4): one person per human across chats, with Telegram accounts (user IDs are global) linked to them, a chosen display name and shared aliases. Prompts and the web admin name messages by person, so an import's contact names and live Telegram names no longer look like different people. The People page merges and splits; the import preview maps each sender and pre-fills the export's name. Group memory in phase 4 should attach notes to people.
+
 ### Deviations from the plan
 
 - The new prompt layout landed in phase 1: the responder had to be rewritten anyway once history moved to SQLite.

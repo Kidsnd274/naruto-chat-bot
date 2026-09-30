@@ -18,7 +18,9 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 def flash(request: Request, message: str, kind: str = "ok") -> None:
     """Show ``message`` at the top of the next full page (kind: ok, warn, error)."""
-    request.session.setdefault("flash", []).append([kind, message])
+    # Assign a new list: the session only saves changes made through its own
+    # methods, so appending to a list that is already queued would be lost.
+    request.session["flash"] = [*request.session.get("flash", []), [kind, message]]
 
 
 def make_templates(services: Services) -> Jinja2Templates:

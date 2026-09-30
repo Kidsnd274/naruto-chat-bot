@@ -1,4 +1,5 @@
-"""Telegram media ingestion without any model-side preprocessing."""
+"""Download Telegram media on demand and convert it to an image the model
+can read (a still frame for moving media). Nothing is stored."""
 
 import asyncio
 import base64
@@ -113,29 +114,6 @@ def describe_media(message) -> MediaDescriptor | None:
 
 def has_supported_media(message) -> bool:
     return describe_media(message) is not None
-
-
-def media_label(message) -> str:
-    descriptor = describe_media(message)
-    if descriptor is None:
-        return ""
-    if descriptor.kind == "sticker":
-        emoji = (getattr(descriptor.source, "emoji", None) or "").strip()
-        return f"[sent a sticker {emoji}]" if emoji else "[sent a sticker]"
-    labels = {
-        "photo": "[sent a photo]",
-        "image_document": "[sent an image]",
-        "animation": "[sent an animation]",
-        "video": "[sent a video]",
-        "video_note": "[sent a video note]",
-        "video_document": "[sent a video]",
-    }
-    return labels.get(descriptor.kind, "[sent media]")
-
-
-def reply_media_kind(message) -> str | None:
-    descriptor = describe_media(message)
-    return descriptor.kind if descriptor else None
 
 
 def _check_declared_size(file_object, max_bytes: int) -> None:

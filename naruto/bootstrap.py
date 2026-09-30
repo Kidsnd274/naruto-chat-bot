@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import logging
 import os
 
-logger = logging.getLogger("bootstrap")
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_PATH = "data/naruto.db"
 DEFAULT_WEB_HOST = "127.0.0.1"

@@ -19,7 +19,7 @@ from naruto.db.database import Database, now_ts
 from naruto.settings.registry import SettingError
 from naruto.settings.service import SettingsService
 
-logger = logging.getLogger("settings.seed")
+logger = logging.getLogger(__name__)
 
 SEEDED_META_KEY = "seeded_at"
 SEED_ACTOR = "seed"

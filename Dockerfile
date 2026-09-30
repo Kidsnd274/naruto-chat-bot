@@ -11,11 +11,21 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
-COPY app/ .
+COPY naruto/ ./naruto/
 
-# Run as a non-root user
+# Run as a non-root user. /data holds the SQLite database (mount a volume).
 RUN adduser -D -H -u 10001 appuser \
-    && chown -R appuser:appuser /app
+    && mkdir -p /data \
+    && chown -R appuser:appuser /app /data
 USER appuser
 
-CMD ["python", "main.py"]
+# Inside the container the web admin listens on all interfaces so Docker can
+# publish it; docker-compose.yml publishes it on the host's 127.0.0.1 only.
+ENV DATABASE_PATH=/data/naruto.db \
+    WEB_HOST=0.0.0.0 \
+    WEB_PORT=8765 \
+    PYTHONUNBUFFERED=1
+EXPOSE 8765
+VOLUME ["/data"]
+
+CMD ["python", "-m", "naruto"]

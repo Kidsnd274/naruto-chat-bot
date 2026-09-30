@@ -4,18 +4,10 @@ import json
 
 import pytest
 
-from naruto.db import open_database
 from naruto.db.chats import ChatRepository
 from naruto.settings.registry import REGISTRY, Setting, SettingError
 from naruto.settings.seed import apply_seed_if_needed, collect_seed, seed_differences
 from naruto.settings.service import SettingsService
-
-
-@pytest.fixture
-def db():
-    database = open_database(":memory:")
-    yield database
-    database.close()
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ import sqlite3
 from naruto.db.database import Database, now_ts
 from naruto.db.migrations import CHAT_SCOPED_TABLES
 
-logger = logging.getLogger("db.chats")
+logger = logging.getLogger(__name__)
 
 PENDING = "pending"
 ENABLED = "enabled"

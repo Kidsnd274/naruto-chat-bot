@@ -1,127 +1,105 @@
 # naruto-chat-bot
 
-A Telegram bot powered by OpenAI API that responds like Naruto.
+A Telegram group assistant that talks like Naruto. It runs against a local OpenAI-compatible model server (for example Gufo serving Qwen), records the group's conversation in SQLite, and comes with a small web admin for approving groups, browsing what it stored and changing settings.
+
+- **Group-only.** It answers when someone mentions it or replies to it. Private messages are only for the owner, to approve groups.
+- **Approve once.** A group the bot is added to stays pending until the owner approves it. Pending and disabled groups get no replies and nothing is recorded.
+- **Remembers the chat.** Every message in an enabled group is stored (text, sender, replies, media as markers such as `[photo]`), with full-text search. Images are only downloaded when someone asks about one.
+- **Web admin** on localhost: dashboard, chats, message browser, settings, logs.
 
 ## Setup
 
-1. Create `.env` file
-    ```env
-    TELEGRAM_BOT_TOKEN=xxx
-    OPENAI_API_KEY=xxx
-    OPENAI_BASE_URL=https://chat.xxx
-    OPENAI_MODEL=naruto-chat-bot
-    CHAT_HISTORY_ENABLED=true
-    MEDIA_ENABLED=true
-    WHITELIST_ENABLED=true
-    ```
+### 1. Telegram (BotFather)
 
-2. Create `config.json` (optional - for whitelist, chat history & model sampling params)
+- **Group Privacy: off** (`/setprivacy` → Disable), so the bot receives every group message. The setting applies when the bot joins a group: if it joined while privacy was on, remove it and add it again. The dashboard warns if privacy is still on.
+- After adding the bot to a group, make it an **admin with “Pin messages”** (optionally “Delete messages”), for the pinned board planned in a later phase. The web admin shows missing rights.
 
-    ```json
-    {
-        "whitelisted_groups": [123, 456],
-        "whitelisted_ids": [111, 222],
-        "max_chat_history": 200,
-        "max_model_tokens": 32768,
-        "max_media_bytes": 20971520,
-        "estimated_image_tokens": 2048,
-        "model_params": {
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "top_k": 40,
-            "min_p": 0.05,
-            "repeat_penalty": 1.1,
-            "chat_template_kwargs": {"enable_thinking": false}
-        }
-    }
-    ```
+### 2. `.env`
 
-   See [`config.example.json`](config.example.json) for reference.
-
-   `max_model_tokens` is an optional input-context budget. When the estimated request size reaches it, the bot logs a warning and drops the oldest complete chat turns while preserving the system context and current message. Token counts are estimated because OpenAI-compatible backends can use different tokenizers. `MAX_MODEL_TOKENS` can override the JSON value.
-
-   Set `MEDIA_ENABLED=true` to retain Telegram photos, image documents, stickers, animations, videos, video notes, and video documents. Images (or one still frame for moving media) are stored as Base64 in the same history record as the message and are sent to the local model only as part of a normal triggered request. Redis `LTRIM`, in-memory history eviction, and `/clear` therefore remove the image and text together. The configured model/server must support OpenAI Chat Completions [`image_url` content parts with Base64 data URLs](https://developers.openai.com/api/docs/guides/images-vision).
-
-   Every field under `model_params` is optional. Omit any field and the inference server's own default applies. Names are passed through verbatim (so `repeat_penalty` matches llama.cpp / Lemonade conventions). Non-standard params (`top_k`, `min_p`, `repeat_penalty`, `chat_template_kwargs`) are sent via `extra_body`.
-
-3. Edit `system_prompt.md` (optional - for persona)
-
-    The repo ships an empty `system_prompt.md` at the project root. Drop your persona prompt into it and it gets prepended to the per-call chat-context block as a single system message. See [`system_prompt.example.md`](system_prompt.example.md) for a template. If the file is empty, the bot runs without a persona.
-
-    > For Docker users: `docker-compose.yml` mounts `system_prompt.md` from the host into the container, so the file must exist on the host before `docker-compose up` (Linux will error if the path doesn't exist — the empty file shipped in the repo satisfies this).
-
-4. Run `python3 ./app/main.py`
-
-   For non-Docker installs, put `ffmpeg` on `PATH` so moving media without a Telegram thumbnail can be decoded. The Docker image installs it automatically.
-
-## Docker
-
-### Using Docker Compose (Recommended)
-
-The [`docker-compose.yml`](docker-compose.yml) file is provided for easy deployment with all dependencies.
-
-1. Ensure you have a `.env` file with the required environment variables (see [Environment Variables](#environment-variables))
-2. Ensure you have a `config.json` file (optional)
-3. Run:
-
-    ```bash
-    docker-compose up -d
-    ```
-
-### Manual Docker (Legacy)
-
-If you prefer not to use Docker Compose:
-
-1. Build image: `docker build --no-cache -t naruto-chat-bot .`
-2. Run container: `docker run -v %cd%/config.json:/app/config.json --env-file .env naruto-chat-bot`
-
-Or use the batch files:
-
-- Build: `docker\build_image.bat`
-- Run: `docker\run_image.bat`
-
-## Docker with Redis (Chat History)
-
-Redis is included by default in [`docker-compose.yml`](docker-compose.yml). No additional configuration is needed - just enable chat history in your `.env`:
+`.env` holds only secrets and bootstrap values. Everything else is a setting in the database, edited in the web admin.
 
 ```env
-CHAT_HISTORY_ENABLED=true
-CHAT_HISTORY_TYPE=redis
+TELEGRAM_BOT_TOKEN=123456:ABC...
+OPENAI_API_KEY=anything-for-a-local-server
+ADMIN_PASSWORD=choose-a-long-password
+OWNER_USER_ID=123456789
 ```
-
-> The app automatically detects if you are running in Docker and sets the Redis Host & Port automatically
-
-### Specify Own Redis Server
-
-If you want to use an external Redis server instead of the included one, add this to your `.env`:
-
-```env
-REDIS_HOST=your-redis-host
-REDIS_PORT=6379
-REDIS_DB=0
-```
-
-## Environment Variables
 
 | Variable | Description | Default |
-| -------- | ----------- | ------- |
-| `TELEGRAM_BOT_TOKEN` | Your Telegram bot token | *Required* |
-| `OPENAI_API_KEY` | Your OpenAI API key | *Required* |
-| `OPENAI_BASE_URL` | Your OpenAI base URL (e.g., custom endpoint) | *Required* |
-| `OPENAI_MODEL` | Model name to use | `qwen3-30b-a3b-2507-instruct-unsloth-settings` |
-| `WHITELIST_ENABLED` | Enable whitelist checking | `true` |
-| `CHAT_HISTORY_ENABLED` | Enable chat history | `false` |
-| `CHAT_HISTORY_TYPE` | Storage type: `memory` or `redis` | `memory` |
-| `DEBUG_CHAT_HISTORY` | Log conversation history before each AI request | `false` |
-| `MAX_CHAT_HISTORY` | Max messages per chat (in memory mode) | `1` |
-| `MAX_MODEL_TOKENS` | Approximate maximum input-context tokens per LLM call; overrides `config.json` | unset |
-| `MEDIA_ENABLED` | Store supported Telegram media and include it in multimodal requests | `false` |
-| `MAX_MEDIA_BYTES` | Maximum original Telegram media size; overrides `config.json` | `20971520` |
-| `ESTIMATED_IMAGE_TOKENS` | Estimated context cost per retained image; overrides `config.json` | `2048` |
-| `CONFIG_PATH` | Path to config.json | `config.json` |
-| `SYSTEM_PROMPT_PATH` | Path to the persona prompt file (optional) | `system_prompt.md` |
-| **Redis (optional)** | | |
-| `REDIS_HOST` | Redis server hostname | `localhost` (Docker: `redis`) |
-| `REDIS_PORT` | Redis port | `6379` |
-| `REDIS_DB` | Redis database number | `0` |
-| `REDIS_PASSWORD` | Redis authentication password (currently not implemented) | *None* |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Bot token from BotFather | *required* |
+| `OPENAI_API_KEY` | API key for the model server (local servers usually ignore it) | placeholder |
+| `ADMIN_PASSWORD` | Web admin password. Without it the web admin is off. | *unset* |
+| `OWNER_USER_ID` | Your Telegram user ID (ask [@userinfobot](https://t.me/userinfobot)). Approvals go to this account; everyone else's DMs are ignored. | *unset* |
+| `DATABASE_PATH` | SQLite file | `data/naruto.db` (`/data/naruto.db` in Docker) |
+| `WEB_HOST` | Web admin bind address | `127.0.0.1` (`0.0.0.0` inside Docker) |
+| `WEB_PORT` | Web admin port | `8765` |
+
+### 3. First start: seeding from the old configuration
+
+On the very first start (empty database) the bot copies these into the database once:
+
+- `OPENAI_BASE_URL`, `OPENAI_MODEL`, `MEDIA_ENABLED`, `MAX_MODEL_TOKENS`, `MAX_MEDIA_BYTES`, `ESTIMATED_IMAGE_TOKENS` from the environment,
+- `model_params`, `max_model_tokens`, `max_media_bytes`, `estimated_image_tokens` and `whitelisted_groups` (which become enabled groups) from `config.json` (see [`config.example.json`](config.example.json)),
+- the persona from `system_prompt.md`, if that file exists and is not empty.
+
+After that these sources are ignored; the Settings page shows a notice when they no longer match the database. Without them the defaults apply: the endpoint defaults to `http://localhost:8080/v1`, and an empty model name uses the first model the server lists.
+
+## Running
+
+### Docker Compose (recommended)
+
+```bash
+docker compose up -d --build
+```
+
+The database lives in the `naruto-data` volume. The web admin is published on the host's `127.0.0.1:8765` only; from another machine use an SSH tunnel:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 your-server
+# then open http://127.0.0.1:8765/
+```
+
+To seed from an existing `config.json` or `system_prompt.md`, uncomment the matching lines in [`docker-compose.yml`](docker-compose.yml) before the first start. On Fedora with SELinux, add `:Z` to bind mounts.
+
+### Without Docker
+
+Requires Python 3.14 and `ffmpeg` on `PATH` (for frames of videos without a Telegram thumbnail).
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m naruto
+```
+
+## Using it
+
+**Approving a group** — any of these:
+
+- Tap **Approve** in the DM the bot sends you when it is added (or send it `/start` to list pending groups).
+- Send `/enable` in the group. It is an ephemeral command: only you and the bot see it, and only the owner can use it. `/disable` stops the bot.
+- Use **Enable** on the web admin's Chats page.
+
+**In a group:** mention the bot or reply to one of its messages. Other commands: `/group_info`, `/alias @user name`, `/removealias @user name`, `/clearaliases`. There is no `/clear`: delete stored messages from the chat's page in the web admin.
+
+**Web admin** (`http://127.0.0.1:8765/`):
+
+| Page | What it does |
+| --- | --- |
+| Dashboard | Bot, Telegram and model status, pending groups, recent errors |
+| Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), a searchable message browser and data deletion. |
+| Settings | Every setting with validation, history, revert and reset. Changes apply immediately. |
+| Logs | Application logs with level, chat and logger filters, and a live tail |
+
+## Development
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+```
+
+The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending), `agent/` (prompt building), `web/` (FastAPI admin), plus `llm.py` (model client) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
+
+### Upgrading from the Redis version
+
+There is no data migration: the old Redis store had no persistence. Start the new version with your existing `.env` and `config.json` mounted, and the database is seeded from them; older chat history can be imported from a Telegram Desktop export.

@@ -13,7 +13,7 @@ from typing import Any, Callable
 from naruto.db.database import Database, now_ts
 from naruto.settings.registry import REGISTRY, Setting, SettingError
 
-logger = logging.getLogger("settings")
+logger = logging.getLogger(__name__)
 
 Listener = Callable[[str, Any], None]
 

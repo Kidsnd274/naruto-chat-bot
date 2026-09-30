@@ -2,7 +2,6 @@
 
 import pytest
 
-from naruto.db import open_database
 from naruto.db.chats import ChatRepository, infer_chat_type
 from naruto.db.members import MemberRepository
 from naruto.db.messages import IMPORT, LIVE, MessageRepository, NewMessage, fts_query
@@ -10,13 +9,6 @@ from naruto.db.migrations import MIGRATIONS
 
 BASIC = -4012345678
 SUPER = -1004012345678
-
-
-@pytest.fixture
-def db():
-    database = open_database(":memory:")
-    yield database
-    database.close()
 
 
 @pytest.fixture

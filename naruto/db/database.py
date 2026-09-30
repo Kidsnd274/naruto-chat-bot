@@ -16,7 +16,7 @@ from typing import Any, Iterator, Sequence
 
 from naruto.db.migrations import MIGRATIONS
 
-logger = logging.getLogger("db")
+logger = logging.getLogger(__name__)
 
 
 def now_ts() -> int:

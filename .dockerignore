@@ -17,10 +17,11 @@ venv/
 .venv/
 env/
 
-# Local config / secrets
+# Local config / secrets / data
 .env
 .env.*
 config.json
+data/
 
 # Tooling caches
 .pytest_cache/
@@ -38,3 +39,4 @@ README.md
 docker/
 docker-compose.yml
 tests/
+plans/

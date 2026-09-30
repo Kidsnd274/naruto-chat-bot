@@ -3,8 +3,8 @@
 Layout (plan §9), most stable first so the server can reuse its prompt cache:
 
 1. system: persona, operating rules, the skill's instructions
-2. user: chat details and members, background (later: memory notes and
-   digest), recent messages one per line
+2. user: chat details and members, background (the pinned board, plans
+   waiting for confirmation), recent messages one per line
 3. user: the current request, labelled and included once, with any images
 
 The recent window's start only moves in steps (see
@@ -14,16 +14,19 @@ messages are appended.
 
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
+import time
 
 from naruto.agent.text import estimate_message_tokens, estimate_text_tokens, strip_bot_mention
 from naruto.db.chats import Chat
 from naruto.db.members import Member
 from naruto.db.messages import StoredMessage
+from naruto.db.plans import PROPOSED
 from naruto.markers import message_body
 from naruto.services import BotIdentity, Services
 
 MAX_MEMBERS = 50
 REPLY_QUOTE_CHARS = 80
+OPEN_PLAN_DAYS = 7  # older unconfirmed proposals are left out of the prompt
 
 
 @dataclass
@@ -88,6 +91,9 @@ class ContextBuilder:
             {m.sender_id for m in window} | {trigger.sender_id})
         current = self._current_request(trigger, window, images, bot, tz)
         header = self._chat_header(chat, now, bot)
+        background = self._background(chat)
+        if background:
+            header += f"\n\n## Background\n{background}"
 
         messages, dropped = self._fit_budget(system, header, window, current, bot, tz)
         kept = window[dropped:]
@@ -153,6 +159,23 @@ class ContextBuilder:
             lines.extend(self._member_line(m) for m in members)
         return "\n".join(lines)
 
+    def _background(self, chat: Chat) -> str:
+        """Shared state the group can see: the pinned board and plans waiting
+        for confirmation. Reference material, never requests."""
+        parts = []
+        board = self.services.boards.get(chat.chat_id)
+        if not board.is_empty:
+            parts.append(f"Pinned board:\n{board.as_text()}")
+        cutoff = time.time() - OPEN_PLAN_DAYS * 86400
+        proposed = [plan for plan in self.services.plans.for_chat(chat.chat_id, status=PROPOSED,
+                                                                   limit=5)
+                    if plan.created_at >= cutoff]
+        if proposed:
+            lines = ["Plans you proposed that nobody has confirmed yet:"]
+            lines.extend(f"- plan {plan.id}: {plan.one_line()}" for plan in reversed(proposed))
+            parts.append("\n".join(lines))
+        return "\n\n".join(parts)
+
     @staticmethod
     def _member_line(member: Member) -> str:
         line = f"- {member.display_name} ({member.handle})"
@@ -169,9 +192,25 @@ class ContextBuilder:
             self._names.update(self.services.people.display_names([message.sender_id]))
         return self._names.get(message.sender_id, message.sender_name)
 
+    def _poll_voters(self, meta: dict) -> str:
+        """Who voted for what, for non-anonymous polls."""
+        votes = meta.get("votes") or {}
+        options = meta.get("options") or []
+        if not votes or not options:
+            return ""
+        names = self.services.people.display_names(int(user_id) for user_id in votes)
+        parts = []
+        for user_id, choices in votes.items():
+            picked = [options[i] for i in choices if isinstance(i, int) and 0 <= i < len(options)]
+            if picked:
+                parts.append(f"{names.get(int(user_id), 'someone')} → {', '.join(picked)}")
+        return f" (voted: {'; '.join(parts)})" if parts else ""
+
     def _body(self, message: StoredMessage, bot: BotIdentity, limit: int | None = None) -> str:
         text = strip_bot_mention(message.text, bot.username)
         body = message_body(text, message.media_kind, message.media_meta)
+        if message.media_kind == "poll":
+            body += self._poll_voters(message.media_meta)
         if message.forwarded_from:
             body = f"[forwarded from {message.forwarded_from}] {body}".rstrip()
         if limit is None:
@@ -211,6 +250,22 @@ class ContextBuilder:
                                       f"{self._body(message, bot)}"))
             previous_id = message.id
         return lines
+
+    def describe_messages(self, messages: list[StoredMessage], bot: BotIdentity) -> str:
+        """Messages as dated transcript lines, for tool results."""
+        tz = self.services.timezone()
+        self._names.update(self.services.people.display_names(
+            {m.sender_id for m in messages} - set(self._names)))
+        kept_ids = {m.id for m in messages}
+        lines = []
+        previous_id = None
+        for message in messages:
+            when = datetime.fromtimestamp(message.date, tz).strftime("%a %d %b %Y, %H:%M")
+            reply = self._reply_link(message, previous_id, kept_ids, bot)
+            lines.append(f"[{message.id}] {self._name(message, bot)} ({when}){reply}: "
+                         f"{self._body(message, bot)}")
+            previous_id = message.id
+        return "\n".join(lines)
 
     def _transcript(self, window, bot, tz, kept_ids) -> str:
         if not window:

@@ -91,7 +91,15 @@ def media_of(message) -> MediaRef | None:
                          file_size=getattr(document, "file_size", None))
     poll = getattr(message, "poll", None)
     if poll is not None:
-        return MediaRef(markers.POLL, meta={"question": getattr(poll, "question", "")})
+        options = list(getattr(poll, "options", None) or ())
+        return MediaRef(markers.POLL, meta={
+            "question": getattr(poll, "question", ""),
+            "poll_id": getattr(poll, "id", None),
+            "options": [getattr(option, "text", "") for option in options],
+            "counts": [getattr(option, "voter_count", 0) for option in options],
+            "anonymous": bool(getattr(poll, "is_anonymous", True)),
+            "multiple": bool(getattr(poll, "allows_multiple_answers", False)),
+        })
     venue = getattr(message, "venue", None)
     if venue is not None:
         return MediaRef(markers.VENUE, meta={"title": getattr(venue, "title", "")})

@@ -96,6 +96,10 @@ def render_markdown(attempts: list[Attempt], cases: list[Case], targets: list[Mo
             lines.append(f"- `{attempt.model}` #{attempt.attempt} — **{attempt.status}** ({timing})")
             if attempt.error:
                 lines.append(f"  - error: {attempt.error}")
+            for call in attempt.tool_calls:
+                arguments = json.dumps(call.get("arguments") or {}, ensure_ascii=False)
+                failed = " (failed)" if call.get("error") else ""
+                lines.append(f"  - tool `{call['name']}` {arguments[:300]}{failed}")
             for check in attempt.checks:
                 if not check.passed:
                     lines.append(f"  - failed {check.name}: {check.detail}")

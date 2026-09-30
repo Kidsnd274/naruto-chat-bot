@@ -18,7 +18,7 @@
 {% if runs %}
 <div class="table-wrap">
 <table class="compact">
-  <thead><tr><th>#</th><th>When</th><th>Chat</th><th>Skill</th><th>Status</th><th class="num">Prompt tokens</th><th class="num">Messages</th><th class="num">Latency</th><th>Answer</th></tr></thead>
+  <thead><tr><th>#</th><th>When</th><th>Chat</th><th>Skill</th><th>Status</th><th class="num">Prompt tokens</th><th class="num">Messages</th><th class="num">Latency</th><th>Tools</th><th>Answer</th></tr></thead>
   <tbody>
   {% for run in runs %}
     <tr>
@@ -29,7 +29,8 @@
       <td><span class="badge {{ 'done' if run.status == 'ok' else run.status }}">{{ run.status }}</span></td>
       <td class="num small">{{ run.prompt_tokens if run.prompt_tokens is not none else "" }}</td>
       <td class="num small">{{ run.window_size if run.window_size is not none else "" }}{% if run.dropped %} <span class="muted">(−{{ run.dropped }})</span>{% endif %}</td>
-      <td class="num small nowrap">{{ "%.1f s"|format(run.latency_ms / 1000) if run.latency_ms is not none else "" }}</td>
+      <td class="num small nowrap">{{ "%.1f s"|format(run.latency_ms / 1000) if run.latency_ms is not none else "" }}{% if run.model_requests and run.model_requests > 1 %} <span class="muted">({{ run.model_requests }} req.)</span>{% endif %}</td>
+      <td class="small">{{ run.tool_names|join(", ") }}</td>
       <td class="small">{{ (run.response or run.error or "")[:120] }}</td>
     </tr>
   {% endfor %}

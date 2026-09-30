@@ -469,3 +469,61 @@ def test_import_preview_maps_people(admin, importer, services, chat):
         time.sleep(0.02)
     assert services.people.for_user(7).display_name == "Alice Tan"
     assert services.people.for_user(8).id == bob_person
+
+
+# ------------------------------------------------------ agent steps, board
+
+def test_run_detail_shows_steps_and_tools(admin, chat, services):
+    run_id = services.runs.start(chat_id=CHAT, skill="banter")
+    services.runs.update(run_id, status="ok", response="Found it.", model_requests=2,
+                         tool_calls=1, steps=[
+        {"type": "model", "request": 1, "latency_ms": 800, "finish_reason": "tool_calls",
+         "text": "", "tool_calls": [{"id": "a", "name": "search_chat",
+                                     "arguments": {"query": "grill"}}],
+         "reasoning": "look it up"},
+        {"type": "tool", "id": "a", "name": "search_chat", "arguments": {"query": "grill"},
+         "result": "[3] Alice (Sat): bring the grill", "error": False, "duration_ms": 4},
+        {"type": "model", "request": 2, "latency_ms": 500, "finish_reason": "stop",
+         "text": "Found it.", "tool_calls": []},
+    ])
+    listing = admin.client.get("/runs").text
+    assert "search_chat" in listing and "(2 req.)" in listing
+    detail = admin.client.get(f"/runs/{run_id}").text
+    assert "Model request 1" in detail and "Model request 2" in detail
+    assert "Tool <code>search_chat</code>" in detail and "bring the grill" in detail
+    assert '"query": "grill"' in detail and "look it up" in detail
+
+
+def test_board_edit_publish_and_clear(admin, chat, services):
+    from fakes import FakeBot
+    services.chats.set_status(CHAT, "enabled")
+    bot = FakeBot()
+    services.telegram = bot
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert 'id="board"' in page and "Not sent to the chat yet." in page
+
+    response = admin.post(f"/chats/{CHAT}/board", {"plans": "[x] BBQ Sat\n- Book the pit",
+                                                   "decided": "", "questions": "Grill?",
+                                                   "publish": "1"})
+    assert response.status_code == 303
+    board = services.boards.get(CHAT)
+    assert [(i.text, i.done) for i in board.items("plans")] == [("BBQ Sat", True),
+                                                                ("Book the pit", False)]
+    assert board.pinned and bot.api_calls[0][0] == "sendRichMessage"
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert "Sent and pinned the board." in page and "[x] BBQ Sat" in page
+
+    admin.post(f"/chats/{CHAT}/board/publish", {"fresh": "1"})
+    assert len(bot.pins) == 2 and bot.unpins  # a new pinned board replaces the old one
+
+    confirm = admin.post(f"/chats/{CHAT}/board/clear")
+    assert "Clear the board?" in confirm.text and services.boards.exists(CHAT)
+    admin.post(f"/chats/{CHAT}/board/clear", {"confirm": "yes"})
+    assert not services.boards.exists(CHAT)
+
+
+def test_board_save_without_the_bot(admin, chat, services):
+    admin.post(f"/chats/{CHAT}/board", {"plans": "", "decided": "Splitwise", "questions": "",
+                                        "publish": "1"})
+    assert [i.text for i in services.boards.get(CHAT).items("decided")] == ["Splitwise"]
+    assert "the board wasn&#39;t sent" in admin.client.get(f"/chats/{CHAT}").text

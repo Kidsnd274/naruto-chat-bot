@@ -283,13 +283,57 @@ ALTER TABLE members DROP COLUMN username;
 ALTER TABLE members DROP COLUMN is_bot;
 """
 
+_V5_AGENT_TOOLS = """
+-- The agent loop: every model request and tool call of a run, in order.
+ALTER TABLE agent_runs ADD COLUMN steps TEXT;
+ALTER TABLE agent_runs ADD COLUMN model_requests INTEGER;
+ALTER TABLE agent_runs ADD COLUMN tool_calls INTEGER;
+
+-- The pinned board: one per chat, edited in place. sections is a JSON object
+-- of section -> [{"text": ..., "done": bool}]. message_chat_id is the
+-- Telegram chat the board message lives in (it differs from chat_id after a
+-- group upgrade, and then a new message is needed).
+CREATE TABLE boards (
+    chat_id INTEGER PRIMARY KEY,
+    sections TEXT NOT NULL DEFAULT '{}',
+    message_id INTEGER,
+    message_chat_id INTEGER,
+    format TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    published_at INTEGER,
+    publish_error TEXT
+);
+
+-- Plans the bot proposed with Confirm / Change buttons.
+CREATE TABLE plans (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    items TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'proposed'
+        CHECK (status IN ('proposed', 'confirmed', 'cancelled')),
+    message_id INTEGER,
+    message_chat_id INTEGER,
+    run_id INTEGER,
+    proposed_for_user_id INTEGER,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    decided_by_user_id INTEGER,
+    decided_by_name TEXT
+);
+CREATE INDEX plans_chat ON plans (chat_id, id);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
     _V3_IMPORTS,
     _V4_PEOPLE,
+    _V5_AGENT_TOOLS,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
-CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs")
+CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans")

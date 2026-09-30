@@ -1,0 +1,57 @@
+<section class="card" id="board">
+  <div class="title-row">
+    <h2>Board</h2>
+    <div class="actions">
+      <form method="post" action="/chats/{{ chat.chat_id }}/board/publish">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="small">Update in chat</button>
+      </form>
+      <form method="post" action="/chats/{{ chat.chat_id }}/board/publish">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="fresh" value="1">
+        <button type="submit" class="small" title="Send a new board message and pin it">Send new and pin</button>
+      </form>
+    </div>
+  </div>
+  <p class="muted small">
+    {% if board.message_id %}
+      In the chat as a {{ board.format or "?" }} message{{ ", pinned" if board.pinned else ", not pinned" }}, sent {{ board.published_at|ago }}.
+    {% else %}
+      Not sent to the chat yet.
+    {% endif %}
+    {% if board.updated_at %}Last changed {{ board.updated_at|ago }} by {{ board.updated_by }}.{% endif %}
+  </p>
+  {% if board.publish_error %}<p class="error-text small">Last send failed: {{ board.publish_error }}</p>{% endif %}
+  <form method="post" action="/chats/{{ chat.chat_id }}/board">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="grid three">
+      {% for key, heading, text in board_sections %}
+        <label>
+          <strong>{{ heading }}</strong>
+          <textarea name="{{ key }}" rows="6" class="mono" placeholder="One item per line">{{ text }}</textarea>
+        </label>
+      {% endfor %}
+    </div>
+    <p class="muted small">One item per line. Start a line with <code>[x]</code> to mark it done (☑ in Plans).</p>
+    <div class="actions">
+      <button type="submit" class="primary">Save</button>
+      <label class="switch small"><input type="checkbox" name="publish" value="1" checked> and update it in the chat</label>
+    </div>
+  </form>
+
+  <h3>Proposed plans</h3>
+  {% if plans %}
+    <ul class="plain">
+      {% for plan in plans %}
+        <li>
+          <span class="badge {{ 'done' if plan.status == 'confirmed' else 'pending' if plan.status == 'proposed' else 'disabled' }}">{{ plan.status }}</span>
+          <strong>{{ plan.title }}</strong>
+          {% if plan.items %}<span class="small">— {{ plan.items|join("; ") }}</span>{% endif %}
+          <span class="muted small">· plan {{ plan.id }}, {{ plan.created_at|ago }}{% if plan.decided_by_name %}, {{ plan.status }} by {{ plan.decided_by_name }}{% endif %}{% if plan.run_id %} · <a href="/runs/{{ plan.run_id }}">run {{ plan.run_id }}</a>{% endif %}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted small">None yet. The bot proposes a plan with Confirm / Change buttons when asked to.</p>
+  {% endif %}
+</section>

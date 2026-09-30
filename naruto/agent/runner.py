@@ -1,0 +1,224 @@
+"""The bounded agent loop: model -> tool calls -> model ... -> final answer.
+
+Limits come from the settings (agent.*): model requests per run, tool calls
+per run and a deadline that includes waiting for the model server. The last
+allowed request is reserved for the answer: its tool results say that no
+more tools are available. Every model request and tool call is traced in
+the run's ``steps``.
+"""
+
+import asyncio
+from dataclasses import dataclass, field
+import logging
+
+from naruto.agent.context import ContextBuilder, ImageInput
+from naruto.agent.skills import get_skill
+from naruto.agent.text import clean_model_output, without_image_data
+from naruto.agent.tools import RunState, ToolContext, ToolRegistry, default_registry
+from naruto.agent.tools.base import timed
+from naruto.db.chats import Chat
+from naruto.db.messages import StoredMessage
+from naruto.llm import ChatResult, LLMError
+from naruto.services import BotIdentity, Services
+
+logger = logging.getLogger(__name__)
+
+FAILURE_TEXT = "Sorry, I couldn't get a response right now. Please try again later."
+DEADLINE_TEXT = "Sorry, that took too long. Please try again."
+STUCK_TEXT = "Sorry, I got stuck on that one. Could you ask again, a bit more specifically?"
+LAST_CALL_NOTE = ("[No more tool calls are available in this response. Write your answer "
+                  "now with what you have.]")
+TRACE_TEXT_CHARS = 20_000
+
+
+@dataclass
+class RunRequest:
+    chat: Chat
+    trigger: StoredMessage
+    bot: BotIdentity
+    skill: str = "banter"
+    images: list[ImageInput] = field(default_factory=list)
+    trigger_message_id: int | None = None  # the Telegram message ID
+
+
+@dataclass
+class RunOutcome:
+    run_id: int
+    status: str  # ok | empty | error
+    text: str = ""  # what to send ("" sends nothing)
+    threaded: bool = False
+    fallback: bool = False  # text is a canned failure message, not the model's
+    error: str | None = None
+    actions: list[str] = field(default_factory=list)
+
+
+class AgentRunner:
+    def __init__(self, services: Services, telegram, *, record_sent=None,
+                 registry: ToolRegistry | None = None, llm=None, stream: bool = False):
+        """``llm`` defaults to services.llm; the evaluation passes its own
+        client for the model under test."""
+        self.services = services
+        self.telegram = telegram
+        self.record_sent = record_sent
+        self.registry = registry or default_registry()
+        self.llm = llm
+        self.stream = stream
+
+    async def run(self, request: RunRequest) -> RunOutcome:
+        services = self.services
+        settings = services.settings
+        run_id = services.runs.start(
+            chat_id=request.chat.chat_id, skill=request.skill, trigger_row_id=request.trigger.id,
+            trigger_message_id=request.trigger_message_id, user_id=request.trigger.sender_id)
+        state = RunState(run_id=run_id, max_model_requests=settings["agent.max_model_requests"])
+        try:
+            async with asyncio.timeout(settings["agent.deadline_seconds"]):
+                return await self._loop(request, state)
+        except TimeoutError:
+            logger.warning("Run %s hit the %s s deadline", run_id,
+                           settings["agent.deadline_seconds"])
+            return self._finish(state, status="error", text=DEADLINE_TEXT, fallback=True,
+                                error="Deadline reached")
+        except Exception as exc:
+            self._finish(state, status="error", error=f"{type(exc).__name__}: {exc}"[:500])
+            raise
+
+    # ----------------------------------------------------------------- loop
+
+    async def _loop(self, request: RunRequest, state: RunState) -> RunOutcome:
+        services = self.services
+        settings = services.settings
+        skill = get_skill(request.skill)
+        builder = ContextBuilder(services)
+        prompt = builder.build(request.chat, request.trigger, bot=request.bot,
+                               images=request.images, skill=skill.name)
+        services.runs.update(state.run_id, prompt=without_image_data(prompt.messages),
+                             prompt_tokens=prompt.estimated_tokens, window_size=prompt.window_size,
+                             dropped=prompt.dropped, image_count=prompt.image_count)
+        if prompt.dropped:
+            logger.warning("Dropped %s old messages to fit the input budget (%s tokens).",
+                           prompt.dropped, settings["context.input_token_budget"])
+        messages = list(prompt.messages)
+        max_tool_calls = settings["agent.max_tool_calls"]
+        allowed = list(skill.tools) if max_tool_calls else []
+        tools = self.registry.schemas(allowed)
+        context = ToolContext(services=services, telegram=self.telegram, chat=request.chat,
+                              trigger=request.trigger, bot=request.bot, builder=builder,
+                              state=state, skill=skill.name, window_ids=prompt.window_ids,
+                              record_sent=self.record_sent)
+        max_chars = settings["agent.tool_result_chars"]
+        reasoning = settings[f"skills.{skill.name}.reasoning"]
+        totals = {"latency_ms": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        result: ChatResult | None = None
+
+        while True:
+            state.model_requests += 1
+            try:
+                result = await self._request(messages, tools, reasoning)
+            except LLMError as exc:
+                logger.error("Model request failed: %s", exc)
+                state.steps.append({"type": "model", "request": state.model_requests,
+                                    "error": str(exc)})
+                return self._finish(state, status="error", text=FAILURE_TEXT, fallback=True,
+                                    error=str(exc), result=result, totals=totals)
+            self._add_totals(totals, result)
+            state.steps.append(self._model_step(state.model_requests, result))
+            self._save_progress(state)
+
+            calls = result.tool_calls
+            last_request = state.model_requests >= state.max_model_requests
+            if not calls or last_request:
+                if calls:
+                    logger.info("Ignoring %s tool calls on the last allowed request.", len(calls))
+                break
+
+            messages.append({"role": "assistant", "content": result.text or "",
+                             "tool_calls": [call.as_request_part() for call in calls]})
+            for call in calls:
+                elapsed = timed()
+                if state.tool_calls >= max_tool_calls:
+                    content, failed = ("Not run: the tool call limit for this response is "
+                                       "reached. Answer with what you have."), True
+                else:
+                    state.tool_calls += 1
+                    content, failed = await self.registry.execute(call, context, allowed,
+                                                                  max_chars)
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+                state.steps.append({"type": "tool", "id": call.id, "name": call.name,
+                                    "arguments": call.arguments, "result": content,
+                                    "error": failed, "duration_ms": elapsed()})
+                self._save_progress(state)
+            if (state.model_requests + 1 >= state.max_model_requests
+                    or state.tool_calls >= max_tool_calls):
+                messages[-1]["content"] += f"\n\n{LAST_CALL_NOTE}"
+
+        should_reply, text = clean_model_output(result.text, request.bot.name)
+        if not text:
+            if result.tool_calls or (state.tool_calls and not state.actions):
+                # Still wanted tools when it had to answer.
+                return self._finish(state, status="error", text=STUCK_TEXT, fallback=True,
+                                    error="No answer after the last allowed request",
+                                    result=result, totals=totals)
+            logger.warning("The model returned an empty answer (finish reason %s).",
+                           result.finish_reason)
+            return self._finish(state, status="ok" if state.actions else "empty",
+                                result=result, totals=totals)
+        logger.info("Answered in %s ms (%s estimated prompt tokens, %s recent messages, "
+                    "%s model requests, %s tool calls).", totals["latency_ms"],
+                    prompt.estimated_tokens, prompt.window_size, state.model_requests,
+                    state.tool_calls)
+        return self._finish(state, status="ok", text=text, threaded=should_reply,
+                            result=result, totals=totals)
+
+    async def _request(self, messages: list[dict], tools: list[dict], reasoning) -> ChatResult:
+        llm = self.llm or self.services.llm
+        return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
+                              stream=self.stream)
+
+    # --------------------------------------------------------------- traces
+
+    @staticmethod
+    def _model_step(number: int, result: ChatResult) -> dict:
+        step = {"type": "model", "request": number, "latency_ms": result.latency_ms,
+                "finish_reason": result.finish_reason,
+                "text": (result.text or "")[:TRACE_TEXT_CHARS],
+                "tool_calls": [call.summary() for call in result.tool_calls]}
+        if result.ttft_ms is not None:
+            step["ttft_ms"] = result.ttft_ms
+        if result.reasoning:
+            step["reasoning"] = result.reasoning[:TRACE_TEXT_CHARS]
+        if result.usage:
+            step["usage"] = {k: v for k, v in result.usage.items()
+                             if isinstance(v, (int, float))}
+        return step
+
+    @staticmethod
+    def _add_totals(totals: dict, result: ChatResult) -> None:
+        totals["latency_ms"] += result.latency_ms
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = (result.usage or {}).get(key)
+            if isinstance(value, int):
+                totals[key] += value
+
+    def _save_progress(self, state: RunState) -> None:
+        self.services.runs.update(state.run_id, steps=state.steps,
+                                  model_requests=state.model_requests,
+                                  tool_calls=state.tool_calls)
+
+    def _finish(self, state: RunState, *, status: str, text: str = "", threaded: bool = False,
+                fallback: bool = False, error: str | None = None,
+                result: ChatResult | None = None, totals: dict | None = None) -> RunOutcome:
+        fields: dict = dict(status=status, steps=state.steps, model_requests=state.model_requests,
+                            tool_calls=state.tool_calls, error=error)
+        if result is not None:
+            reasonings = [step["reasoning"] for step in state.steps
+                          if step.get("type") == "model" and step.get("reasoning")]
+            fields.update(model=result.model, finish_reason=result.finish_reason,
+                          reasoning="\n\n---\n\n".join(reasonings) or None,
+                          response=None if fallback else (text or None))
+        if totals is not None:
+            usage = {k: v for k, v in totals.items() if k != "latency_ms" and v}
+            fields.update(latency_ms=totals["latency_ms"], usage=usage or None)
+        self.services.runs.update(state.run_id, **fields)
+        return RunOutcome(run_id=state.run_id, status=status, text=text, threaded=threaded,
+                          fallback=fallback, error=error, actions=list(state.actions))

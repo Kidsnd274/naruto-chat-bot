@@ -20,6 +20,10 @@ Message fields: ``from`` (name), ``from_id``, ``username``, ``text``,
 ``media`` (``photo``, ``sticker``, ...), ``bot`` (true for the bot's own
 messages). The trigger also takes ``image`` (a file path, relative to the
 cases file) for vision cases.
+
+``expect.tool_calls`` lists tools the bot must call, e.g.
+``[{"name": "create_poll", "arguments": {"options": "saturday"}}]`` (argument
+values must appear in the call); ``[]`` means it must not call any tool.
 """
 
 from dataclasses import dataclass, field
@@ -71,7 +75,7 @@ class Case:
 
     @property
     def has_auto_checks(self) -> bool:
-        return any(key in self.expect for key in EXPECT_KEYS - {"manual", "tool_calls"})
+        return any(key in self.expect for key in EXPECT_KEYS - {"manual"})
 
 
 def _date(value: Any, fallback: int, where: str) -> int:

@@ -349,30 +349,85 @@ class MessageRepository:
     def search(
         self,
         chat_id: int,
-        query: str,
+        query: str | None,
         *,
         sender_id: int | None = None,
+        sender_ids: list[int] | None = None,
         since: int | None = None,
+        until: int | None = None,
         limit: int = 20,
     ) -> list[StoredMessage]:
-        """Best-matching messages first (FTS5 rank)."""
-        match = fts_query(query)
-        if match is None:
-            return []
-        sql = (
-            "SELECT m.* FROM messages m JOIN messages_fts ON messages_fts.rowid = m.id "
-            "WHERE m.chat_id = ? AND messages_fts MATCH ?"
-        )
-        params: list = [chat_id, match]
+        """Best-matching messages first (FTS5 rank). Without a query, the
+        newest messages matching the other filters."""
         if sender_id is not None:
-            sql += " AND m.sender_id = ?"
-            params.append(sender_id)
+            sender_ids = [sender_id]
+        match = fts_query(query) if query else None
+        if query and match is None:
+            return []
+        if match:
+            sql = ("SELECT m.* FROM messages m JOIN messages_fts ON messages_fts.rowid = m.id "
+                   "WHERE m.chat_id = ? AND messages_fts MATCH ?")
+            params: list = [chat_id, match]
+        else:
+            sql = "SELECT m.* FROM messages m WHERE m.chat_id = ?"
+            params = [chat_id]
+        if sender_ids:
+            sql += f" AND m.sender_id IN ({', '.join('?' for _ in sender_ids)})"
+            params.extend(sender_ids)
         if since is not None:
             sql += " AND m.date >= ?"
             params.append(since)
-        sql += " ORDER BY messages_fts.rank LIMIT ?"
+        if until is not None:
+            sql += " AND m.date < ?"
+            params.append(until)
+        sql += " ORDER BY messages_fts.rank LIMIT ?" if match else \
+            " ORDER BY m.date DESC, m.id DESC LIMIT ?"
         params.append(limit)
         return [StoredMessage.from_row(row) for row in self.db.query(sql, params)]
+
+    def around(self, chat_id: int, row_id: int, *, before: int = 5,
+               after: int = 5) -> list[StoredMessage]:
+        """The message ``row_id`` with its neighbours, oldest first."""
+        target = self.get(row_id)
+        if target is None or target.chat_id != chat_id:
+            return []
+        earlier = self.before(chat_id, target, limit=before)
+        later = self.db.query(
+            "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?)) "
+            "ORDER BY date, id LIMIT ?",
+            (chat_id, target.date, target.date, target.id, after))
+        return earlier + [target] + [StoredMessage.from_row(row) for row in later]
+
+    def before(self, chat_id: int, message: StoredMessage, *, limit: int) -> list[StoredMessage]:
+        """The ``limit`` messages just before ``message``, oldest first."""
+        rows = self.db.query(
+            "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? "
+            "AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT ?) "
+            "ORDER BY date, id",
+            (chat_id, message.date, message.date, message.id, limit))
+        return [StoredMessage.from_row(row) for row in rows]
+
+    def between(self, chat_id: int, *, since: int, before: StoredMessage,
+                limit: int) -> list[StoredMessage]:
+        """Messages from ``since`` up to ``before`` (exclusive), oldest first,
+        keeping the newest ``limit`` if there are more."""
+        rows = self.db.query(
+            "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? AND date >= ? "
+            "AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT ?) "
+            "ORDER BY date, id",
+            (chat_id, since, before.date, before.date, before.id, limit))
+        return [StoredMessage.from_row(row) for row in rows]
+
+    def update_media_meta(self, row_id: int, meta: dict) -> None:
+        self.db.execute("UPDATE messages SET media_meta = ? WHERE id = ?",
+                        (json.dumps(meta, ensure_ascii=False), row_id))
+
+    def find_poll(self, poll_id: str) -> StoredMessage | None:
+        row = self.db.query_one(
+            "SELECT * FROM messages WHERE media_kind = 'poll' "
+            "AND json_extract(media_meta, '$.poll_id') = ? ORDER BY id DESC LIMIT 1",
+            (poll_id,))
+        return StoredMessage.from_row(row) if row else None
 
     def senders(self, chat_id: int) -> list[tuple[int, str, int]]:
         """(sender_id, latest name, message count) for the browser's filter."""

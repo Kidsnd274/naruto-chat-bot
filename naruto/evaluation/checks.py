@@ -2,6 +2,7 @@
 character, choosing the right topic) is left to the ``manual`` note."""
 
 from dataclasses import dataclass
+import json
 import re
 
 
@@ -47,4 +48,28 @@ def run_checks(expect: dict, text: str, threaded: bool) -> list[CheckResult]:
         wanted = bool(expect["reply_threaded"])
         results.append(CheckResult("reply_threaded", threaded == wanted,
                                    f"threaded={threaded}"))
+    return results
+
+
+def check_tool_calls(expected: list, calls: list[dict]) -> list[CheckResult]:
+    """``expected`` lists tools that must be called, each ``{"name": ...}``
+    with optional ``"arguments"`` whose values must appear in the call's
+    arguments (case-insensitive). An empty list means no tool may be called."""
+    made = [call["name"] for call in calls]
+    if not expected:
+        return [CheckResult("tool_calls", not calls,
+                            f"called {made}" if calls else "no tools called")]
+    results = []
+    for want in expected:
+        if isinstance(want, str):
+            want = {"name": want}
+        name = want.get("name")
+        matching = [call for call in calls if call["name"] == name and not call.get("error")]
+        wanted_args = want.get("arguments") or {}
+        ok = [call for call in matching if all(
+            str(value).lower() in json.dumps(call.get("arguments", {}).get(key, ""),
+                                             ensure_ascii=False).lower()
+            for key, value in wanted_args.items())]
+        detail = f"called {made}" if not ok else f"{name} called"
+        results.append(CheckResult(f"tool:{name}", bool(ok), detail))
     return results

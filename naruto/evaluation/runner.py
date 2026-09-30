@@ -1,29 +1,33 @@
 """Run evaluation cases against one or more models.
 
-Each case is loaded into a throwaway in-memory database and the prompt is
-built by the production ContextBuilder, so the evaluation measures exactly
-what the bot would send. Answers go through the same clean-up as live
-replies. Requests are streamed to measure time to first token.
+Each attempt loads its case into a throwaway in-memory database and runs the
+production agent loop (prompt builder, tools, limits), so the evaluation
+measures what the bot would do. Telegram actions (polls, pins, the board)
+go to a recording stand-in. Requests are streamed to measure time to first
+token.
 """
 
 import base64
 from dataclasses import dataclass, field
+import itertools
 import json
 import mimetypes
 import sqlite3
 import time
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import openai
 
 from naruto.agent.context import ContextBuilder, ImageInput, Prompt
-from naruto.agent.text import clean_model_output
+from naruto.agent.runner import AgentRunner, RunRequest
 from naruto.bootstrap import Bootstrap
 from naruto.db import open_database
-from naruto.db.messages import LIVE, NewMessage
+from naruto.db.chats import Chat
+from naruto.db.messages import LIVE, NewMessage, StoredMessage
 from naruto.evaluation.cases import Case
-from naruto.evaluation.checks import CheckResult, run_checks
-from naruto.llm import LLMClient, split_reasoning
+from naruto.evaluation.checks import CheckResult, check_tool_calls, run_checks
+from naruto.llm import ChatResult, LLMClient, request_completion
 from naruto.services import BotIdentity, Services
 from naruto.settings.registry import SettingError
 
@@ -78,10 +82,22 @@ class Attempt:
     checks: list[CheckResult] = field(default_factory=list)
     error: str | None = None
     prompt: list | None = None
+    tool_calls: list[dict] = field(default_factory=list)
+    model_requests: int = 0
+    steps: list | None = None
 
 
-def build_prompt(case: Case, base_settings: dict[str, Any]) -> tuple[Prompt, Services]:
-    """Load the case into an in-memory database and build the request."""
+@dataclass
+class LoadedCase:
+    services: Services
+    chat: Chat
+    trigger: StoredMessage
+    bot: BotIdentity
+    images: list[ImageInput]
+
+
+def load_case(case: Case, base_settings: dict[str, Any]) -> LoadedCase:
+    """Load the case into a fresh in-memory database."""
     db = open_database(":memory:")
     bootstrap = Bootstrap(telegram_bot_token="0:eval", openai_api_key="eval", admin_password="",
                           owner_user_id=None, database_path=":memory:", web_host="127.0.0.1",
@@ -130,9 +146,67 @@ def build_prompt(case: Case, base_settings: dict[str, Any]) -> tuple[Prompt, Ser
         mime = mimetypes.guess_type(case.trigger.image.name)[0] or "image/jpeg"
         images.append(ImageInput(row_id=stored.id, mime_type=mime,
                                  base64=base64.b64encode(data).decode("ascii")))
-    chat = services.chats.get(CHAT_ID)
-    prompt = ContextBuilder(services).build(chat, stored, bot=bot, images=images, skill=case.skill)
-    return prompt, services
+    return LoadedCase(services, services.chats.get(CHAT_ID), stored, bot, images)
+
+
+def build_prompt(case: Case, base_settings: dict[str, Any]) -> tuple[Prompt, Services]:
+    """The first request the bot would send for this case."""
+    loaded = load_case(case, base_settings)
+    prompt = ContextBuilder(loaded.services).build(loaded.chat, loaded.trigger, bot=loaded.bot,
+                                                   images=loaded.images, skill=case.skill)
+    return prompt, loaded.services
+
+
+class TargetLLM:
+    """The model under test, with the bot's request parameters."""
+
+    def __init__(self, services: Services, client, model: str):
+        self.params = LLMClient(services.settings, "eval")
+        self.client = client
+        self.model = model
+
+    async def chat(self, messages, *, reasoning=None, max_tokens=None, tools=None,
+                   stream=False, background=False) -> ChatResult:
+        kwargs = self.params.build_request(messages, model=self.model, reasoning=reasoning,
+                                           max_tokens=max_tokens, tools=tools)
+        return await request_completion(self.client, kwargs, stream=stream,
+                                        tools_offered=bool(tools))
+
+
+class RecordingTelegram:
+    """Stands in for the Telegram bot: records actions and returns just
+    enough for the tools to carry on."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self._ids = itertools.count(100_000)
+
+    def _sent(self, chat_id) -> SimpleNamespace:
+        return SimpleNamespace(message_id=next(self._ids), chat_id=chat_id)
+
+    async def send_message(self, chat_id, text, **kwargs):
+        self.calls.append(("send_message", {"chat_id": chat_id, "text": text}))
+        return self._sent(chat_id)
+
+    async def send_poll(self, chat_id, question, options, **kwargs):
+        self.calls.append(("send_poll", {"question": question, "options": options, **kwargs}))
+        return self._sent(chat_id)
+
+    async def do_api_request(self, endpoint, api_kwargs=None, **kwargs):
+        self.calls.append((endpoint, api_kwargs or {}))
+        return {"message_id": next(self._ids)}
+
+    async def edit_message_text(self, **kwargs):
+        self.calls.append(("edit_message_text", kwargs))
+        return True
+
+    async def pin_chat_message(self, chat_id, message_id, **kwargs):
+        self.calls.append(("pin_chat_message", {"message_id": message_id}))
+        return True
+
+    async def unpin_chat_message(self, chat_id, **kwargs):
+        self.calls.append(("unpin_chat_message", kwargs))
+        return True
 
 
 ClientFactory = Callable[[ModelTarget], Any]
@@ -145,44 +219,51 @@ def default_client_factory(api_key: str, timeout: float) -> ClientFactory:
     return make
 
 
-async def _call(client, kwargs: dict, stream: bool) -> dict:
-    started = time.monotonic()
-    if not stream:
-        response = await client.chat.completions.create(**kwargs)
-        total = int((time.monotonic() - started) * 1000)
-        message = response.choices[0].message
-        return {"content": message.content or "",
-                "reasoning": getattr(message, "reasoning_content", None),
-                "ttft_ms": None, "total_ms": total,
-                "usage": response.usage.model_dump() if getattr(response, "usage", None) else None,
-                "finish_reason": response.choices[0].finish_reason}
-    content, reasoning = [], []
-    ttft = None
-    usage = None
-    finish_reason = None
-    events = await client.chat.completions.create(
-        **kwargs, stream=True, stream_options={"include_usage": True})
-    async for chunk in events:
-        if getattr(chunk, "usage", None):
-            usage = chunk.usage.model_dump() if hasattr(chunk.usage, "model_dump") else dict(chunk.usage)
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        delta = choice.delta
-        piece = getattr(delta, "content", None)
-        extra = getattr(delta, "model_extra", None) or {}
-        thought = getattr(delta, "reasoning_content", None) or extra.get("reasoning_content")
-        if (piece or thought) and ttft is None:
-            ttft = int((time.monotonic() - started) * 1000)
-        if piece:
-            content.append(piece)
-        if thought:
-            reasoning.append(thought)
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-    return {"content": "".join(content), "reasoning": "".join(reasoning) or None,
-            "ttft_ms": ttft, "total_ms": int((time.monotonic() - started) * 1000),
-            "usage": usage, "finish_reason": finish_reason}
+async def run_attempt(case: Case, target: ModelTarget, client, *, base_settings: dict,
+                      stream: bool, index: int, keep_prompts: bool) -> Attempt:
+    loaded = load_case(case, base_settings)
+    services = loaded.services
+    attempt = Attempt(case.id, case.category, target.label, index, "error")
+    try:
+        runner = AgentRunner(services, RecordingTelegram(),
+                             llm=TargetLLM(services, client, target.name), stream=stream)
+        started = time.monotonic()
+        outcome = await runner.run(RunRequest(chat=loaded.chat, trigger=loaded.trigger,
+                                              bot=loaded.bot, skill=case.skill,
+                                              images=loaded.images))
+        attempt.total_ms = int((time.monotonic() - started) * 1000)
+        run = services.runs.get(outcome.run_id)
+        steps = run.steps or []
+        model_steps = [step for step in steps if step.get("type") == "model"]
+        attempt.prompt_tokens = run.prompt_tokens or 0
+        attempt.prompt = run.prompt if keep_prompts else None
+        attempt.steps = steps if keep_prompts else None
+        attempt.model_requests = run.model_requests or 0
+        attempt.tool_calls = [{"name": step["name"], "arguments": step.get("arguments") or {},
+                               "error": bool(step.get("error"))}
+                              for step in steps if step.get("type") == "tool"]
+        attempt.reasoning = run.reasoning
+        attempt.usage = run.usage
+        attempt.finish_reason = run.finish_reason
+        if model_steps:
+            attempt.ttft_ms = model_steps[0].get("ttft_ms")
+        if outcome.fallback or (run.status == "error" and not outcome.text):
+            attempt.error = outcome.error or run.error or "No answer."
+            return attempt
+        attempt.text = outcome.text
+        attempt.threaded = outcome.threaded
+        attempt.checks = run_checks(case.expect, attempt.text, attempt.threaded)
+        if "tool_calls" in case.expect:
+            attempt.checks += check_tool_calls(case.expect["tool_calls"], attempt.tool_calls)
+        if attempt.checks:
+            attempt.status = "pass" if all(c.passed for c in attempt.checks) else "fail"
+        else:
+            attempt.status = "manual"
+    except Exception as exc:
+        attempt.error = f"{type(exc).__name__}: {exc}"[:500]
+    finally:
+        services.db.close()
+    return attempt
 
 
 async def evaluate(
@@ -200,41 +281,13 @@ async def evaluate(
     clients = {target.label: client_factory(target) for target in targets}
     attempts = []
     for case in cases:
-        prompt, services = build_prompt(case, base_settings)
-        reasoning = services.settings[f"skills.{case.skill}.reasoning"]
+        load_case(case, base_settings).services.db.close()  # fail early on bad settings
         for target in targets:
-            kwargs = LLMClient(services.settings, "eval").build_request(
-                prompt.messages, model=target.name, reasoning=reasoning)
             for index in range(1, repeat + 1):
-                attempt = Attempt(case.id, case.category, target.label, index, "error",
-                                  prompt_tokens=prompt.estimated_tokens,
-                                  prompt=prompt.messages if keep_prompts else None)
-                if "tool_calls" in case.expect:
-                    attempt.status = "skipped"
-                    attempt.error = "Tool-calling cases need the agent loop (phase 3)."
-                    attempts.append(attempt)
-                    continue
-                try:
-                    output = await _call(clients[target.label], kwargs, stream)
-                except Exception as exc:
-                    attempt.error = f"{type(exc).__name__}: {exc}"[:500]
-                else:
-                    text, inline = split_reasoning(output["content"])
-                    threaded, text = clean_model_output(text, case.bot_name)
-                    attempt.text = text
-                    attempt.threaded = threaded
-                    attempt.reasoning = output["reasoning"] or inline
-                    attempt.ttft_ms = output["ttft_ms"]
-                    attempt.total_ms = output["total_ms"]
-                    attempt.usage = output["usage"]
-                    attempt.finish_reason = output["finish_reason"]
-                    attempt.checks = run_checks(case.expect, text, threaded)
-                    if attempt.checks:
-                        attempt.status = "pass" if all(c.passed for c in attempt.checks) else "fail"
-                    else:
-                        attempt.status = "manual"
+                attempt = await run_attempt(case, target, clients[target.label],
+                                            base_settings=base_settings, stream=stream,
+                                            index=index, keep_prompts=keep_prompts)
                 attempts.append(attempt)
                 if progress:
                     progress(f"{case.id} · {target.label} #{index}: {attempt.status}")
-        services.db.close()
     return attempts

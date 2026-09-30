@@ -1,6 +1,6 @@
 # Bot rework plan
 
-Status: phases 1–2 implemented on branch `bot_rework` (2026-09-30); phases 3–5 not started. See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
+Status: phases 1–3 implemented on branch `bot_rework` (phase 3 on 2026-10-01); phases 4–5 not started. See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
 
 ## 1. Goal
 
@@ -464,8 +464,23 @@ Checked 2026-09-30:
 - `/enable`, `/disable`, the DM buttons and the web admin now say when a chat is already in that state.
 - Added global **people** (migration 4): one person per human across chats, with Telegram accounts (user IDs are global) linked to them, a chosen display name and shared aliases. Prompts and the web admin name messages by person, so an import's contact names and live Telegram names no longer look like different people. The People page merges and splits; the import preview maps each sender and pre-fills the export's name. Group memory in phase 4 should attach notes to people.
 
+### Built (phase 3, 2026-10-01)
+
+- **Agent loop** (`naruto/agent/runner.py`): model → tool calls → model, bounded by settings (Agent limits): 4 model requests, 6 tool calls and a 150-second deadline per run, including time queued for the model server. The last allowed request is reserved for the answer (its tool results say no more tools are available); tool calls on it are ignored, and a run that still has no answer sends a short "got stuck" line. Tool results are capped (`agent.tool_result_chars`). Runs in one chat take turns; runs in different chats share the server.
+- **LLM client:** OpenAI-style `tools`; parses structured `tool_calls` and, as a fallback, Qwen's inline `<tool_call>{…}</tool_call>` blocks; optional streaming (used by the evaluation for time to first token, including streamed tool calls); replies are served before background requests (ready for phase 4's digests).
+- **Tools** (`naruto/agent/tools/`): `search_chat` (words, person, date range), `get_messages_around`, `get_earlier_messages`, `update_board`, `pin_message`, `unpin_message`, `propose_plan`, `create_poll`. Arguments are checked against each tool's schema; errors go back to the model as text so it can retry within the limits.
+- **Board** (migration 5): one per chat, three sections (plans, decided, questions), shown to the model as background. Sent as a rich message (`sendRichMessage` with Markdown, through `do_api_request`), pinned silently, and edited in place with `editMessageText` + `rich_message`; if Telegram refuses rich messages it falls back to an HTML message (Settings → Board). Editable, re-sendable and clearable from the chat page.
+- **Plans:** posted as HTML messages with Confirm / Change buttons; Confirm (anyone) marks the plan confirmed, edits the message and adds it to the board; Change asks for a mention with the changes. A new proposal with the same title replaces an open one. Open proposals from the last 7 days are background.
+- **Polls:** native, non-anonymous by default. The bot now also receives `poll` and `poll_answer` updates, so the stored poll shows vote counts and who voted for what.
+- **Agent runs page:** tool names and request counts in the list; every model request (timing, finish reason, reasoning, text, calls) and tool call (arguments, result, errors) on the run page.
+- **Evaluation:** every case runs through the agent loop with a recording Telegram stand-in; `tool_calls` expectations are checked and tool calls appear in the report.
+- **Fix:** the web admin loads all templates once at startup (`auto_reload=False`). A running process had picked up an edited `base.html` that called `take_flashes()`, which its older Python code didn't provide ("'take_flashes' is undefined" on the dashboard).
+
 ### Deviations from the plan
 
+- `get_recent_messages` is `get_earlier_messages` (reads back from a message, default: from the start of the recent window); the recent messages are already in the prompt, and the clearer name keeps the model from calling it for them.
+- `sendRichMessage` has no `reply_markup`, so plan proposals are ordinary HTML messages with an inline keyboard; only the board is a rich message.
+- Tools are offered on every request of a run (not dropped on the last one), because Qwen's chat template puts them in the system prompt and removing them would invalidate the server's prompt cache; the last request is steered by a note instead. `tool_choice` is not sent, since server support varies.
 - The new prompt layout landed in phase 1: the responder had to be rewritten anyway once history moved to SQLite.
 - A minimal agent-run trace (prompt, answer, timing, errors) and the Agent runs page were pulled forward from phase 3, to inspect the new prompt and the evaluation. Tool calls get added with the agent loop.
 - The Telegram subpackage is `naruto/tg/`, not `telegram/`, so it can't be confused with the python-telegram-bot package.
@@ -478,10 +493,12 @@ Checked 2026-09-30:
 - python-telegram-bot 22.8 (latest) knows Bot API 10.0. Ephemeral commands and replies are sent through `api_kwargs` using the 10.3 fields (`BotCommand.is_ephemeral`, `ephemeral_message_parameters`, `reply_parameters.ephemeral_message_id`). Check that `/enable` in a group stays invisible and the reply arrives; if an incoming ephemeral message lacks `message_id`, `ResilientBot` patches it rather than stalling polling.
 - `getMe().can_read_all_group_messages` and pin-right detection in basic groups.
 - Gufo: served model ID (an empty `model.name` uses the first listed model), streaming for time to first token, `reasoning_content`, and image input with Qwen3.8.
-- Rich messages being editable and pinnable (the API docs say yes), before building the board in phase 3.
+- Rich messages: that the board's Markdown (`###` headings, `-` lists, backslash escapes) renders as intended, and that editing and pinning a rich message work (the API docs say yes; `sendRichMessage` has no `reply_markup`). If it looks wrong, switch Settings → Board → format to `html`.
+- Gufo + Qwen3.8 tool calling: whether the server returns structured `tool_calls` or inline `<tool_call>` text (both are handled), and that tool results in `role: tool` messages with `tool_call_id` are accepted.
 
 ### Next
 
 1. Deploy Gufo with Qwen3.8 27B, build ~20 cases from real exports with `python -m naruto.evaluation extract`, run them against 27B and Flash-Next, and settle the model (§11).
-2. Phase 3: bounded agent loop, search tools, board as a rich message, pin, propose-plan, polls; tool calls in the Agent runs page.
+2. Try phase 3 live: ask for a board update, a plan and a poll in a test group, and check the Agent runs page.
+3. Phase 4: digest, group memory and the Memory page, retention for live messages, skills and commands, `/catchup`, reminders, `describe_image`.
 

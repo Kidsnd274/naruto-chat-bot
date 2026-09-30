@@ -21,6 +21,8 @@ from telegram.ext import (
     ContextTypes,
     ExtBot,
     MessageHandler,
+    PollAnswerHandler,
+    PollHandler,
     TypeHandler,
     filters,
 )
@@ -29,13 +31,17 @@ from telegram.request import HTTPXRequest
 from naruto.logs import current_chat_id
 from naruto.services import BotIdentity, Services
 from naruto.tg.access import CALLBACK_PREFIX, ChatAccess
+from naruto.tg.board import BoardPublisher
 from naruto.tg.commands import GroupCommands
+from naruto.tg.plans import CALLBACK_PREFIX as PLAN_PREFIX, PlanButtons
+from naruto.tg.polls import PollTracker
 from naruto.tg.recorder import Recorder
 from naruto.tg.responder import Responder
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_UPDATES = ["message", "edited_message", "my_chat_member", "callback_query"]
+ALLOWED_UPDATES = ["message", "edited_message", "my_chat_member", "callback_query", "poll",
+                   "poll_answer"]
 MESSAGE_KEYS = ("message", "edited_message", "channel_post", "edited_channel_post",
                 "business_message", "edited_business_message")
 
@@ -112,8 +118,12 @@ class TelegramBot:
         self.recorder = Recorder(services)
         self.access = ChatAccess(services, self.application.bot)
         services.access = self.access
+        services.telegram = self.application.bot
+        self.board = BoardPublisher(services)
         self.commands = GroupCommands(services)
         self.responder = Responder(services, self.recorder)
+        self.plans = PlanButtons(services, self.board)
+        self.polls = PollTracker(services)
         self._register()
 
     def _register(self) -> None:
@@ -131,6 +141,9 @@ class TelegramBot:
                                           ChatMemberHandler.MY_CHAT_MEMBER))
         app.add_handler(CallbackQueryHandler(self.access.on_callback,
                                              pattern=rf"^{CALLBACK_PREFIX}:"))
+        app.add_handler(CallbackQueryHandler(self.plans.on_callback, pattern=rf"^{PLAN_PREFIX}:"))
+        app.add_handler(PollHandler(self.polls.on_poll))
+        app.add_handler(PollAnswerHandler(self.polls.on_poll_answer))
         app.add_handler(CommandHandler("enable", self.access.on_enable_command, filters=groups))
         app.add_handler(CommandHandler("disable", self.access.on_disable_command, filters=groups))
         app.add_handler(CommandHandler("start", self.commands.start, filters=groups))

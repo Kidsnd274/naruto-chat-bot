@@ -31,7 +31,7 @@ def test_example_cases_load_with_defaults():
     assert cases["vision-describe"].trigger.image == FIXTURES / "images" / "orange.png"
     assert cases["vision-describe"].trigger.media == "photo"
     assert cases["character-serious-moment"].messages[1].from_bot
-    assert not cases["tool-create-poll"].has_auto_checks
+    assert cases["tool-create-poll"].has_auto_checks
 
 
 @pytest.mark.parametrize("raw,message", [
@@ -139,13 +139,24 @@ class FakeStreamClient:
         return self._stream(answer)
 
     async def _stream(self, answer):
-        def chunk(content=None, reasoning=None, finish=None):
-            delta = SimpleNamespace(content=content, reasoning_content=reasoning, model_extra={})
+        def chunk(content=None, reasoning=None, finish=None, tool_calls=None):
+            delta = SimpleNamespace(content=content, reasoning_content=reasoning, model_extra={},
+                                    tool_calls=tool_calls)
             return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish)], usage=None)
         yield chunk(reasoning="thinking")
-        for piece in answer.split(" "):
-            yield chunk(content=piece + " ")
-        yield chunk(finish="stop")
+        if isinstance(answer, tuple):  # (tool name, arguments): streamed in two pieces
+            name, arguments = answer
+            raw = json.dumps(arguments)
+            half = len(raw) // 2
+            yield chunk(tool_calls=[SimpleNamespace(index=0, id="call-1", function=SimpleNamespace(
+                name=name, arguments=raw[:half]))])
+            yield chunk(tool_calls=[SimpleNamespace(index=0, id=None, function=SimpleNamespace(
+                name=None, arguments=raw[half:]))])
+            yield chunk(finish="tool_calls")
+        else:
+            for piece in answer.split(" "):
+                yield chunk(content=piece + " ")
+            yield chunk(finish="stop")
         yield SimpleNamespace(choices=[], usage=SimpleNamespace(
             model_dump=lambda: {"prompt_tokens": 100, "completion_tokens": 12}))
 
@@ -156,6 +167,8 @@ ANSWERS = {
     "pick her up": "Her flight lands at 7:40am, so leave by 7!",
     "really rough": "Hey, that sounds tough. I'm here, and we'll get food this weekend.",
     "what colour": "Looks blue to me!",
+    "make a poll": ("create_poll", {"question": "BBQ day?", "options": ["Saturday", "Sunday"]}),
+    "poll is up": "Poll's up, vote!",
 }
 
 
@@ -172,7 +185,11 @@ async def test_evaluate_scores_each_case():
     assert by_case["search-reply-to-older-message"].status == "pass"
     assert by_case["character-serious-moment"].status == "pass"
     assert by_case["vision-describe"].status == "fail"
-    assert by_case["tool-create-poll"].status == "skipped"
+    poll = by_case["tool-create-poll"]
+    assert poll.status == "pass" and poll.text == "Poll's up, vote!"
+    assert poll.tool_calls == [{"name": "create_poll", "error": False, "arguments": {
+        "question": "BBQ day?", "options": ["Saturday", "Sunday"]}}]
+    assert poll.model_requests == 2
     first = by_case["focus-direct-question"]
     assert first.ttft_ms is not None and first.total_ms >= first.ttft_ms
     assert first.reasoning == "thinking" and first.usage["completion_tokens"] == 12
@@ -180,6 +197,7 @@ async def test_evaluate_scores_each_case():
     request = client.requests[0]
     assert request["stream"] is True and request["model"] == "fake"
     assert request["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "create_poll" in [tool["function"]["name"] for tool in request["tools"]]
 
 
 async def test_evaluate_records_errors_and_repeats():
@@ -198,11 +216,12 @@ async def test_report_files(tmp_path):
     results, report = write_report(attempts, cases, targets, tmp_path / "out")
     data = json.loads(results.read_text())
     assert [s["model"] for s in data["summary"]] == ["fake-a", "fake-b"]
-    assert data["summary"][0]["pass_rate"] == 0.8  # 4 of 5 auto-checked cases
+    assert data["summary"][0]["pass_rate"] == 5 / 6  # 5 of 6 auto-checked cases
     markdown = report.read_text()
-    assert "| `fake-a` | 80% (8/10)" in markdown
+    assert "| `fake-a` | 83% (10/12)" in markdown
     assert "| [vision-describe](#vision-describe) | vision | 0/2 pass | 0/2 pass |" in markdown
     assert "failed contains_any" in markdown
+    assert '- tool `create_poll` {"question": "BBQ day?"' in markdown
     assert "**Judge by hand:** Warm and supportive" in markdown
     assert render_markdown([], cases, targets).startswith("# Evaluation report")
 

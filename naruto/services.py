@@ -4,16 +4,18 @@ background jobs. Everything runs in one process on one asyncio loop."""
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from naruto.bootstrap import Bootstrap
+from naruto.db.board import BoardRepository
 from naruto.db.chats import ChatRepository
 from naruto.db.database import Database
 from naruto.db.logs import LogRepository
 from naruto.db.members import MemberRepository
 from naruto.db.messages import MessageRepository
 from naruto.db.people import PeopleRepository
+from naruto.db.plans import PlanRepository
 from naruto.db.runs import AgentRunRepository
 from naruto.llm import LLMClient
 from naruto.settings.seed import SeedData
@@ -57,10 +59,13 @@ class Services:
     messages: MessageRepository
     logs: LogRepository
     runs: AgentRunRepository
+    boards: BoardRepository
+    plans: PlanRepository
     llm: LLMClient
     seed: SeedData = field(default_factory=SeedData)
     status: RuntimeStatus = field(default_factory=RuntimeStatus)
     access: "ChatAccess | None" = None  # set once the Telegram bot exists
+    telegram: Any = None  # the telegram.Bot, set once it exists
     imports: "ImportService | None" = None  # set by main (needs an upload directory)
 
     @classmethod
@@ -77,6 +82,8 @@ class Services:
             messages=MessageRepository(db),
             logs=LogRepository(db),
             runs=AgentRunRepository(db),
+            boards=BoardRepository(db),
+            plans=PlanRepository(db),
             llm=LLMClient(settings, bootstrap.openai_api_key),
             seed=seed or SeedData(),
         )

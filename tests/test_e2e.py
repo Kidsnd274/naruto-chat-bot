@@ -3,9 +3,11 @@ against a fake Bot API. Catches wiring bugs that handler-level tests miss,
 such as a startup step that never runs."""
 
 import pytest
+from telegram import Message
 
 from naruto.llm import ChatResult
 from naruto.tg.bot import TelegramBot
+from naruto.tg.content import to_new_message
 from telegram_fake import BOT_USER, FakeTelegram
 
 OWNER = {"id": 1000, "is_bot": False, "first_name": "Owner", "username": "owner"}
@@ -19,7 +21,7 @@ class FakeLLM:
         self.calls = []
         self.in_flight = self.waiting = 0
 
-    async def chat(self, messages, *, reasoning=None, max_tokens=None):
+    async def chat(self, messages, *, reasoning=None, max_tokens=None, **kwargs):
         self.calls.append(messages)
         return ChatResult(text=self.text, reasoning=None, model="fake", latency_ms=1,
                           usage=None, finish_reason="stop")
@@ -166,3 +168,38 @@ async def test_owner_dm_start_lists_pending_groups(running):
     fake.push_message("/start", chat_id=1000, user=OWNER, command=True)
     reply = (await fake.wait_for("sendMessage"))[0]
     assert reply["chat_id"] == 1000 and "Pending: 1" in reply["text"]
+
+
+async def test_plan_buttons_and_poll_updates(running):
+    fake, services = running
+    services.chats.upsert_seen(CHAT, title="BBQ crew")
+    services.chats.set_status(CHAT, "enabled")
+    plan = services.plans.create(CHAT, "BBQ", ["Sat 6pm"], run_id=None, proposed_for_user_id=7)
+    services.plans.set_message(plan.id, 77, CHAT)
+    fake.push(callback_query={
+        "id": "q1", "from": ALICE, "chat_instance": "c", "data": f"plan:confirm:{plan.id}",
+        "message": {"message_id": 77, "date": 1_780_000_000,
+                    "chat": {"id": CHAT, "type": "group", "title": "BBQ crew"},
+                    "from": BOT_USER, "text": "📋 Plan: BBQ"},
+    })
+    await fake.wait_for("sendRichMessage")
+    assert services.plans.get(plan.id).status == "confirmed"
+    assert any(name == "pinChatMessage" for name, _ in fake.calls)
+    assert any(name == "answerCallbackQuery" for name, _ in fake.calls)
+
+    poll_message = fake._sendPoll({"chat_id": CHAT, "question": "Day?",
+                                   "options": ["Sat", "Sun"], "is_anonymous": False})
+    services.messages.insert_live(to_new_message(Message.de_json(poll_message, None),
+                                                 chat_id=CHAT, bot_id=42))
+    poll = {**poll_message["poll"], "options": [
+        {"text": "Sat", "voter_count": 1, "persistent_id": "o0"},
+        {"text": "Sun", "voter_count": 0, "persistent_id": "o1"}], "total_voter_count": 1}
+    fake.push(poll=poll)
+    fake.push(poll_answer={"poll_id": poll["id"], "user": ALICE, "option_ids": [0],
+                           "option_persistent_ids": ["o0"]})
+    for _ in range(100):
+        stored = services.messages.find_poll(poll["id"])
+        if stored.media_meta.get("votes"):
+            break
+        await fake.settle(0.02)
+    assert stored.media_meta["counts"] == [1, 0] and stored.media_meta["votes"] == {"7": [0]}

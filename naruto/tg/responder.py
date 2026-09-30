@@ -1,27 +1,30 @@
 """Answers messages that mention the bot or reply to it, in enabled groups.
 
 The trigger message has already been stored by the recorder (handler group
--1), so the prompt is built from the database.
+-1), so the prompt is built from the database. Runs in one chat happen one
+after another, each answering its own trigger; runs in different chats share
+the model server through the LLM client's queue.
 """
 
+import asyncio
+from collections import defaultdict
 import logging
 
 from telegram import Message, Update
 from telegram.ext import ContextTypes
 
 from naruto import media
-from naruto.agent.context import ContextBuilder, ImageInput
-from naruto.agent.text import clean_model_output, without_image_data
+from naruto.agent.context import ImageInput
+from naruto.agent.runner import FAILURE_TEXT, AgentRunner, RunOutcome, RunRequest
 from naruto.db.chats import Chat
 from naruto.db.messages import StoredMessage
-from naruto.llm import LLMError
 from naruto.services import BotIdentity, Services
 from naruto.tg.recorder import GROUP_TYPES, Recorder
 from naruto.tg.sending import send_text, typing
 
 logger = logging.getLogger(__name__)
 
-FAILURE_TEXT = "Sorry, I couldn't get a response right now. Please try again later."
+__all__ = ["FAILURE_TEXT", "Responder", "is_trigger"]
 
 
 def is_trigger(message, bot: BotIdentity) -> bool:
@@ -39,7 +42,7 @@ class Responder:
     def __init__(self, services: Services, recorder: Recorder):
         self.services = services
         self.recorder = recorder
-        self.builder = ContextBuilder(services)
+        self._chat_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.message
@@ -60,48 +63,28 @@ class Responder:
         await self.respond(context.bot, chat, message, trigger, bot)
 
     async def respond(self, telegram_bot, chat: Chat, message: Message,
-                      trigger: StoredMessage, bot: BotIdentity) -> None:
-        settings = self.services.settings
-        runs = self.services.runs
-        skill = "banter"
-        run_id = runs.start(chat_id=chat.chat_id, skill=skill, trigger_row_id=trigger.id,
-                            trigger_message_id=message.message_id, user_id=trigger.sender_id)
-        try:
+                      trigger: StoredMessage, bot: BotIdentity, *, skill: str = "banter") -> None:
+        async with self._chat_locks[chat.chat_id]:
+            chat = self.services.chats.get(chat.chat_id) or chat  # may have changed meanwhile
             async with typing(telegram_bot, message.chat_id):
                 images = await self._images(message, trigger)
-                prompt = self.builder.build(chat, trigger, bot=bot, images=images, skill=skill)
-                runs.update(run_id, prompt=without_image_data(prompt.messages),
-                            prompt_tokens=prompt.estimated_tokens, window_size=prompt.window_size,
-                            dropped=prompt.dropped, image_count=prompt.image_count)
-                if prompt.dropped:
-                    logger.warning("Dropped %s old messages to fit the input budget (%s tokens).",
-                                   prompt.dropped, settings["context.input_token_budget"])
-                try:
-                    result = await self.services.llm.chat(
-                        prompt.messages, reasoning=settings[f"skills.{skill}.reasoning"])
-                except LLMError as exc:
-                    logger.error("Model request failed: %s", exc)
-                    runs.update(run_id, status="error", error=str(exc))
-                    await self._send(telegram_bot, chat, message, FAILURE_TEXT, reply=False)
-                    return
+                runner = AgentRunner(self.services, telegram_bot,
+                                     record_sent=self.recorder.record_sent)
+                outcome = await runner.run(RunRequest(
+                    chat=chat, trigger=trigger, bot=bot, skill=skill, images=images,
+                    trigger_message_id=message.message_id))
+            await self.deliver(telegram_bot, chat, message, outcome)
 
-            should_reply, text = clean_model_output(result.text, bot.name)
-            outcome = dict(model=result.model, reasoning=result.reasoning, response=text,
-                           usage=result.usage, latency_ms=result.latency_ms,
-                           finish_reason=result.finish_reason)
-            if not text:
-                logger.warning("The model returned an empty answer (finish reason %s).",
-                               result.finish_reason)
-                runs.update(run_id, status="empty", **outcome)
-                return
-            logger.info("Answered in %s ms (%s estimated prompt tokens, %s recent messages).",
-                        result.latency_ms, prompt.estimated_tokens, prompt.window_size)
-            sent = await self._send(telegram_bot, chat, message, text, reply=should_reply)
-            runs.update(run_id, status="ok", reply_message_ids=[m.message_id for m in sent],
-                        **outcome)
-        except Exception as exc:
-            runs.update(run_id, status="error", error=f"{type(exc).__name__}: {exc}"[:500])
-            raise
+    async def deliver(self, telegram_bot, chat: Chat, message: Message,
+                      outcome: RunOutcome) -> list[Message]:
+        if not outcome.text:
+            return []
+        sent = await self._send(telegram_bot, chat, message, outcome.text,
+                                reply=outcome.threaded and not outcome.fallback)
+        if sent and not outcome.fallback:
+            self.services.runs.update(outcome.run_id,
+                                      reply_message_ids=[m.message_id for m in sent])
+        return sent
 
     async def _send(self, telegram_bot, chat: Chat, message: Message, text: str,
                     *, reply: bool) -> list[Message]:

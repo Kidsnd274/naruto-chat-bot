@@ -171,6 +171,9 @@ SECTIONS: tuple[Section, ...] = (
             "Prompt texts. The persona comes first in every request, then the "
             "operating rules, then the skill's instructions."),
     Section("context", "Context", "What goes into each request."),
+    Section("agent", "Agent limits",
+            "Bounds for one bot response: model requests, tool calls and time."),
+    Section("board", "Board", "The pinned board of plans, decisions and open questions."),
     Section("import", "Import", "Telegram Desktop history import."),
     Section("media", "Media", "Photos, stickers and other visual media."),
     Section("retention", "Retention",
@@ -255,6 +258,32 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("context.max_message_chars", "context", "Max characters per message",
             "Longer messages are shortened in the recent window.",
             "int", 1500, min=50, max=100_000),
+    # --------------------------------------------------------------- agent
+    Setting("agent.max_model_requests", "agent", "Model requests per run",
+            "Upper limit on model requests for one response, including the final "
+            "answer. The last request gets no more tool results.",
+            "int", 4, min=1, max=20),
+    Setting("agent.max_tool_calls", "agent", "Tool calls per run",
+            "Upper limit on tool calls for one response.",
+            "int", 6, min=0, max=50),
+    Setting("agent.deadline_seconds", "agent", "Run deadline (seconds)",
+            "Give up on a response after this long, including time spent waiting "
+            "for the model server.",
+            "int", 150, min=10, max=1800),
+    Setting("agent.tool_result_chars", "agent", "Max characters per tool result",
+            "Longer tool results are shortened before they go back to the model.",
+            "int", 5000, min=200, max=100_000),
+    Setting("agent.search_results", "agent", "Search results",
+            "How many messages search_chat returns at most.",
+            "int", 12, min=1, max=100),
+    # --------------------------------------------------------------- board
+    Setting("board.format", "board", "Board format",
+            "rich: a Telegram rich message (headings and lists). html: a plain "
+            "formatted message. Rich falls back to html if Telegram refuses it.",
+            "choice", "rich", choices=("rich", "html")),
+    Setting("board.pin", "board", "Pin the board",
+            "Pin the board message (silently). Needs the “Pin messages” admin right.",
+            "bool", True),
     # -------------------------------------------------------------- import
     Setting("import.max_upload_mb", "import", "Max upload size (MB)",
             "Largest result.json the Import page accepts.",

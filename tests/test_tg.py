@@ -332,8 +332,8 @@ class FakeLLM:
         self.calls = []
         self.in_flight = self.waiting = 0
 
-    async def chat(self, messages, *, reasoning=None, max_tokens=None):
-        self.calls.append({"messages": messages, "reasoning": reasoning})
+    async def chat(self, messages, *, reasoning=None, max_tokens=None, **kwargs):
+        self.calls.append({"messages": messages, "reasoning": reasoning, **kwargs})
         if self.error:
             raise self.error
         return ChatResult(text=self.text, reasoning=None, model="m", latency_ms=5,

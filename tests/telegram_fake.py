@@ -82,6 +82,29 @@ class FakeTelegram(BaseRequest):
     def _editMessageText(self, params):
         return True
 
+    def _sendRichMessage(self, params):
+        self._message_id += 1
+        return {"message_id": self._message_id, "date": int(time.time()),
+                "chat": {"id": int(params["chat_id"]), "type": "group", "title": "BBQ crew"},
+                "from": BOT_USER}
+
+    def _sendPoll(self, params):
+        self._message_id += 1
+        options = params["options"]
+        if isinstance(options, str):
+            options = json.loads(options)
+        texts = [o["text"] if isinstance(o, dict) else o for o in options]
+        return {"message_id": self._message_id, "date": int(time.time()),
+                "chat": {"id": int(params["chat_id"]), "type": "group", "title": "BBQ crew"},
+                "from": BOT_USER,
+                "poll": {"id": f"poll-{self._message_id}", "question": params["question"],
+                         "options": [{"text": t, "voter_count": 0, "persistent_id": f"o{i}"}
+                                     for i, t in enumerate(texts)],
+                         "total_voter_count": 0, "is_closed": False,
+                         "is_anonymous": params.get("is_anonymous", True), "type": "regular",
+                         "allows_multiple_answers": params.get("allows_multiple_answers", False),
+                         "allows_revoting": True, "members_only": False}}
+
     # -------------------------------------------------------------- helpers
 
     def push(self, **update) -> int:

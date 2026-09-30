@@ -85,6 +85,7 @@
 </div>
 
 {% block extra_sections %}
+  {% if board is defined %}{% include "_chat_board.html" %}{% endif %}
   {% if imports is defined %}{% include "_chat_imports.html" %}{% endif %}
 {% endblock %}
 
@@ -126,6 +127,10 @@
       <option value="import">Imported only</option>
     </select>
     <button type="submit" class="danger">Review deletion</button>
+  </form>
+  <form method="post" action="/chats/{{ chat.chat_id }}/board/clear" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger">Clear the board…</button>
   </form>
 </section>
 {% endblock %}

@@ -7,7 +7,7 @@ import time
 
 from naruto.db.database import Database
 
-_JSON_FIELDS = ("prompt", "reply_message_ids", "usage")
+_JSON_FIELDS = ("prompt", "reply_message_ids", "usage", "steps")
 
 
 @dataclass
@@ -34,6 +34,9 @@ class AgentRun:
     error: str | None
     started_at: float
     finished_at: float | None
+    steps: list | None = None
+    model_requests: int | None = None
+    tool_calls: int | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "AgentRun":
@@ -47,6 +50,14 @@ class AgentRun:
         if self.finished_at is None:
             return None
         return int((self.finished_at - self.started_at) * 1000)
+
+    @property
+    def tool_steps(self) -> list[dict]:
+        return [step for step in self.steps or [] if step.get("type") == "tool"]
+
+    @property
+    def tool_names(self) -> list[str]:
+        return [step.get("name", "?") for step in self.tool_steps]
 
     @property
     def prompt_chars(self) -> int:

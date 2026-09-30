@@ -47,7 +47,14 @@ def media_marker(kind: str | None, meta: dict | None = None) -> str:
             return f"[file: {name}]" if name else "[file]"
         case "poll":
             question = (meta.get("question") or "").strip()
-            return f"[poll: {question}]" if question else "[poll]"
+            options = meta.get("options") or []
+            if not options:
+                return f"[poll: {question}]" if question else "[poll]"
+            counts = list(meta.get("counts") or [])
+            counts += [0] * (len(options) - len(counts))
+            state = " (closed)" if meta.get("closed") else ""
+            choices = ", ".join(f"{option} {count}" for option, count in zip(options, counts))
+            return f"[poll{state}: {question} — votes: {choices}]"
         case "location":
             return "[location]"
         case "venue":

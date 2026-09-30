@@ -2,6 +2,7 @@
 what the code under test sends."""
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
 from telegram import (
@@ -13,10 +14,14 @@ from telegram import (
     Message,
     MessageEntity,
     PhotoSize,
+    Poll,
+    PollOption,
     Update,
     User,
 )
 from telegram.error import BadRequest
+
+from naruto.llm import ChatResult, make_tool_call
 
 BOT_ID = 42
 BOT_USERNAME = "naruto_bot"
@@ -114,8 +119,15 @@ class FakeBot:
         self.actions: list[tuple] = []
         self.fail_markdown = False
         self.fail_ephemeral = False
+        self.fail_rich = False
+        self.fail_pin = False
         self.member = None
         self._next_id = 900
+        self.api_calls: list[tuple[str, dict]] = []
+        self.pins: list[tuple[int, int]] = []
+        self.unpins: list[tuple[int, int | None]] = []
+        self.edits: list[dict] = []
+        self.polls: list[dict] = []
 
     async def send_message(self, chat_id, text, parse_mode=None, reply_parameters=None,
                            reply_markup=None, api_kwargs=None, **kwargs):
@@ -131,6 +143,49 @@ class FakeBot:
         return Message(message_id=self._next_id, date=at(60), chat=chat,
                        from_user=BOT_USER, text=text)
 
+    async def do_api_request(self, endpoint, api_kwargs=None, **kwargs):
+        api_kwargs = api_kwargs or {}
+        self.api_calls.append((endpoint, api_kwargs))
+        if endpoint == "sendRichMessage":
+            if self.fail_rich:
+                raise BadRequest("Rich messages are not supported")
+            self._next_id += 1
+            return {"message_id": self._next_id, "date": T0 + 60,
+                    "chat": {"id": api_kwargs["chat_id"], "type": "group"}}
+        if endpoint == "editMessageText":
+            self.edits.append(api_kwargs)
+            return True
+        return True
+
+    async def edit_message_text(self, text=None, chat_id=None, message_id=None, **kwargs):
+        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, **kwargs})
+        return True
+
+    async def pin_chat_message(self, chat_id, message_id, disable_notification=None, **kwargs):
+        if self.fail_pin:
+            raise BadRequest("Not enough rights to manage pinned messages in the chat")
+        self.pins.append((chat_id, message_id))
+        return True
+
+    async def unpin_chat_message(self, chat_id, message_id=None, **kwargs):
+        self.unpins.append((chat_id, message_id))
+        return True
+
+    async def send_poll(self, chat_id, question, options, is_anonymous=True,
+                        allows_multiple_answers=False, **kwargs):
+        self.polls.append({"chat_id": chat_id, "question": question, "options": options,
+                           "is_anonymous": is_anonymous,
+                           "allows_multiple_answers": allows_multiple_answers})
+        self._next_id += 1
+        poll = Poll(id=f"poll-{self._next_id}", question=question,
+                    options=[PollOption(text, 0, persistent_id=f"o{i}")
+                             for i, text in enumerate(options)], total_voter_count=0,
+                    is_closed=False, is_anonymous=is_anonymous, type=Poll.REGULAR,
+                    allows_multiple_answers=allows_multiple_answers, allows_revoting=True,
+                    members_only=False)
+        return Message(message_id=self._next_id, date=at(60), chat=group(chat_id),
+                       from_user=BOT_USER, poll=poll)
+
     async def send_chat_action(self, chat_id, action, **kwargs):
         self.actions.append((chat_id, action))
 
@@ -144,3 +199,38 @@ class FakeBot:
 
 def context(bot: FakeBot, args: list[str] | None = None):
     return SimpleNamespace(bot=bot, args=args or [])
+
+
+def tool_call(name: str, arguments: dict | str | None = None, call_id: str | None = None):
+    raw = arguments if isinstance(arguments, str) else json.dumps(arguments or {})
+    return make_tool_call(call_id or f"call-{name}", name, raw, 0)
+
+
+class ScriptedLLM:
+    """Answers with a scripted sequence: each item is the answer text, or a
+    list of tool calls (see tool_call), or an exception to raise. The last
+    item repeats."""
+
+    def __init__(self, *script):
+        self.script = list(script) or ["Heh."]
+        self.calls: list[dict] = []
+        self.in_flight = self.waiting = 0
+
+    async def chat(self, messages, *, reasoning=None, max_tokens=None, tools=None,
+                   stream=False, background=False):
+        self.calls.append({"messages": [dict(m) for m in messages], "reasoning": reasoning,
+                           "tools": tools, "background": background})
+        item = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
+        if isinstance(item, BaseException):
+            raise item
+        calls = item if isinstance(item, list) else []
+        text = item if isinstance(item, str) else ""
+        return ChatResult(text=text, reasoning=None, model="scripted", latency_ms=3,
+                          usage={"prompt_tokens": 50, "completion_tokens": 5},
+                          finish_reason="tool_calls" if calls else "stop", tool_calls=calls)
+
+    async def list_models(self, timeout=10.0):
+        return ["scripted"]
+
+    def tool_names(self, index: int = 0) -> list[str]:
+        return [t["function"]["name"] for t in self.calls[index]["tools"] or []]

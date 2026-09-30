@@ -5,14 +5,15 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 - **Group-only.** It answers when someone mentions it or replies to it. Private messages are only for the owner, to approve groups.
 - **Approve once.** A group the bot is added to stays pending until the owner approves it. Pending and disabled groups get no replies and nothing is recorded.
 - **Remembers the chat.** Every message in an enabled group is stored (text, sender, replies, media as markers such as `[photo]`), with full-text search. Images are only downloaded when someone asks about one.
-- **Web admin** on localhost: dashboard, chats, message browser, settings, logs.
+- **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, post a plan with Confirm / Change buttons, start polls and pin messages. Each answer is a bounded agent run: a few model requests and tool calls at most.
+- **Web admin** on localhost: dashboard, chats, message browser, board, agent traces, settings, logs.
 
 ## Setup
 
 ### 1. Telegram (BotFather)
 
 - **Group Privacy: off** (`/setprivacy` → Disable), so the bot receives every group message. The setting applies when the bot joins a group: if it joined while privacy was on, remove it and add it again. The dashboard warns if privacy is still on.
-- After adding the bot to a group, make it an **admin with “Pin messages”** (optionally “Delete messages”), for the pinned board planned in a later phase. The web admin shows missing rights.
+- After adding the bot to a group, make it an **admin with “Pin messages”** (optionally “Delete messages”), for the pinned board and pins. The web admin shows missing rights.
 
 ### 2. `.env`
 
@@ -79,15 +80,23 @@ python3 -m venv .venv
 
 **In a group:** mention the bot or reply to one of its messages. Other commands: `/group_info`, `/alias @user name` and `/removealias @user name` (aliases apply in every chat), and `/clearaliases` (owner only). There is no `/clear`: delete stored messages from the chat's page in the web admin.
 
+What it can do when asked, besides chatting:
+
+- **Look things up** further back than the recent messages it sees, including imported history ("what time did Mei say her flight lands?").
+- **The board:** one pinned message per group with 🗓 Plans, ✅ Decided and ❓ Open questions, edited in place ("put the BBQ on the board", "mark booking the pit done"). It is sent as a Telegram rich message, or as a plain formatted message if rich messages are refused (Settings → Board).
+- **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
+- **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
+- **Pins** ("pin the address").
+
 **Web admin** (`http://127.0.0.1:8765/`):
 
 | Page | What it does |
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
-| Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), a searchable message browser and data deletion. |
+| Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion. |
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
-| Agent runs | One row per bot response: the exact prompt sent, the answer, timing and errors. |
+| Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
 
@@ -116,7 +125,7 @@ Only messages from before the bot's first recorded message are imported (so noth
     --settings-db data/naruto.db --repeat 3 --out ~/naruto-eval/reports/2026-10-01
 ```
 
-See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the case format (synthetic examples, one per category) and `naruto/evaluation/cases.py` for every field. Checks: `contains_any`, `contains_all`, `not_contains`, `regex`, `min_chars`, `max_chars`, `reply_threaded`; `manual` describes what to judge by hand. `--settings-db` uses the prompts and sampling settings from the bot's database. Tool-calling cases (`tool_calls`) are skipped until the agent loop exists.
+See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the case format (synthetic examples, one per category) and `naruto/evaluation/cases.py` for every field. Checks: `contains_any`, `contains_all`, `not_contains`, `regex`, `min_chars`, `max_chars`, `reply_threaded`; `manual` describes what to judge by hand. `--settings-db` uses the prompts and sampling settings from the bot's database. Every case runs through the bot's agent loop with its tools (Telegram actions such as polls are only recorded), so `tool_calls` checks that the right tools were called, e.g. `[{"name": "create_poll", "arguments": {"options": "saturday"}}]`; `[]` means no tool may be called.
 
 ## Development
 
@@ -125,7 +134,7 @@ See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the c
 .venv/bin/python -m pytest
 ```
 
-The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending), `agent/` (prompt building), `web/` (FastAPI admin), plus `llm.py` (model client) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
+The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `web/` (FastAPI admin), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
 
 ### Upgrading from the Redis version
 

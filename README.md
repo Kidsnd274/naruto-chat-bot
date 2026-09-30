@@ -103,6 +103,22 @@ The bot only sees messages from when it joined. To give it older history:
 
 Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. The uploaded file is deleted when the import finishes. You can also import into a group the bot hasn't joined yet; it is created as pending.
 
+### Evaluating models
+
+`python -m naruto.evaluation` runs a set of cases against one or more models through the same prompt builder the bot uses, and reports the pass rate of automatic checks, time to first token and total latency, plus every answer for review by hand. Cases come from real chats, so keep them and the reports **outside the repository** (the tool warns if you don't).
+
+```bash
+# Make a case skeleton from an export: the 60 messages before message 1234567 become the chat.
+.venv/bin/python -m naruto.evaluation extract --export ~/Downloads/ChatExport/result.json \
+    --trigger 1234567 --out ~/naruto-eval/cases/bbq-plan.json
+# ...merge cases into one file and fill in "expect", then compare models:
+.venv/bin/python -m naruto.evaluation run ~/naruto-eval/cases.json \
+    --model qwen3.8-27b@http://localhost:8080/v1 --model qwen3.8-flash-next@http://localhost:8081/v1 \
+    --settings-db data/naruto.db --repeat 3 --out ~/naruto-eval/reports/2026-10-01
+```
+
+See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the case format (synthetic examples, one per category) and `naruto/evaluation/cases.py` for every field. Checks: `contains_any`, `contains_all`, `not_contains`, `regex`, `min_chars`, `max_chars`, `reply_threaded`; `manual` describes what to judge by hand. `--settings-db` uses the prompts and sampling settings from the bot's database. Tool-calling cases (`tool_calls`) are skipped until the agent loop exists.
+
 ## Development
 
 ```bash

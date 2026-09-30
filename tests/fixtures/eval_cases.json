@@ -1,0 +1,91 @@
+{
+  "defaults": {
+    "chat": {"title": "BBQ crew", "type": "group"},
+    "timezone": "Asia/Singapore",
+    "members": [
+      {"id": 7, "name": "Alice", "username": "alice"},
+      {"id": 8, "name": "Bob"},
+      {"id": 9, "name": "Wei", "username": "weiwei", "aliases": ["Always Late"]}
+    ]
+  },
+  "cases": [
+    {
+      "id": "focus-direct-question",
+      "category": "focus",
+      "description": "A busy chat with an older BBQ thread; the current question is about something else.",
+      "messages": [
+        {"from": "Alice", "from_id": 7, "text": "BBQ on Saturday? East Coast again?", "date": "2026-09-26T18:00:00+08:00"},
+        {"from": "Bob", "from_id": 8, "text": "yes! 6pm", "date": "2026-09-26T18:02:00+08:00"},
+        {"from": "Wei", "from_id": 9, "text": "I'll bring the grill", "date": "2026-09-26T18:05:00+08:00"},
+        {"from": "Alice", "from_id": 7, "text": "anyone watched the new climbing documentary?", "date": "2026-09-27T21:00:00+08:00"}
+      ],
+      "trigger": {"from": "Bob", "from_id": 8, "text": "@naruto_bot any tips for a first bouldering session?", "date": "2026-09-27T21:05:00+08:00"},
+      "expect": {
+        "contains_any": ["warm", "grip", "shoes", "fall", "chalk", "rest", "start"],
+        "not_contains": ["bbq", "grill"],
+        "max_chars": 700,
+        "manual": "Gives real bouldering tips to Bob and doesn't bring up the BBQ."
+      }
+    },
+    {
+      "id": "summarize-plan",
+      "category": "summarize",
+      "messages": [
+        {"from": "Alice", "from_id": 7, "text": "BBQ on Saturday? East Coast again?"},
+        {"from": "Bob", "from_id": 8, "text": "yes, 6pm works"},
+        {"from": "Wei", "from_id": 9, "text": "I'll bring the grill"},
+        {"from": "Alice", "from_id": 7, "text": "I can book pit 42"},
+        {"from": "Bob", "from_id": 8, "text": "who's buying the meat?"}
+      ],
+      "trigger": {"from": "Wei", "from_id": 9, "text": "@naruto_bot what did we decide so far?"},
+      "expect": {
+        "contains_all": ["6"],
+        "contains_any": ["east coast", "pit 42"],
+        "regex": "meat|still open|not sure|undecided",
+        "manual": "Lists the decisions and the open question (meat)."
+      }
+    },
+    {
+      "id": "search-reply-to-older-message",
+      "category": "search",
+      "description": "The trigger replies to an older message the model has to use.",
+      "settings": {"context.recent_window": 2, "context.window_step": 1},
+      "messages": [
+        {"id": 1, "from": "Alice", "from_id": 7, "text": "My flight lands at 7:40am on Friday"},
+        {"id": 2, "from": "Bob", "from_id": 8, "text": "lol"},
+        {"id": 3, "from": "Wei", "from_id": 9, "text": "ok"},
+        {"id": 4, "from": "Bob", "from_id": 8, "text": "nice"}
+      ],
+      "trigger": {"id": 5, "from": "Wei", "from_id": 9, "text": "@naruto_bot what time should we pick her up?", "reply_to": 1},
+      "expect": {"contains_any": ["7:40", "7.40", "740"]}
+    },
+    {
+      "id": "character-serious-moment",
+      "category": "character",
+      "messages": [
+        {"from": "Bob", "from_id": 8, "text": "haha nice"},
+        {"from": "Naruto", "bot": true, "text": "Heh, told you so!"}
+      ],
+      "trigger": {"from": "Alice", "from_id": 7, "text": "@naruto_bot honestly this week has been really rough"},
+      "expect": {
+        "not_contains": ["as an ai", "i'd be happy to help", "ramen"],
+        "max_chars": 500,
+        "manual": "Warm and supportive, drops the jokes, still sounds like Naruto."
+      }
+    },
+    {
+      "id": "vision-describe",
+      "category": "vision",
+      "messages": [{"from": "Bob", "from_id": 8, "text": "guess the colour"}],
+      "trigger": {"from": "Alice", "from_id": 7, "text": "@naruto_bot what colour is this?", "image": "images/orange.png"},
+      "expect": {"contains_any": ["orange"]}
+    },
+    {
+      "id": "tool-create-poll",
+      "category": "tool",
+      "messages": [{"from": "Alice", "from_id": 7, "text": "Saturday or Sunday for the BBQ?"}],
+      "trigger": {"from": "Bob", "from_id": 8, "text": "@naruto_bot make a poll for it"},
+      "expect": {"tool_calls": [{"name": "create_poll"}]}
+    }
+  ]
+}

@@ -1,9 +1,33 @@
+<section class="card" id="memory">
+  <div class="title-row">
+    <h2>Memory <span class="muted small">{{ note_count }} note{{ "s" if note_count != 1 else "" }}</span></h2>
+    <div class="actions">
+      <a class="button small primary" href="/chats/{{ chat.chat_id }}/memory">Add, edit or lock notes</a>
+    </div>
+  </div>
+  <p class="muted small">Durable facts the bot keeps about this group; they outlive the messages. The bot saves them when someone asks it to remember something, on its own when someone mentions something worth keeping, and (with automatic notes on) while it updates the digest.</p>
+  {% if notes %}
+    <ul class="plain notes">
+      {% for note in notes %}
+        <li>
+          <span class="mono small muted">n{{ note.id }}</span>
+          {% if note.person_id %}<strong>{{ note_names.get(note.person_id, "someone") }}:</strong>{% endif %}
+          {{ note.content }}
+          <span class="muted small">· {{ category_labels.get(note.category, note.category) }}{% if note.locked %} · <span class="badge custom">locked</span>{% endif %} · by {{ note.created_by }}, {{ note.created_at|ago }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+    {% if note_count > notes|length %}<p class="small"><a href="/chats/{{ chat.chat_id }}/memory">All {{ note_count }} notes →</a></p>{% endif %}
+  {% else %}
+    <p class="muted small">No notes yet. Ask the bot to remember something (“remember that Sam is vegetarian”, /remember), or add one here.</p>
+  {% endif %}
+</section>
+
 <div class="grid two">
   <section class="card" id="digest">
     <div class="title-row">
       <h2>Digest</h2>
       <div class="actions">
-        <a class="button small" href="/chats/{{ chat.chat_id }}/memory">Memory: {{ note_count }} notes</a>
         <form method="post" action="/chats/{{ chat.chat_id }}/digest/update">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="small">Update now</button>

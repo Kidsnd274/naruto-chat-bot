@@ -59,7 +59,8 @@ async def _referer_or(request: Request, chat_id: int) -> RedirectResponse:
 async def chats_page(request: Request):
     services = _services(request)
     return request.app.state.templates.TemplateResponse(
-        request, "chats.html", {"summaries": services.chats.summaries()})
+        request, "chats.html", {"summaries": services.chats.summaries(),
+                                "note_counts": services.notes.counts_by_chat()})
 
 
 def _rights_summary(chat: Chat) -> str:

@@ -16,6 +16,7 @@ class FakeTelegram(BaseRequest):
         self.calls: list[tuple[str, dict]] = []
         self.can_read_all = can_read_all_group_messages
         self.chat_member = {"status": "member", "user": BOT_USER}
+        self.members_can_pin = False  # the group's default permissions (getChat)
         self._updates: list[dict] = []
         self._update_id = 0
         self._message_id = 5000
@@ -78,6 +79,15 @@ class FakeTelegram(BaseRequest):
 
     def _getChatMember(self, params):
         return self.chat_member
+
+    def _getChat(self, params):
+        return {"id": int(params["chat_id"]), "type": "group", "title": "BBQ crew",
+                "accent_color_id": 0, "max_reaction_count": 11,
+                "accepted_gift_types": {"unlimited_gifts": False, "limited_gifts": False,
+                                        "unique_gifts": False, "premium_subscription": False,
+                                        "gifts_from_channels": False},
+                "permissions": {"can_send_messages": True,
+                                "can_pin_messages": self.members_can_pin}}
 
     def _editMessageText(self, params):
         return True

@@ -18,13 +18,20 @@ router = APIRouter(dependencies=[Depends(require_admin)])
 ACTOR = "owner (web admin)"
 
 
+CHAT_PAGE_NOTES = 50  # the rest are on the Memory page
+
+
 def chat_memory(services: Services, chat: Chat) -> dict:
     """Sections on the chat detail page."""
+    notes = services.notes.for_chat(chat.chat_id, limit=CHAT_PAGE_NOTES)
     return {
         "digest": services.digests.get(chat.chat_id),
         "unread": services.digests.unread_count(chat.chat_id,
                                                 services.digests.get(chat.chat_id))[0],
         "note_count": services.notes.count(chat.chat_id),
+        "notes": notes,
+        "note_names": services.people.names_by_person(n.person_id for n in notes),
+        "category_labels": dict(CATEGORIES),
         "reminders": services.reminders.for_chat(chat.chat_id, limit=20),
     }
 

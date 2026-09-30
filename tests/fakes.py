@@ -11,6 +11,7 @@ from telegram import (
     ChatMemberLeft,
     ChatMemberMember,
     ChatMemberUpdated,
+    ChatPermissions,
     Message,
     MessageEntity,
     PhotoSize,
@@ -122,6 +123,7 @@ class FakeBot:
         self.fail_rich = False
         self.fail_pin = False
         self.member = None
+        self.members_can_pin = False  # the group's default permissions (get_chat)
         self._next_id = 900
         self.api_calls: list[tuple[str, dict]] = []
         self.pins: list[tuple[int, int]] = []
@@ -195,6 +197,10 @@ class FakeBot:
 
     async def get_chat_member(self, chat_id, user_id, **kwargs):
         return self.member or ChatMemberMember(BOT_USER)
+
+    async def get_chat(self, chat_id, **kwargs):
+        return SimpleNamespace(id=chat_id, permissions=ChatPermissions(
+            can_send_messages=True, can_pin_messages=self.members_can_pin))
 
 
 def context(bot: FakeBot, args: list[str] | None = None):

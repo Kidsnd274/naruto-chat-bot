@@ -534,7 +534,8 @@ def test_board_save_without_the_bot(admin, chat, services):
 
 def test_memory_page_add_edit_lock_delete(admin, chat, services):
     page = admin.client.get(f"/chats/{CHAT}").text
-    assert 'id="digest"' in page and "Memory: 0 notes" in page and 'id="reminders"' in page
+    assert 'id="digest"' in page and 'id="reminders"' in page
+    assert 'id="memory"' in page and "0 notes" in page and "No notes yet." in page
     person_id = services.people.person_id_for(7)
     admin.post(f"/chats/{CHAT}/memory", {"content": "Alice is vegetarian",
                                          "category": "preference", "person": str(person_id),
@@ -543,6 +544,11 @@ def test_memory_page_add_edit_lock_delete(admin, chat, services):
     assert note.locked and note.person_id == person_id and note.created_by == "owner"
     page = admin.client.get(f"/chats/{CHAT}/memory").text
     assert 'value="Alice is vegetarian"' in page and "locked" in page
+    # The notes are on the chat's own page too, and counted on the Chats page.
+    page = " ".join(admin.client.get(f"/chats/{CHAT}").text.split())
+    assert "<strong>Alice:</strong> Alice is vegetarian" in page and "1 note</span>" in page
+    assert f'<a href="/chats/{CHAT}/memory" title="Memory notes">1 note</a>' in \
+        admin.client.get("/chats").text
 
     admin.post(f"/chats/{CHAT}/memory/{note.id}", {"content": "Alice is vegan",
                                                    "category": "preference", "person": ""})

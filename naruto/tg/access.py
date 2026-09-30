@@ -8,6 +8,7 @@ nothing is recorded.
 
 from html import escape
 import logging
+import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus, ParseMode
@@ -27,11 +28,44 @@ PRESENT = (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR,
 CALLBACK_PREFIX = "access"
 
 
-def _rights_from_member(member) -> tuple[bool, bool]:
-    if member.status == ChatMemberStatus.ADMINISTRATOR:
-        return bool(getattr(member, "can_pin_messages", False)), \
-            bool(getattr(member, "can_delete_messages", False))
+def rights_of(member, permissions=None) -> tuple[bool, bool]:
+    """(can pin, can delete) for the bot's ChatMember. A plain member can
+    pin when the group lets every member pin: ``permissions`` are the
+    chat's default ChatPermissions (basic groups allow it unless changed)."""
+    status = member.status
+    if status == ChatMemberStatus.OWNER:
+        return True, True
+    if status == ChatMemberStatus.ADMINISTRATOR:
+        can_pin = getattr(member, "can_pin_messages", None)  # absent: every admin can pin
+        return can_pin is None or bool(can_pin), bool(getattr(member, "can_delete_messages", False))
+    if status == ChatMemberStatus.RESTRICTED:
+        return bool(getattr(member, "can_pin_messages", False)), False
+    if status == ChatMemberStatus.MEMBER and permissions is not None:
+        return bool(getattr(permissions, "can_pin_messages", False)), False
     return False, False
+
+
+def is_rights_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "right" in text or "admin" in text
+
+
+def note_pin(services: Services, chat_id: int, error: Exception | None = None) -> None:
+    """What an actual pin says about the pin right, between checks: it
+    worked, or Telegram refused it for lack of rights."""
+    chat = services.chats.get(chat_id)
+    if chat is None:
+        return
+    if error is None:
+        can_pin = True
+    elif is_rights_error(error):
+        can_pin = False
+    else:
+        return  # e.g. the message is gone: says nothing about rights
+    if chat.can_pin is not can_pin:
+        logger.info("Pinning %s in chat %s: pin right is %s", "worked" if can_pin else "was refused",
+                    chat.chat_id, "on" if can_pin else "off", extra={"chat_id": chat.chat_id})
+        services.chats.set_rights(chat.chat_id, can_pin=can_pin, can_delete=chat.can_delete)
 
 
 def _chat_label(chat: Chat) -> str:
@@ -104,10 +138,34 @@ class ChatAccess:
         except TelegramError as exc:
             logger.warning("Could not check rights in chat %s: %s", chat.chat_id, exc)
             return chat
-        can_pin, can_delete = _rights_from_member(member)
+        can_pin, can_delete = await self._rights(chat.chat_id, member)
         self.services.chats.set_rights(chat.chat_id, can_pin=can_pin, can_delete=can_delete)
         self.services.chats.set_membership(chat.chat_id, str(member.status))
         return self.services.chats.get(chat.chat_id)
+
+    async def _rights(self, chat_id: int, member) -> tuple[bool, bool]:
+        permissions = None
+        if member.status == ChatMemberStatus.MEMBER:
+            try:
+                permissions = (await self.bot.get_chat(chat_id)).permissions
+            except TelegramError as exc:
+                logger.info("Could not read the permissions of chat %s: %s", chat_id, exc)
+        return rights_of(member, permissions)
+
+    async def refresh_rights(self, *, older_than: float = 0) -> int:
+        """Check rights again in every enabled chat the bot is in that
+        wasn't checked within ``older_than`` seconds (or never): a promotion
+        can arrive while the bot is offline, or before it tracked rights."""
+        cutoff = time.time() - older_than
+        checked = 0
+        for chat in self.services.chats.list_by_status(ENABLED):
+            if chat.membership in ("left", "kicked"):
+                continue
+            if chat.rights_checked_at and chat.rights_checked_at > cutoff:
+                continue
+            await self.check_rights(chat.chat_id)
+            checked += 1
+        return checked
 
     # ------------------------------------------------------ owner messages
 
@@ -170,7 +228,7 @@ class ChatAccess:
             added_by_user_id=None if was_present else (by_user.id if by_user else None),
             added_by_name=None if was_present else by_name,
         )
-        can_pin, can_delete = _rights_from_member(change.new_chat_member)
+        can_pin, can_delete = await self._rights(chat.chat_id, change.new_chat_member)
         self.services.chats.set_rights(chat.chat_id, can_pin=can_pin, can_delete=can_delete)
         chat = self.services.chats.get(chat.chat_id)
         if was_present:

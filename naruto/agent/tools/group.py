@@ -8,6 +8,7 @@ from naruto.agent.tools.base import Tool, ToolContext, ToolError, params
 from naruto.agent.tools.lookup import message_in_chat
 from naruto.db.board import SECTION_KEYS, SECTIONS
 from naruto.db.plans import CANCELLED, PROPOSED
+from naruto.tg.access import note_pin
 from naruto.tg.board import BoardPublisher
 from naruto.tg.plans import render_plan, send_plan
 
@@ -36,8 +37,10 @@ async def pin_message(ctx: ToolContext, args: dict) -> str:
         await ctx.telegram.pin_chat_message(message.origin_chat_id, message.message_id,
                                             disable_notification=True)
     except TelegramError as exc:
+        note_pin(ctx.services, ctx.chat.chat_id, exc)
         raise ToolError(f"Telegram refused the pin ({exc}). I need to be a group admin with "
                         "“Pin messages”.") from None
+    note_pin(ctx.services, ctx.chat.chat_id)
     ctx.state.actions.append(f"pinned message {message.id}")
     return f"Pinned message {message.id}."
 

@@ -1,8 +1,10 @@
 """Group memory tools: remember, forget and search the notes."""
 
+from naruto.agent.claims import asks_to_remember
+from naruto.agent.text import strip_bot_mention
 from naruto.agent.tools.base import Tool, ToolContext, ToolError, params
 from naruto.agent.tools.lookup import find_person
-from naruto.db.memory import CATEGORY_KEYS, MEMBER, NoteLocked
+from naruto.db.memory import BOT, CATEGORY_KEYS, MEMBER, NoteLocked
 from naruto.memory.notes import note_lines
 
 
@@ -24,7 +26,12 @@ async def remember(ctx: ToolContext, args: dict) -> str:
     notes = ctx.services.notes
     person_id = find_person(ctx, args["about"]).person_id if args.get("about") else None
     sources = [ctx.trigger.id] if ctx.trigger.id else []
-    actor = f"bot (run {ctx.state.run_id}), asked by user {ctx.trigger.sender_id}"
+    # Asked to ("remember that…", /remember), or the bot's own idea when
+    # someone mentioned something worth keeping.
+    asked = ctx.skill == "remember" or asks_to_remember(
+        strip_bot_mention(ctx.trigger.text or "", ctx.bot.username))
+    how = "asked by" if asked else "on its own, talking with"
+    actor = f"bot (run {ctx.state.run_id}), {how} user {ctx.trigger.sender_id}"
     try:
         if args.get("replaces_note_id"):
             note = _own_note(ctx, args["replaces_note_id"])
@@ -39,8 +46,10 @@ async def remember(ctx: ToolContext, args: dict) -> str:
             raise ToolError("The group's memory is full. Ask the owner to clear old notes, or "
                             "forget one first.")
         note = notes.add(ctx.chat.chat_id, args["content"], category=args.get("category"),
-                         person_id=person_id, source_row_ids=sources, created_by=MEMBER,
-                         created_by_user_id=ctx.trigger.sender_id, actor=actor)
+                         person_id=person_id, source_row_ids=sources,
+                         created_by=MEMBER if asked else BOT,
+                         created_by_user_id=ctx.trigger.sender_id if asked else None,
+                         actor=actor)
     except NoteLocked as exc:
         raise ToolError(f"{exc} It can't be changed.") from None
     except ValueError as exc:
@@ -83,8 +92,11 @@ TOOLS = [
         "remember",
         "Save a durable fact in the group's memory (kept for months, after the messages "
         "are gone). One short fact in the third person, e.g. 'Sam is vegetarian'. Use it "
-        "when someone asks you to remember something. Don't save health, money or "
-        "relationship details unless they explicitly asked.",
+        "when someone asks you to remember something, and on your own when someone "
+        "mentions a lasting fact worth keeping (a preference, a birthday, a group decision "
+        "or tradition). If a note already says something similar, update it with "
+        "replaces_note_id. Don't save health, money or relationship details unless they "
+        "explicitly asked.",
         params({
             "content": {"type": "string", "maxLength": 400},
             "category": CATEGORY,

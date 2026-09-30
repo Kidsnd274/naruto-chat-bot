@@ -71,6 +71,11 @@ CHECKS: tuple[ActionCheck, ...] = (
 )
 
 
+def asks_to_remember(request_text: str) -> bool:
+    """The request asks the bot to remember or forget something."""
+    return bool(CHECKS[1].request.search(request_text))
+
+
 def missing_actions(request_text: str, answer: str, offered: list[str] | tuple[str, ...],
                     done: set[str]) -> list[ActionCheck]:
     """Checks whose action the request asks for or the answer claims, while

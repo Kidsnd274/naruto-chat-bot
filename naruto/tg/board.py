@@ -15,6 +15,7 @@ from telegram.error import BadRequest, ChatMigrated, Forbidden, TelegramError
 from naruto.db.board import SECTIONS, Board
 from naruto.db.chats import Chat
 from naruto.services import Services
+from naruto.tg.access import note_pin
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,9 @@ class BoardPublisher:
                 await telegram.pin_chat_message(chat_id, message_id, disable_notification=True)
                 pinned = True
                 note = "Sent and pinned the board."
+                note_pin(self.services, chat_id)
             except TelegramError as exc:
+                note_pin(self.services, chat_id, exc)
                 note = (f"Sent the board, but couldn't pin it ({exc}). I need to be a group "
                         "admin with “Pin messages”.")
             if pinned and old is not None and old.message_id and old.pinned:

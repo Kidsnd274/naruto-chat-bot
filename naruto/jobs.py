@@ -1,5 +1,6 @@
 """Background jobs: retention cleanup, leaving unapproved groups, the model
-health check, due reminders and memory upkeep (digests and notes)."""
+health check, due reminders, admin-rights checks and memory upkeep (digests
+and notes)."""
 
 import asyncio
 import logging
@@ -17,6 +18,7 @@ DAY = 86400
 MAINTENANCE_INTERVAL_SECONDS = 3600
 HEALTH_INTERVAL_SECONDS = 60
 REMINDER_INTERVAL_SECONDS = 30
+RIGHTS_INTERVAL_SECONDS = 6 * 3600
 UNREAD_GRACE_DAYS = 7
 
 # Extra cleanup steps for features added later. Each gets the services and
@@ -108,6 +110,12 @@ async def leave_stale_pending(services: Services) -> int:
     return left
 
 
+async def refresh_rights(services: Services, *, older_than: float) -> None:
+    checked = await services.access.refresh_rights(older_than=older_than)
+    if checked:
+        logger.info("Checked the admin rights in %s chats", checked)
+
+
 async def run_maintenance(services: Services) -> None:
     done = []
     for step in [cleanup_logs, cleanup_agent_runs, cleanup_live_messages,
@@ -152,6 +160,13 @@ def start_background_jobs(services: Services, *, reminders=None) -> list[asyncio
     if reminders is not None:
         tasks.append(asyncio.create_task(every(REMINDER_INTERVAL_SECONDS, reminders.send_due,
                                                first_delay=5)))
+    if services.access is not None:
+        # Soon after start (rights that were never checked, or changed while
+        # the bot was offline), then a few times a day.
+        tasks.append(asyncio.create_task(every(
+            RIGHTS_INTERVAL_SECONDS,
+            lambda: refresh_rights(services, older_than=RIGHTS_INTERVAL_SECONDS - 60),
+            first_delay=10)))
     if services.keeper is not None:
         tasks.append(asyncio.create_task(services.keeper.run_forever()))
     return tasks

@@ -10,7 +10,7 @@
   <thead>
     <tr>
       <th>Group</th><th>Type</th><th>Status</th><th>Admin rights</th>
-      <th class="num">Live</th><th class="num">Imported</th><th>Last activity</th><th></th>
+      <th class="num">Live</th><th class="num">Imported</th><th class="num">Memory</th><th>Last activity</th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -35,6 +35,7 @@
       </td>
       <td class="num">{{ s.live_messages }}</td>
       <td class="num">{{ s.imported_messages }}</td>
+      <td class="num"><a href="/chats/{{ chat.chat_id }}/memory" title="Memory notes">{% set n = note_counts.get(chat.chat_id, 0) %}{{ n }} note{{ "s" if n != 1 else "" }}</a></td>
       <td class="small">{{ (s.last_message_at or chat.last_activity_at)|ago }}</td>
       <td class="nowrap"><div class="actions">
         {% if chat.status != "enabled" %}

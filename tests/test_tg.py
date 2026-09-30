@@ -3,14 +3,24 @@
 from types import SimpleNamespace
 
 import pytest
-from telegram import Chat, Dice, Document, MessageOriginUser, Sticker
-from telegram.error import ChatMigrated
+from telegram import (
+    Chat,
+    ChatMemberMember,
+    ChatMemberOwner,
+    ChatPermissions,
+    Dice,
+    Document,
+    MessageOriginUser,
+    Sticker,
+)
+from telegram.error import BadRequest, ChatMigrated
 
 import fakes
 from fakes import ALICE, BOB, BOT_ID, GROUP_ID, OWNER, OWNER_ID, FakeBot, context, message, update
 from naruto import markers
 from naruto.llm import ChatResult, LLMError
-from naruto.tg.access import ChatAccess
+from naruto.tg.access import ChatAccess, note_pin, rights_of
+from naruto.tg.board import BoardPublisher
 from naruto.tg.bot import sanitize_updates
 from naruto.tg.commands import GroupCommands, parse_alias_args
 from naruto.tg.content import ephemeral_message_id, forwarded_from, media_of, reply_snippet, to_new_message
@@ -207,6 +217,58 @@ async def test_promotion_updates_rights_without_notifying(services, wired, bot):
     chat = services.chats.get(GROUP_ID)
     assert chat.can_pin is True and chat.can_delete is True and chat.membership == "administrator"
     assert bot.sent == []
+
+
+def test_rights_of_each_kind_of_member():
+    admin = fakes.member_update("administrator", can_pin=True).my_chat_member.new_chat_member
+    no_pin = fakes.member_update("administrator", can_pin=False).my_chat_member.new_chat_member
+    member = ChatMemberMember(fakes.BOT_USER)
+    assert rights_of(admin) == (True, True)
+    assert rights_of(no_pin) == (False, True)
+    assert rights_of(ChatMemberOwner(fakes.BOT_USER, is_anonymous=False)) == (True, True)
+    assert rights_of(member) == (False, False)  # the group's permissions unknown
+    assert rights_of(member, ChatPermissions(can_pin_messages=True)) == (True, False)
+    assert rights_of(member, ChatPermissions(can_pin_messages=False)) == (False, False)
+
+
+async def test_a_member_can_pin_where_everyone_may(services, wired, bot):
+    """Basic groups let every member pin unless the owner turned it off."""
+    enable(services)
+    bot.members_can_pin = True
+    chat = await wired.access.check_rights(GROUP_ID)
+    assert chat.can_pin is True and chat.can_delete is False and chat.membership == "member"
+    assert chat.missing_rights() == []
+
+
+async def test_rights_are_refreshed_where_never_checked(services, wired, bot):
+    """Seen live: a group enabled before rights were tracked stayed "not
+    checked yet" although the bot had been made an admin there."""
+    enable(services)  # never checked
+    enable(services, -4002, "Checked")
+    services.chats.set_rights(-4002, can_pin=False, can_delete=False)
+    enable(services, -4003, "Gone")
+    services.chats.set_membership(-4003, "left")
+    bot.member = fakes.member_update("administrator", can_pin=True).my_chat_member.new_chat_member
+
+    assert await wired.access.refresh_rights(older_than=3600) == 1
+    assert services.chats.get(GROUP_ID).can_pin is True
+    assert services.chats.get(-4002).can_pin is False  # checked recently: left alone
+    assert services.chats.get(-4003).rights_checked_at is None
+    assert await wired.access.refresh_rights() == 2  # everything but the group it left
+
+
+async def test_pins_teach_the_pin_right(services, wired, bot):
+    enable(services)
+    services.chats.set_rights(GROUP_ID, can_pin=False, can_delete=False)
+    services.boards.set_section(GROUP_ID, "plans", ["BBQ"], actor="t")
+    await BoardPublisher(services).publish(bot, services.chats.get(GROUP_ID))
+    assert services.chats.get(GROUP_ID).can_pin is True  # the pin worked
+
+    note_pin(services, GROUP_ID, BadRequest("Message to pin not found"))
+    assert services.chats.get(GROUP_ID).can_pin is True  # says nothing about rights
+    bot.fail_pin = True
+    await BoardPublisher(services).publish(bot, services.chats.get(GROUP_ID), fresh=True)
+    assert services.chats.get(GROUP_ID).can_pin is False
 
 
 async def test_readded_enabled_group_stays_enabled(services, wired, bot):

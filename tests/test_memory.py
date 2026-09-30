@@ -239,8 +239,9 @@ async def test_memory_and_digest_are_background(services, wired, bot, chat):
 
 # ------------------------------------------------------------ memory tools
 
-async def run_tools(services, bot, chat, *calls, skill="banter", text="@naruto_bot go"):
-    trigger = store(services, 999, text, offset=10_000)
+async def run_tools(services, bot, chat, *calls, skill="banter", text="@naruto_bot go",
+                    message_id=999):
+    trigger = store(services, message_id, text, offset=10_000)
     llm = ScriptedLLM(list(calls), "Done.")
     services.llm = llm
     outcome = await AgentRunner(services, bot, llm=llm).run(
@@ -256,7 +257,7 @@ async def test_remember_forget_and_search(services, bot, chat):
         tool_call("remember", {"content": "Alice is vegan", "replaces_note_id": 1}, "b"),
         tool_call("search_memory", {"about": "alice"}, "c"),
         tool_call("forget", {"note_id": "n1"}, "d"),
-        tool_call("forget", {"note_id": 7}, "e"))
+        tool_call("forget", {"note_id": 7}, "e"), text="@naruto_bot remember that I'm vegetarian")
     assert results[0].startswith("Saved as [n1]: [n1] Alice: Alice is vegetarian (preference)")
     assert results[1].startswith("Updated note [n1]") and "vegan" in results[1]
     assert results[2].startswith("1 notes about Alice:")
@@ -265,6 +266,23 @@ async def test_remember_forget_and_search(services, bot, chat):
     history = services.notes.history(1)
     assert [c.action for c in history] == ["deleted", "updated", "created"]
     assert "asked by user 7" in history[-1].changed_by
+
+
+async def test_the_bot_saves_notes_on_its_own_too(services, bot, chat):
+    """Asked ("remember that…") the note is the member's; noticed in passing
+    ("btw my birthday is 3 March") it is the bot's own."""
+    await run_tools(services, bot, chat,
+                    tool_call("remember", {"content": "Alice is vegetarian", "about": "me"}),
+                    text="@naruto_bot remember that I'm vegetarian")
+    await run_tools(services, bot, chat,
+                    tool_call("remember", {"content": "Alice's birthday is 3 March",
+                                           "category": "date", "about": "me"}),
+                    text="@naruto_bot btw my birthday is 3 March, plan something",
+                    message_id=1000)
+    asked, noticed = services.notes.for_chat(GROUP_ID)
+    assert (asked.created_by, asked.created_by_user_id) == ("member", 7)
+    assert (noticed.created_by, noticed.created_by_user_id) == ("bot", None)
+    assert "on its own, talking with user 7" in services.notes.history(noticed.id)[0].changed_by
 
 
 async def test_locked_notes_cannot_be_forgotten(services, bot, chat):

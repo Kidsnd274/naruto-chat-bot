@@ -124,6 +124,8 @@ class FakeBot:
         self.fail_pin = False
         self.member = None
         self.members_can_pin = False  # the group's default permissions (get_chat)
+        self.fail_edit = False
+        self.deleted: list[tuple[int, int]] = []
         self._next_id = 900
         self.api_calls: list[tuple[str, dict]] = []
         self.pins: list[tuple[int, int]] = []
@@ -160,7 +162,14 @@ class FakeBot:
         return True
 
     async def edit_message_text(self, text=None, chat_id=None, message_id=None, **kwargs):
+        if self.fail_edit:
+            raise BadRequest("Message to edit not found")
         self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, **kwargs})
+        return Message(message_id=message_id, date=at(60), chat=group(chat_id),
+                       from_user=BOT_USER, text=text)
+
+    async def delete_message(self, chat_id, message_id, **kwargs):
+        self.deleted.append((chat_id, message_id))
         return True
 
     async def pin_chat_message(self, chat_id, message_id, disable_notification=None, **kwargs):

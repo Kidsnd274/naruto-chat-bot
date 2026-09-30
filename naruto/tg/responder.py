@@ -11,6 +11,7 @@ from collections import defaultdict
 import logging
 
 from telegram import Message, Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from naruto import media
@@ -19,8 +20,9 @@ from naruto.agent.runner import FAILURE_TEXT, AgentRunner, RunOutcome, RunReques
 from naruto.db.chats import Chat
 from naruto.db.messages import StoredMessage
 from naruto.services import BotIdentity, Services
+from naruto.tg.progress import Progress
 from naruto.tg.recorder import GROUP_TYPES, Recorder, has_content
-from naruto.tg.sending import send_text, typing
+from naruto.tg.sending import edit_text, send_text, split_message, typing
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +79,21 @@ class Responder:
                 logger.info("Not answering message %s: the chat was disabled meanwhile.",
                             message.message_id)
                 return
-            outcome = await self.run(telegram_bot, current, message, trigger, bot, skill=skill,
-                                     since=since, note=note, force_reply=force_reply)
+            progress = Progress(
+                telegram_bot, message.chat_id, message.message_id or None, skill=skill,
+                after_seconds=self.services.settings.for_chat(current.chat_id)[
+                    "behaviour.progress_after_seconds"])
+            try:
+                outcome = await self.run(telegram_bot, current, message, trigger, bot,
+                                         skill=skill, since=since, note=note,
+                                         force_reply=force_reply,
+                                         on_skill=progress.skill_changed)
+            finally:
+                await progress.stop()
             if not self.still_enabled(current, outcome):
+                await progress.discard()
                 return
-            await self.deliver(telegram_bot, current, message, outcome)
+            await self.deliver(telegram_bot, current, message, outcome, progress=progress)
 
     def enabled_chat(self, chat_id: int) -> Chat | None:
         """The chat as stored now, if the bot may still work there."""
@@ -102,14 +114,14 @@ class Responder:
     async def run(self, telegram_bot, chat: Chat, message: Message, trigger: StoredMessage,
                   bot: BotIdentity, *, skill: str = "banter", since: int | None = None,
                   note: str | None = None, force_reply: bool = False,
-                  show_typing: bool = True) -> RunOutcome:
+                  show_typing: bool = True, on_skill=None) -> RunOutcome:
         """One agent run, without sending the answer. Callers that don't use
         respond() hold chat_lock() around it."""
         images = await self._images(message, trigger) if trigger.id else []
         runner = AgentRunner(self.services, telegram_bot, record_sent=self.recorder.record_sent)
         request = RunRequest(chat=chat, trigger=trigger, bot=bot, skill=skill, images=images,
                              trigger_message_id=message.message_id or None, since=since,
-                             note=note, force_reply=force_reply)
+                             note=note, force_reply=force_reply, on_skill=on_skill)
         if not show_typing:
             return await runner.run(request)
         async with typing(telegram_bot, message.chat_id):
@@ -119,14 +131,46 @@ class Responder:
         return self._chat_locks[chat_id]
 
     async def deliver(self, telegram_bot, chat: Chat, message: Message,
-                      outcome: RunOutcome) -> list[Message]:
-        if not outcome.text:
+                      outcome: RunOutcome, *, progress: Progress | None = None) -> list[Message]:
+        if progress is not None and progress.message is not None:
+            if not outcome.text:
+                await progress.discard()
+                return []
+            sent = await self._replace(telegram_bot, progress, outcome.text)
+            if sent is None:  # couldn't edit it: say it anew
+                await progress.discard()
+                sent = await self._send(telegram_bot, chat, message, outcome.text,
+                                        reply=outcome.threaded and not outcome.fallback)
+        elif not outcome.text:
             return []
-        sent = await self._send(telegram_bot, chat, message, outcome.text,
-                                reply=outcome.threaded and not outcome.fallback)
+        else:
+            sent = await self._send(telegram_bot, chat, message, outcome.text,
+                                    reply=outcome.threaded and not outcome.fallback)
         if sent and not outcome.fallback:
             self.services.runs.update(outcome.run_id,
                                       reply_message_ids=[m.message_id for m in sent])
+        return sent
+
+    async def _replace(self, telegram_bot, progress: Progress,
+                       text: str) -> list[Message] | None:
+        """Turn the placeholder into the answer (its first part; any further
+        parts follow as new messages). None if Telegram refused the edit."""
+        placeholder = progress.message
+        first, *rest = split_message(text)
+        try:
+            edited = await edit_text(telegram_bot, placeholder.chat_id, placeholder.message_id,
+                                     first)
+        except TelegramError as exc:
+            logger.info("Couldn't replace the progress message: %s", exc)
+            return None
+        sent = [edited if isinstance(edited, Message) else placeholder]
+        if isinstance(edited, Message):
+            self.recorder.record_sent(edited.chat_id, edited)
+        for chunk in rest:
+            for extra in await send_text(telegram_bot, placeholder.chat_id, chunk,
+                                         on_migrated=self.services.chats.migrate):
+                self.recorder.record_sent(extra.chat_id, extra)
+                sent.append(extra)
         return sent
 
     async def _send(self, telegram_bot, chat: Chat, message: Message, text: str,

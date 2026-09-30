@@ -694,3 +694,80 @@ async def test_reasoning_effort_is_sent_only_with_reasoning(services):
     services.settings.set("model.reasoning_effort", None, actor="t")  # the server decides
     await client.chat([{"role": "user", "content": "x"}], reasoning=True)
     assert "reasoning_effort" not in fake.kwargs["extra_body"]
+
+
+# ------------------------------------------------------- progress messages
+
+class SlowLLM(ScriptedLLM):
+    """Takes a moment per request, like a model reading a long chat."""
+
+    delay = 0.15
+
+    async def chat(self, messages, **kwargs):
+        await asyncio.sleep(self.delay)
+        return await super().chat(messages, **kwargs)
+
+
+@pytest.fixture
+def quick_progress(services, monkeypatch):
+    """The progress message after 0.05 s instead of whole seconds."""
+    monkeypatch.setitem(services.settings._values, "behaviour.progress_after_seconds", 0.05)
+
+
+async def summarize(wired, bot, services, text="/summary"):
+    msg = message(6, text)
+    await wired.recorder.on_message(update(msg), context(bot))
+    trigger = store(services, 6, text)
+    await wired.responder.respond(bot, services.chats.get(GROUP_ID), msg, trigger,
+                                  services.status.bot, skill="summarize", force_reply=True)
+
+
+async def test_a_slow_summary_posts_progress_then_replaces_it(services, wired, bot, chat,
+                                                              quick_progress):
+    services.llm = SlowLLM("*BBQ*: Saturday, 6pm.")
+    await summarize(wired, bot, services)
+
+    placeholder = bot.sent[0]
+    assert placeholder["text"] == "📖 Reading back through the chat…"
+    assert placeholder["reply_parameters"].message_id == 6
+    assert len(bot.sent) == 1  # the answer replaced it
+    assert bot.edits[-1]["message_id"] == 901 and bot.edits[-1]["text"] == "*BBQ*: Saturday, 6pm."
+    stored = services.messages.get_live(GROUP_ID, 901)
+    assert stored.text == "*BBQ*: Saturday, 6pm."  # the transcript has the answer, not the wait
+    assert services.runs.recent()[0][0].reply_message_ids == [901]
+
+
+async def test_fast_answers_and_banter_get_no_progress_message(services, wired, bot, chat,
+                                                               quick_progress):
+    services.llm = ScriptedLLM("Saturday!")  # answers at once
+    await summarize(wired, bot, services)
+    services.llm = SlowLLM("Heh.")
+    await say(wired, bot, message(7, "@naruto_bot hi", offset=10))
+    assert [s["text"] for s in bot.sent] == ["Saturday!", "Heh."] and bot.edits == []
+
+
+async def test_a_hand_over_to_summarize_gets_one_too(services, wired, bot, chat, quick_progress):
+    services.llm = SlowLLM([tool_call("use_skill", {"skill": "summarize"})], "Here's the gist.")
+    await say(wired, bot, message(6, "@naruto_bot what did we talk about?"))
+    assert bot.sent[0]["text"] == "📖 Reading back through the chat…"
+    assert bot.edits[-1]["text"] == "Here's the gist."
+
+
+async def test_progress_message_is_removed_or_replaced_as_needed(services, wired, bot, chat,
+                                                                 quick_progress):
+    services.llm = SlowLLM("[NO REPLY]")  # nothing to say: the placeholder goes
+    await summarize(wired, bot, services)
+    assert bot.deleted == [(GROUP_ID, 901)]
+
+    bot.fail_edit = True  # e.g. someone deleted it meanwhile: the answer comes anew
+    services.llm = SlowLLM("Saturday, 6pm.")
+    await summarize(wired, bot, services)
+    assert bot.deleted[-1] == (GROUP_ID, 902)
+    assert bot.sent[-1]["text"] == "Saturday, 6pm."
+
+
+async def test_progress_messages_can_be_turned_off(services, wired, bot, chat, monkeypatch):
+    monkeypatch.setitem(services.settings._values, "behaviour.progress_after_seconds", 0)
+    services.llm = SlowLLM("Saturday, 6pm.")
+    await summarize(wired, bot, services)
+    assert [s["text"] for s in bot.sent] == ["Saturday, 6pm."]

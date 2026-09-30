@@ -431,6 +431,11 @@ SETTINGS: tuple[Setting, ...] = (
             "Stored application logs are cleaned up daily.",
             "int", 30, min=0, max=36500),
     # ----------------------------------------------------------- behaviour
+    Setting("behaviour.progress_after_seconds", "behaviour", "Progress message after (seconds)",
+            "When a summary, plan or list of open questions is still being worked on after "
+            "this long, post a short “working on it” line that the answer then replaces. "
+            "0 turns it off; other replies only show “typing…”.",
+            "int", 8, min=0, max=120),
     Setting("behaviour.pending_leave_hours", "behaviour", "Leave pending groups after (hours)",
             "Leave a group that nobody approved after this many hours. 0 never leaves.",
             "int", 0, min=0, max=24 * 365),
@@ -451,6 +456,7 @@ PER_CHAT: frozenset[str] = frozenset({
     "board.format",
     "board.pin",
     "media.enabled",
+    "behaviour.progress_after_seconds",
 })
 SETTINGS = tuple(replace(s, per_chat=True) if s.key in PER_CHAT else s for s in SETTINGS)
 

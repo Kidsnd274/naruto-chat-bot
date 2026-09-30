@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
+from typing import Callable
 
 from naruto.agent.claims import check_note, missing_actions
 from naruto.agent.context import ContextBuilder, ImageInput
@@ -57,6 +58,7 @@ class RunRequest:
     since: int | None = None  # read every message since then instead of the recent window
     note: str | None = None  # added to the current request, e.g. what a command asked for
     force_reply: bool = False  # always thread the answer to the trigger (commands)
+    on_skill: Callable[[str], None] | None = None  # told the skill at the start and on hand-over
 
 
 @dataclass
@@ -107,6 +109,8 @@ class AgentRunner:
     def _prepare(self, request: RunRequest, skill: Skill, since: int | None,
                  state: RunState, builder: ContextBuilder) -> tuple:
         """The first request for ``skill``: prompt, tools and tool context."""
+        if request.on_skill is not None:
+            request.on_skill(skill.name)
         services = self.services
         settings = services.settings.for_chat(request.chat.chat_id)
         allowed = list(skill.tools) if settings["agent.max_tool_calls"] else []

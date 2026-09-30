@@ -72,6 +72,19 @@ async def send_text(
     return sent
 
 
+async def edit_text(bot, chat_id: int, message_id: int, text: str):
+    """Replace a message's text (Markdown, with the plain-text fallback).
+    Returns the edited Message (or True when Telegram doesn't send it)."""
+    try:
+        return await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text,
+                                           parse_mode="Markdown")
+    except BadRequest as exc:
+        if "not modified" in str(exc).lower():
+            return True
+        logger.warning("Markdown edit failed (%s); editing as plain text.", exc.message)
+        return await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+
+
 async def send_ephemeral(
     bot,
     chat_id: int,

@@ -42,7 +42,7 @@
   {% else %}
     <p class="small">No known group matches this export. Pick one, or create it as a new pending group (useful before adding the bot).</p>
   {% endif %}
-  <form method="post" action="/import/{{ record.id }}/start" class="filters">
+  <form method="post" action="/import/{{ record.id }}/start" class="import-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <select name="target" hx-get="/import/{{ record.id }}/estimate" hx-target="#estimate" hx-trigger="change">
       {% for chat in chats %}
@@ -53,8 +53,42 @@
       {% endif %}
     </select>
     <button type="submit" class="primary">Import</button>
-  </form>
   <div id="estimate">{% include "_import_estimate.html" %}</div>
+
+  {% if identities %}
+  <h2>People in this export</h2>
+  <p class="muted small">Telegram user IDs are the same everywhere, so each person below is matched to their account automatically. The name box becomes their name in every chat (it starts with the name this export uses, i.e. your contact name for them); clear it to keep their current name. If someone is really the same person as another entry, choose them under “Same person as”.</p>
+  <div class="table-wrap">
+  <table class="compact identities">
+    <thead><tr><th>In the export</th><th class="num">Messages</th><th>Known as</th><th>Name to use</th><th>Same person as</th></tr></thead>
+    <tbody>
+    {% for row in identities %}
+      <tr>
+        <td>{{ row.export_name }} <span class="muted mono small">{{ row.user_id }}</span></td>
+        <td class="num small">{{ row.count }}</td>
+        <td class="small">
+          {% if row.person %}
+            <a href="/people/{{ row.person.id }}">{{ row.person.display_name }}</a>{% if row.person.username %} <span class="muted">@{{ row.person.username }}</span>{% endif %}
+          {% else %}
+            <span class="muted">new: not seen live yet</span>
+          {% endif %}
+        </td>
+        <td><input name="name-{{ row.user_id }}" value="{{ row.suggested_name }}" maxlength="100" aria-label="Name to use for {{ row.export_name }}"></td>
+        <td>
+          <select name="merge-{{ row.user_id }}" aria-label="Same person as">
+            <option value="">— this account —</option>
+            {% for p in people if not row.person or p.id != row.person.id %}
+              <option value="{{ p.id }}">{{ p.display_name }}{% if p.username %} (@{{ p.username }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  </form>
   <form method="post" action="/import/{{ record.id }}/discard">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="small">Discard upload</button>

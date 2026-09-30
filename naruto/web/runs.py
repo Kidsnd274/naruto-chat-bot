@@ -43,6 +43,10 @@ async def run_detail(request: Request, run_id: int):
         raise HTTPException(status_code=404, detail="Unknown run.")
     chat = services.chats.get(run.chat_id)
     trigger = services.messages.get(run.trigger_row_id) if run.trigger_row_id else None
+    trigger_name = None
+    if trigger is not None:
+        trigger_name = services.people.display_names([trigger.sender_id]).get(
+            trigger.sender_id, trigger.sender_name)
     return request.app.state.templates.TemplateResponse(request, "run_detail.html", {
-        "run": run, "chat": chat, "trigger": trigger,
+        "run": run, "chat": chat, "trigger": trigger, "trigger_name": trigger_name,
     })

@@ -166,7 +166,8 @@ def _browse(services: Services, chat: Chat, params) -> dict:
     filters = {"q": query, "sender": params.get("sender") or "",
                "source": source or "", "since": params.get("since") or "",
                "until": params.get("until") or ""}
-    return {"page": page, "filters": filters}
+    names = services.people.display_names({m.sender_id for m in page.messages})
+    return {"page": page, "filters": filters, "names": names}
 
 
 @router.get("/chats/{chat_id}")
@@ -181,13 +182,20 @@ async def chat_detail(request: Request, chat_id: int):
         "aliases": services.chats.aliases_for(chat.chat_id),
         "members": [m for m in services.members.list(chat.chat_id)
                     if bot is None or m.user_id != bot.id],
-        "senders": services.messages.senders(chat.chat_id),
+        "senders": _senders(services, chat),
         "live_count": services.messages.count(chat.chat_id, LIVE),
         "import_count": services.messages.count(chat.chat_id, IMPORT),
         **_browse(services, chat, request.query_params),
         **(await _extra_detail(request, chat)),
     }
     return request.app.state.templates.TemplateResponse(request, "chat_detail.html", context)
+
+
+def _senders(services: Services, chat: Chat) -> list[tuple[int, str, int]]:
+    """(sender_id, person's name, messages) for the sender filter."""
+    senders = services.messages.senders(chat.chat_id)
+    names = services.people.display_names({sender_id for sender_id, _, _ in senders})
+    return [(sender_id, names.get(sender_id, name), count) for sender_id, name, count in senders]
 
 
 async def _extra_detail(request: Request, chat: Chat) -> dict:

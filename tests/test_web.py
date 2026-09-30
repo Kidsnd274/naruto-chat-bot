@@ -394,3 +394,78 @@ def test_runs_list_and_detail(admin, chat, services):
     assert "when is the bbq?" in detail  # the trigger message
     assert "Telegram message 901" in detail
     assert admin.client.get("/runs/999").status_code == 404
+
+
+# ------------------------------------------------------------------ people
+
+@pytest.fixture
+def crowd(services, chat):
+    services.members.upsert_live(CHAT, 8, "Bob", "bob")
+    services.members.upsert_live(CHAT, 70, "Alice (work)", "alice_work")
+    services.members.upsert_imported(CHAT, 7, "Ally (contact)", 1_780_000_000)
+    return {uid: services.people.person_id_for(uid) for uid in (7, 8, 70)}
+
+
+def test_people_list_and_search(admin, crowd):
+    html = admin.client.get("/people").text
+    assert "Alice" in html and "Bob" in html and "export: Ally (contact)" in html
+    found = admin.client.get("/people", params={"q": "alice_work"}).text
+    assert "Alice (work)" in found and ">Bob<" not in found
+    assert "Nobody matches" in admin.client.get("/people", params={"q": "zzz"}).text
+
+
+def test_rename_and_aliases(admin, crowd, services):
+    alice = crowd[7]
+    detail = admin.client.get(f"/people/{alice}").text
+    assert "Use “Ally (contact)”" in detail and "BBQ crew" in detail
+    admin.post(f"/people/{alice}/name", {"name": "Ally"})
+    assert services.people.get(alice).display_name == "Ally"
+    assert "Now shown as Ally." in admin.client.get(f"/people/{alice}").text
+    admin.post(f"/people/{alice}/aliases", {"alias": "Al"})
+    assert services.people.get(alice).aliases == ["Al"]
+    admin.post(f"/people/{alice}/aliases/delete", {"alias": "Al"})
+    admin.post(f"/people/{alice}/name", {"name": ""})
+    assert services.people.get(alice).name is None
+    # Names show up in the chat's message browser too.
+    services.people.set_name(alice, "Ally")
+    assert ">Ally</span>" in admin.client.get(f"/chats/{CHAT}").text
+
+
+def test_merge_needs_confirmation_then_split(admin, crowd, services):
+    alice, work = crowd[7], crowd[70]
+    preview = admin.post(f"/people/{work}/merge", {"target": str(alice)})
+    assert preview.status_code == 200 and "Merge Alice (work) into Alice?" in preview.text
+    assert services.people.get(work) is not None
+
+    done = admin.post(f"/people/{work}/merge", {"target": str(alice), "confirm": "yes"})
+    assert done.headers["location"] == f"/people/{alice}"
+    assert services.people.get(work) is None
+    assert {a.user_id for a in services.people.get(alice).accounts} == {7, 70}
+    assert "Make a separate person" in admin.client.get(f"/people/{alice}").text
+
+    split = admin.post(f"/people/{alice}/split", {"user_id": "70"})
+    assert split.status_code == 303
+    assert services.people.for_user(70).id != alice
+    assert admin.post(f"/people/{alice}/split", {"user_id": "8"}).status_code == 400
+    assert admin.post(f"/people/{alice}/merge", {"target": str(alice)}).status_code == 400
+    assert admin.client.get("/people/99999").status_code == 404
+
+
+def test_import_preview_maps_people(admin, importer, services, chat):
+    services.members.upsert_live(-4001, 7, "Alice T.", "alice")
+    record_id = int(upload(admin, FIXTURE.read_bytes()).headers["HX-Redirect"].rsplit("/", 1)[1])
+    preview = admin.client.get(f"/import/{record_id}").text
+    assert "People in this export" in preview
+    assert 'name="name-7" value="Alice Tan"' in preview and "Alice T." in preview
+    assert "new: not seen live yet" in preview
+
+    bob_person = services.people.touch_live(80, "Bobby", "bobby")
+    admin.post(f"/import/{record_id}/start", {
+        "target": "-4001", "name-7": "Alice Tan", "merge-7": "",
+        "name-8": "Bob", "merge-8": str(bob_person)})
+    for _ in range(200):
+        if importer.repo.get(record_id).status == "done":
+            break
+        time.sleep(0.02)
+    assert services.people.for_user(7).display_name == "Alice Tan"
+    assert services.people.for_user(8).id == bob_person

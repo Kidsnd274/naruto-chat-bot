@@ -40,7 +40,7 @@ from naruto.services import Services
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 500
-TOP_PARTICIPANTS = 30
+MAX_PARTICIPANTS = 1000  # stored in the preview for identity mapping
 STALE_PREVIEW_SECONDS = 24 * 3600
 _CHUNK = 1024 * 1024
 
@@ -55,6 +55,16 @@ class UploadTooLarge(ImportProblem):
 
 class ImportCancelled(Exception):
     """The process is shutting down; the import is rolled back."""
+
+
+@dataclass
+class IdentityRow:
+    """One person in an export, for the preview's identity mapping."""
+    user_id: int
+    export_name: str
+    count: int
+    person: object | None  # naruto.db.people.Person when the account is known
+    suggested_name: str
 
 
 @dataclass
@@ -174,7 +184,7 @@ class ImportService:
             "last_date": last,
             "participants": [
                 {"id": key if isinstance(key, int) else None, "name": names[key], "count": count}
-                for key, count in senders.most_common(TOP_PARTICIPANTS)
+                for key, count in senders.most_common(MAX_PARTICIPANTS)
             ],
             "participant_count": len(senders),
             "dates": _date_histogram(dates),
@@ -213,12 +223,60 @@ class ImportService:
 
     # --------------------------------------------------------------- import
 
-    async def start(self, import_id: int, chat_id: int) -> None:
+    def identity_rows(self, record: ImportRecord) -> list[IdentityRow]:
+        """The export's senders with their known person, if any. The suggested
+        name is the person's chosen name, else the export's name for them
+        (the exporting account's contact name)."""
+        bot = self.services.status.bot
+        participants = [p for p in (record.preview or {}).get("participants", [])
+                        if p.get("id") and p["id"] > 0 and not (bot and p["id"] == bot.id)]
+        known = self.services.people.for_users([p["id"] for p in participants])
+        rows = []
+        for p in participants:
+            person = known.get(p["id"])
+            suggested = person.name if person is not None and person.name else p["name"]
+            rows.append(IdentityRow(p["id"], p["name"], p["count"], person, suggested))
+        return rows
+
+    def apply_identities(self, record: ImportRecord, identities: dict[int, dict]) -> None:
+        """Apply the owner's choices from the preview before importing.
+
+        ``identities`` maps user IDs to ``{"name": str, "merge_into": person
+        id or None}``. An empty name leaves the person's name alone. When an
+        account is merged into someone who already has a name, that name is
+        kept.
+        """
+        people = self.services.people
+        export_names = {p["id"]: p["name"] for p in (record.preview or {}).get("participants", [])
+                        if p.get("id")}
+        seen_at = record.first_date or now_ts()
+        for user_id, choice in identities.items():
+            if user_id not in export_names:
+                continue
+            person_id = people.touch_imported(user_id, export_names[user_id], seen_at)
+            target = choice.get("merge_into")
+            merged = False
+            if target and target != person_id and people.get(target) is not None:
+                person_id = people.move_account(user_id, target).id
+                merged = True
+            name = (choice.get("name") or "").strip()
+            person = people.get(person_id)
+            if not name or (merged and person.name):
+                continue
+            if person.name or name != person.display_name:
+                # Only pin a name that changes what is shown; a name equal to
+                # the Telegram one would stop following later renames.
+                people.set_name(person_id, name)
+
+    async def start(self, import_id: int, chat_id: int,
+                    identities: dict[int, dict] | None = None) -> None:
         record = self.repo.get(import_id)
         if record is None or record.status != PREVIEW or not record.file_path:
             raise ImportProblem("This import can no longer be started.")
         if import_id in self._tasks:
             return
+        if identities:
+            self.apply_identities(record, identities)
         chat = self.services.chats.get(chat_id)
         if chat is None:
             # Import before the bot joins: the chat starts out pending.

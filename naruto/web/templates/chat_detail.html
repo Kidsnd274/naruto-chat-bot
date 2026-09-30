@@ -54,12 +54,13 @@
   </section>
 
   <section class="card">
-    <h2>Members</h2>
+    <h2>People</h2>
+    <p class="muted small">Names and aliases are shared by every chat; open someone to rename or merge them.</p>
     {% if members %}
       <ul class="plain members">
         {% for member in members %}
           <li>
-            <div><strong>{{ member.display_name }}</strong> <span class="muted">{{ member.handle }}{% if member.is_bot %} · bot{% endif %}{% if member.source == "import" %} · from import{% endif %}</span></div>
+            <div><a href="/people/{{ member.person_id }}"><strong>{{ member.display_name }}</strong></a> <span class="muted">{{ member.handle }}{% if member.is_bot %} · bot{% endif %}{% if member.source == "import" %} · only in the import{% endif %}{% if member.export_name and member.export_name != member.display_name %} · export: {{ member.export_name }}{% endif %}</span></div>
             <div class="alias-row">
               {% for alias in member.aliases %}
                 <form method="post" action="/chats/{{ chat.chat_id }}/members/{{ member.user_id }}/aliases/delete" class="chip">

@@ -8,7 +8,7 @@
     <tr>
       <td class="mono small">{{ m.id }}</td>
       <td class="small nowrap">{{ m.date|ts }}</td>
-      <td class="nowrap">{{ m.sender_name }}{% if m.from_bot %} <span class="badge muted-badge">bot</span>{% endif %}</td>
+      <td class="nowrap">{% set shown = names.get(m.sender_id, m.sender_name) %}<span{% if shown != m.sender_name %} title="Stored as {{ m.sender_name }}"{% endif %}>{{ shown }}</span>{% if m.from_bot %} <span class="badge muted-badge">bot</span>{% endif %}</td>
       <td class="text">
         {% if m.reply_to_row_id %}<span class="muted small">↩{{ m.reply_to_row_id }}</span> {% elif m.reply_to_snippet %}<span class="muted small">↩ {{ m.reply_to_snippet }}</span><br>{% endif %}
         {% if m.forwarded_from %}<span class="muted small">forwarded from {{ m.forwarded_from }}</span><br>{% endif %}

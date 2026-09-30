@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from naruto.services import Services
-from naruto.web import auth, chats, imports, logs_page, pages, runs, settings_pages
+from naruto.web import auth, chats, imports, logs_page, pages, people, runs, settings_pages
 from naruto.web.templating import make_templates
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -65,6 +65,7 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(pages.router)
     app.include_router(chats.router)
+    app.include_router(people.router)
     app.include_router(imports.router)
     app.include_router(runs.router)
     app.include_router(settings_pages.router)

@@ -23,7 +23,7 @@
   <section class="card">
     <h2>Trigger</h2>
     {% if trigger %}
-      <p><strong>{{ trigger.sender_name }}</strong> <span class="muted small">{{ trigger.date|ts }} · message {{ trigger.id }}</span></p>
+      <p><strong>{{ trigger_name }}</strong> <span class="muted small">{{ trigger.date|ts }} · message {{ trigger.id }}</span></p>
       <p class="msg-text">{{ trigger|body }}</p>
     {% else %}
       <p class="muted">The trigger message is no longer stored.</p>

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}People{% endblock %}
+{% block content %}
+<h1>People</h1>
+<p class="muted">Everyone the bot has seen, across all chats. A name or alias set here is used in every chat. If one person has two Telegram accounts, merge them.</p>
+<form class="filters" method="get" action="/people">
+  <input type="search" name="q" value="{{ query }}" placeholder="Search names, @usernames, aliases">
+  <button type="submit">Search</button>
+</form>
+
+{% if summaries %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Person</th><th>Telegram accounts</th><th>Aliases</th><th class="num">Chats</th><th class="num">Messages</th><th>Last seen</th></tr></thead>
+  <tbody>
+  {% for s in summaries %}
+    {% set p = s.person %}
+    <tr>
+      <td>
+        <a href="/people/{{ p.id }}"><strong>{{ p.display_name }}</strong></a>
+        {% if p.name %}<span class="badge custom">name set</span>{% endif %}
+        {% if p.is_bot %}<span class="badge muted-badge">bot</span>{% endif %}
+      </td>
+      <td class="small">
+        {% for a in p.accounts %}
+          <div>{{ a.telegram_name or "—" }} <span class="muted">{{ a.handle }}</span>{% if a.export_name and a.export_name != a.telegram_name %} <span class="muted">· export: {{ a.export_name }}</span>{% endif %}</div>
+        {% endfor %}
+      </td>
+      <td class="small">{{ p.aliases|join(", ") }}</td>
+      <td class="num">{{ s.chat_count }}</td>
+      <td class="num">{{ s.message_count }}</td>
+      <td class="small nowrap">{{ p.last_seen_at|ago }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+  <p class="card muted">{% if query %}Nobody matches “{{ query }}”.{% else %}Nobody yet. People appear when they write in an enabled group or come in with an import.{% endif %}</p>
+{% endif %}
+{% endblock %}

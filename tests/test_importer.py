@@ -242,3 +242,54 @@ async def test_unexpected_read_errors_clean_up(importer, monkeypatch):
         await upload(importer)
     assert importer.repo.recent()[0].status == FAILED
     assert list(importer.upload_dir.iterdir()) == []
+
+
+# ---------------------------------------------------------------- identities
+
+async def test_identity_rows_match_known_accounts(importer, services):
+    services.members.upsert_live(CHAT, 7, "Alice T.", "alice")  # seen live already
+    record = await upload(importer)
+    rows = {row.user_id: row for row in importer.identity_rows(record)}
+    assert set(rows) == {7, 8, 9, 10}  # not the group itself (-1004001)
+    assert rows[7].person.display_name == "Alice T." and rows[7].suggested_name == "Alice Tan"
+    assert rows[8].person is None and rows[8].suggested_name == "Bob"
+
+    services.people.set_name(rows[7].person.id, "Ally")
+    rows = {row.user_id: row for row in importer.identity_rows(record)}
+    assert rows[7].suggested_name == "Ally"  # a chosen name beats the export's
+
+
+async def test_apply_identities_names_and_merges(importer, services):
+    services.chats.upsert_seen(CHAT)
+    services.members.upsert_live(CHAT, 7, "Alice T.", "alice")
+    alice = services.people.person_id_for(7)
+    services.members.upsert_live(CHAT, 99, "Wei (new phone)", "wei2")
+    wei = services.people.person_id_for(99)
+    services.people.set_name(wei, "Wei")
+    record = await upload(importer)
+
+    await importer.start(record.id, CHAT, identities={
+        7: {"name": "Alice Tan", "merge_into": None},
+        8: {"name": "", "merge_into": None},             # keep the default name
+        9: {"name": "Wei W", "merge_into": wei},          # same person as account 99
+        12345: {"name": "not in export", "merge_into": None},
+    })
+    import asyncio
+    await asyncio.gather(*importer._tasks.values())
+
+    assert services.people.get(alice).display_name == "Alice Tan"
+    assert services.people.for_user(8).display_name == "Bob"
+    merged = services.people.for_user(9)
+    assert merged.id == wei and {a.user_id for a in merged.accounts} == {9, 99}
+    assert merged.display_name == "Wei"  # merged into someone who already had a name
+    assert services.people.for_user(12345) is None
+    context_names = services.people.display_names([7, 9, 99])
+    assert context_names == {7: "Alice Tan", 9: "Wei", 99: "Wei"}
+
+
+async def test_names_equal_to_telegram_names_are_not_pinned(importer, services):
+    services.chats.upsert_seen(CHAT)
+    services.members.upsert_live(CHAT, 8, "Bob", None)
+    record = await upload(importer)
+    importer.apply_identities(record, {8: {"name": "Bob", "merge_into": None}})
+    assert services.people.for_user(8).name is None  # still follows Telegram renames

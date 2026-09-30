@@ -108,6 +108,9 @@ async def import_detail(request: Request, import_id: int):
             "target": target,
             "chats": services.chats.list_all(),
             "estimate": importer.estimate(record, target),
+            "identities": importer.identity_rows(record),
+            "people": sorted((s.person for s in services.people.all()),
+                             key=lambda p: p.display_name.lower()),
         })
     return request.app.state.templates.TemplateResponse(request, "import_detail.html", context)
 
@@ -144,7 +147,8 @@ async def start_import(request: Request, import_id: int):
     record = importer.repo.get(import_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Unknown import.")
-    raw = (await request.form()).get("target") or ""
+    form = await request.form()
+    raw = form.get("target") or ""
     if raw == "new":
         match = importer.match(record)
         chat_id = match.suggested_chat_id
@@ -156,10 +160,25 @@ async def start_import(request: Request, import_id: int):
         except ValueError:
             raise HTTPException(status_code=400, detail="Choose a group.") from None
     try:
-        await importer.start(import_id, chat_id)
+        await importer.start(import_id, chat_id, identities=_identities(form))
     except ImportProblem as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return RedirectResponse(f"/import/{import_id}", status_code=303)
+
+
+def _identities(form) -> dict[int, dict]:
+    """``name-<user id>`` and ``merge-<user id>`` fields from the preview."""
+    identities: dict[int, dict] = {}
+    for key, value in form.multi_items():
+        field, _, raw_id = key.partition("-")
+        if field not in ("name", "merge") or not raw_id.lstrip("-").isdigit():
+            continue
+        choice = identities.setdefault(int(raw_id), {"name": "", "merge_into": None})
+        if field == "name":
+            choice["name"] = str(value).strip()
+        elif str(value).isdigit():
+            choice["merge_into"] = int(value)
+    return identities
 
 
 @router.post("/import/{import_id}/discard")

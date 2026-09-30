@@ -1,6 +1,6 @@
 # Bot rework plan
 
-Status: phases 1–4 implemented on branch `bot_rework` (phases 3–4 on 2026-10-01); phase 5 not started. See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
+Status: phases 1–4 implemented on branch `bot_rework` (phases 3–4 on 2026-10-01); phase 5 partly done (per-chat overrides, progress messages, parallel requests; not simulated streaming or persona tuning). See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
 
 ## 1. Goal
 
@@ -210,7 +210,7 @@ Rule: **anything stored in the database can be viewed and changed in the web adm
 - **Typed and validated:** each setting has a type, allowed range, default and short description, defined in one code registry that also renders the Settings page. Invalid values are rejected on save.
 - **Applied without restart:** the bot reads settings from an in-memory cache that is refreshed on every save. Settings that genuinely need a restart are marked as such.
 - **Change history:** every change records the time, the old and new value, and who made it. One-click revert to the previous value or reset to default.
-- **Per-chat overrides (optional, later):** e.g. a different persona tone or digest frequency for one group, falling back to the global value.
+- **Per-chat overrides:** e.g. a different persona tone or digest frequency for one group, falling back to the global value (built in phase 5, §18).
 
 ## 9. Memory and prompt
 
@@ -525,6 +525,13 @@ The owner tested phases 3–4 in a test group, first on Lemonade (Gemma 4 31B), 
 - From a code review: a reply queued behind another run still answered after the chat was disabled; merging two people orphaned the source's memory notes; a network error, time-out or flood limit failed a reminder for good (now retried with backoff; migration 7).
 - `set_reminder` accepts "in a minute", "90 mins", "1h 30m", "17:30", "tomorrow 9am".
 
+### Built (phase 5, 2026-10-01)
+
+- **Per-chat setting overrides** (migration 8, `chat_settings`): the settings in `registry.PER_CHAT` (persona, banter reasoning, recent window, input budget, automatic notes, notes per request, digest frequency, board format and pin, images, progress message) can be set for one chat on its **Settings for this chat** page. Everything that works for a chat reads `settings.for_chat(chat_id)`, which falls back to the global value; an override stays as it is when the global value changes, and moves with a group upgrade.
+- **Progress messages** (§13): a summarize, plan or questions run (also after a hand-over from a mention) that is still going after Behaviour → Progress message after (default 8 s, per chat, 0 = off) posts "📖 Reading back through the chat…" as a reply, and the answer replaces it. Only the answer is stored.
+- **Parallel requests** (Model → Parallel requests, default 1): a multi-slot server (Halogen has 4) can work on replies in different chats and background digest updates at once; replies still go first when every slot is busy, and runs in one chat still take turns. Not in the original plan; added because Halogen's slots sat idle while a digest update held up replies.
+- Not done: simulated streaming (the plan says to try it first; with progress messages in place it may not be needed), and persona tuning from real use (the persona is being reworked separately).
+
 ### Needs checking against live Telegram and Gufo
 
 - `/catchup`: a non-admin bot may only answer an ephemeral command within 15 seconds, and a catch-up with reasoning usually takes longer; check which fallback (DM or group) people get, or make the bot an admin.
@@ -535,6 +542,8 @@ The owner tested phases 3–4 in a test group, first on Lemonade (Gemma 4 31B), 
 - `getMe().can_read_all_group_messages` and pin-right detection in basic groups.
 - Gufo: served model ID (an empty `model.name` uses the first listed model), streaming for time to first token, `reasoning_content`, and image input with Qwen3.8.
 - Rich messages: that the board's Markdown (`###` headings, `-` lists, backslash escapes) renders as intended, and that editing and pinning a rich message work (the API docs say yes; `sendRichMessage` has no `reply_markup`). If it looks wrong, switch Settings → Board → format to `html`.
+- Progress messages: that editing the placeholder into a long Markdown answer looks right, and whether 8 s is a good default.
+- Parallel requests on Halogen: set it to 4 and check that replies no longer wait for digest updates, and that answers stay the same (its prompt cache is shared across slots).
 - Gufo + Qwen3.8 tool calling: whether the server returns structured `tool_calls` or inline `<tool_call>` text (both are handled), and that tool results in `role: tool` messages with `tool_call_id` are accepted.
 
 ### Next

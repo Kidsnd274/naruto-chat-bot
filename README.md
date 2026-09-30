@@ -114,7 +114,7 @@ Commands (each goes straight to a focused skill):
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
-| Settings | Every setting with validation, history, revert and reset. Changes apply immediately. |
+| Settings | Every setting with validation, history, revert and reset. Changes apply immediately. Some (persona, digest frequency, automatic notes, board, images, recent window, progress message) can also be set for one chat on that chat's **Settings for this chat** page. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
 
 ### Importing older history
@@ -135,6 +135,8 @@ After the import, the bot reads the **whole** export in chunks, including messag
 - **Reasoning:** most skills let the model think briefly before answering (Settings → Persona and skills → reasoning, and Model → Reasoning effort, default *low*). Without it, Qwen3.8 often said “Reminder set!” without setting one. If an answer still skips the tool a request needs, the bot asks the model once more (shown as “Asked again” on the Agent runs page).
 - **Prompt cache:** the start of each request stays the same from one message to the next (the time now, the board and reminders come last), so the server only reads what's new. A request that misses the cache, such as the first `/summary` in a while or the first reply after a digest update, is noticeably slower.
 - **Images** need a model server with vision (for Halogen, `HALOGEN_VISION_TOWER`). Without it the bot answers without seeing the image.
+- **Parallel requests** (Model settings, default 1): raise it to the server's number of slots (Halogen: 4, see its `/props`) so replies in different chats and background digest updates don't wait for each other.
+- **Progress messages:** when a summary, plan or list of open questions takes longer than 8 seconds, the bot posts “Reading back through the chat…” and then replaces it with the answer (Settings → Behaviour; 0 turns it off).
 
 ### Evaluating models
 

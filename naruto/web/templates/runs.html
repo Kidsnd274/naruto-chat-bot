@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Agent runs{% endblock %}
+{% block content %}
+<h1>Agent runs</h1>
+<p class="muted">One row per bot response: what the model saw and what it answered. Use it to tell bad context from a model that isn't smart enough.</p>
+<form class="filters" method="get" action="/runs">
+  <select name="chat">
+    <option value="">All chats</option>
+    {% for chat in chats %}<option value="{{ chat.chat_id }}" {{ 'selected' if filters.chat == chat.chat_id else '' }}>{{ chat.display_title }}</option>{% endfor %}
+  </select>
+  <select name="status">
+    <option value="">Any status</option>
+    {% for status in statuses %}<option value="{{ status }}" {{ 'selected' if filters.status == status else '' }}>{{ status }}</option>{% endfor %}
+  </select>
+  <button type="submit">Apply</button>
+</form>
+
+{% if runs %}
+<div class="table-wrap">
+<table class="compact">
+  <thead><tr><th>#</th><th>When</th><th>Chat</th><th>Skill</th><th>Status</th><th class="num">Prompt tokens</th><th class="num">Messages</th><th class="num">Latency</th><th>Answer</th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
+      <td class="small nowrap">{{ run.started_at|ts("%d %b %H:%M:%S") }}</td>
+      <td class="small">{{ chat_titles.get(run.chat_id, run.chat_id) }}</td>
+      <td class="small">{{ run.skill }}</td>
+      <td><span class="badge {{ 'done' if run.status == 'ok' else run.status }}">{{ run.status }}</span></td>
+      <td class="num small">{{ run.prompt_tokens if run.prompt_tokens is not none else "" }}</td>
+      <td class="num small">{{ run.window_size if run.window_size is not none else "" }}{% if run.dropped %} <span class="muted">(−{{ run.dropped }})</span>{% endif %}</td>
+      <td class="num small nowrap">{{ "%.1f s"|format(run.latency_ms / 1000) if run.latency_ms is not none else "" }}</td>
+      <td class="small">{{ (run.response or run.error or "")[:120] }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<div class="pager">
+  {% if offset > 0 %}<a class="button small" href="/runs?chat={{ filters.chat if filters.chat is not none else '' }}&status={{ filters.status }}&offset={{ [offset - limit, 0]|max }}">← Newer</a>{% endif %}
+  {% if offset + runs|length < total %}<a class="button small" href="/runs?chat={{ filters.chat if filters.chat is not none else '' }}&status={{ filters.status }}&offset={{ offset + limit }}">Older →</a>{% endif %}
+</div>
+{% else %}
+  <p class="card muted">No runs yet. They appear when the bot answers a mention.</p>
+{% endif %}
+{% endblock %}

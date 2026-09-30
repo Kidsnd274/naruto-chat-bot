@@ -489,3 +489,43 @@ def test_sanitize_updates_patches_missing_message_id_and_skips_garbage():
     assert cleaned[0]["message"]["message_id"] == 0
     assert cleaned[1] == {"update_id": 2}
     assert sanitize_updates(True) is True
+
+
+# -------------------------------------------------------------- agent runs
+
+async def test_answer_is_traced(services, wired, bot):
+    enable(services)
+    services.llm = FakeLLM()
+    await run_message(wired, bot, message(10, "@naruto_bot hi"))
+    runs, total = services.runs.recent()
+    run = runs[0]
+    assert total == 1 and run.status == "ok" and run.skill == "banter"
+    assert run.response == "Saturday, believe it!" and run.reply_message_ids == [901]
+    assert run.trigger_message_id == 10 and run.user_id == 7
+    assert run.prompt[-1]["content"].endswith("hi") and run.prompt_tokens > 0
+    assert run.finished_at is not None
+
+
+async def test_failed_and_empty_answers_are_traced(services, wired, bot):
+    enable(services)
+    services.llm = FakeLLM(error=LLMError("APITimeoutError"))
+    await run_message(wired, bot, message(10, "@naruto_bot hi"))
+    services.llm = FakeLLM(text="")
+    await run_message(wired, bot, message(11, "@naruto_bot hello"))
+    runs, _ = services.runs.recent()
+    assert [r.status for r in runs] == ["empty", "error"]
+    assert runs[1].error == "APITimeoutError"
+
+
+async def test_traced_prompt_never_contains_image_data(services, wired, bot, monkeypatch):
+    enable(services)
+    services.llm = FakeLLM(text="A cat.")
+
+    async def fake_extract(msg, max_bytes):
+        return [{"kind": "photo", "mime_type": "image/jpeg", "base64": "SECRETPIXELS", "width": 1,
+                 "height": 1}], None
+
+    monkeypatch.setattr("naruto.media.extract_attachments", fake_extract)
+    await run_message(wired, bot, fakes.photo_message(10, caption="@naruto_bot what's this?"))
+    run = services.runs.recent()[0][0]
+    assert run.image_count == 1 and "SECRETPIXELS" not in str(run.prompt)

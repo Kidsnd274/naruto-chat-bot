@@ -59,29 +59,46 @@ class Responder:
     async def respond(self, telegram_bot, chat: Chat, message: Message,
                       trigger: StoredMessage, bot: BotIdentity) -> None:
         settings = self.services.settings
-        async with typing(telegram_bot, message.chat_id):
-            images = await self._images(message, trigger)
-            prompt = self.builder.build(chat, trigger, bot=bot, images=images)
-            if prompt.dropped:
-                logger.warning("Dropped %s old messages to fit the input budget (%s tokens).",
-                               prompt.dropped, settings["context.input_token_budget"])
-            logger.debug("Prompt: %s", without_image_data(prompt.messages))
-            try:
-                result = await self.services.llm.chat(
-                    prompt.messages, reasoning=settings["skills.banter.reasoning"])
-            except LLMError as exc:
-                logger.error("Model request failed: %s", exc)
-                await self._send(telegram_bot, chat, message, FAILURE_TEXT, reply=False)
-                return
+        runs = self.services.runs
+        skill = "banter"
+        run_id = runs.start(chat_id=chat.chat_id, skill=skill, trigger_row_id=trigger.id,
+                            trigger_message_id=message.message_id, user_id=trigger.sender_id)
+        try:
+            async with typing(telegram_bot, message.chat_id):
+                images = await self._images(message, trigger)
+                prompt = self.builder.build(chat, trigger, bot=bot, images=images, skill=skill)
+                runs.update(run_id, prompt=without_image_data(prompt.messages),
+                            prompt_tokens=prompt.estimated_tokens, window_size=prompt.window_size,
+                            dropped=prompt.dropped, image_count=prompt.image_count)
+                if prompt.dropped:
+                    logger.warning("Dropped %s old messages to fit the input budget (%s tokens).",
+                                   prompt.dropped, settings["context.input_token_budget"])
+                try:
+                    result = await self.services.llm.chat(
+                        prompt.messages, reasoning=settings[f"skills.{skill}.reasoning"])
+                except LLMError as exc:
+                    logger.error("Model request failed: %s", exc)
+                    runs.update(run_id, status="error", error=str(exc))
+                    await self._send(telegram_bot, chat, message, FAILURE_TEXT, reply=False)
+                    return
 
-        should_reply, text = clean_model_output(result.text, bot.name)
-        if not text:
-            logger.warning("The model returned an empty answer (finish reason %s).",
-                           result.finish_reason)
-            return
-        logger.info("Answered in %s ms (%s estimated prompt tokens, %s recent messages).",
-                    result.latency_ms, prompt.estimated_tokens, prompt.window_size)
-        await self._send(telegram_bot, chat, message, text, reply=should_reply)
+            should_reply, text = clean_model_output(result.text, bot.name)
+            outcome = dict(model=result.model, reasoning=result.reasoning, response=text,
+                           usage=result.usage, latency_ms=result.latency_ms,
+                           finish_reason=result.finish_reason)
+            if not text:
+                logger.warning("The model returned an empty answer (finish reason %s).",
+                               result.finish_reason)
+                runs.update(run_id, status="empty", **outcome)
+                return
+            logger.info("Answered in %s ms (%s estimated prompt tokens, %s recent messages).",
+                        result.latency_ms, prompt.estimated_tokens, prompt.window_size)
+            sent = await self._send(telegram_bot, chat, message, text, reply=should_reply)
+            runs.update(run_id, status="ok", reply_message_ids=[m.message_id for m in sent],
+                        **outcome)
+        except Exception as exc:
+            runs.update(run_id, status="error", error=f"{type(exc).__name__}: {exc}"[:500])
+            raise
 
     async def _send(self, telegram_bot, chat: Chat, message: Message, text: str,
                     *, reply: bool) -> list[Message]:

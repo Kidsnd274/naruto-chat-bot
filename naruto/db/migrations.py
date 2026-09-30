@@ -151,10 +151,43 @@ CREATE INDEX logs_created ON logs (created_at);
 CREATE INDEX logs_chat ON logs (chat_id, id);
 """
 
+_V2_AGENT_RUNS = """
+-- One row per bot response: what was sent to the model and what came back.
+-- Prompts contain chat content, so these follow the retention setting.
+-- Times are fractional seconds.
+CREATE TABLE agent_runs (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    trigger_row_id INTEGER,
+    trigger_message_id INTEGER,
+    user_id INTEGER,
+    skill TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'empty', 'error')),
+    model TEXT,
+    prompt TEXT,
+    prompt_tokens INTEGER,
+    window_size INTEGER,
+    dropped INTEGER,
+    image_count INTEGER,
+    reasoning TEXT,
+    response TEXT,
+    reply_message_ids TEXT,
+    usage TEXT,
+    latency_ms INTEGER,
+    finish_reason TEXT,
+    error TEXT,
+    started_at REAL NOT NULL,
+    finished_at REAL
+);
+CREATE INDEX agent_runs_chat ON agent_runs (chat_id, id);
+CREATE INDEX agent_runs_started ON agent_runs (started_at);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
+    _V2_AGENT_RUNS,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
-CHAT_SCOPED_TABLES = ("messages", "members", "member_aliases")
+CHAT_SCOPED_TABLES = ("messages", "members", "member_aliases", "agent_runs")

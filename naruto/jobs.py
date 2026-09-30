@@ -16,8 +16,8 @@ DAY = 86400
 MAINTENANCE_INTERVAL_SECONDS = 3600
 HEALTH_INTERVAL_SECONDS = 60
 
-# Extra cleanup steps registered by features added later (agent runs,
-# imports). Each gets the services and returns a short description or None.
+# Extra cleanup steps for features added later. Each gets the services and
+# returns a short description of what it removed, or None.
 CleanupStep = Callable[[Services], str | None]
 cleanup_steps: list[CleanupStep] = []
 
@@ -28,6 +28,14 @@ def cleanup_logs(services: Services) -> str | None:
         return None
     deleted = services.logs.delete_older_than(time.time() - days * DAY)
     return f"{deleted} log records" if deleted else None
+
+
+def cleanup_agent_runs(services: Services) -> str | None:
+    days = services.settings["retention.agent_runs_days"]
+    if days <= 0:
+        return None
+    deleted = services.runs.delete_older_than(time.time() - days * DAY)
+    return f"{deleted} agent runs" if deleted else None
 
 
 async def leave_stale_pending(services: Services) -> int:
@@ -45,7 +53,7 @@ async def leave_stale_pending(services: Services) -> int:
 
 async def run_maintenance(services: Services) -> None:
     done = []
-    for step in [cleanup_logs, *cleanup_steps]:
+    for step in [cleanup_logs, cleanup_agent_runs, *cleanup_steps]:
         try:
             result = step(services)
         except Exception:

@@ -95,3 +95,14 @@ async def test_web_admin_bind_failure_keeps_running_until_stop(services, caplog)
         assert not task.done()  # the bot would keep running
         stop.set()
         await asyncio.wait_for(task, timeout=5)
+
+
+def test_cleanup_agent_runs_follows_retention(services):
+    old = services.runs.start(chat_id=-1, skill="banter")
+    services.db.execute("UPDATE agent_runs SET started_at = ? WHERE id = ?",
+                        (time.time() - 40 * 86400, old))
+    services.runs.start(chat_id=-1, skill="banter")
+    assert jobs.cleanup_agent_runs(services) == "1 agent runs"
+    assert services.runs.recent()[1] == 1
+    services.settings.set("retention.agent_runs_days", 0, actor="t")
+    assert jobs.cleanup_agent_runs(services) is None

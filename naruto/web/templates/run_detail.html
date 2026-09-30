@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ run.id }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/runs">Agent runs</a> /</p>
+<h1>Run #{{ run.id }} <span class="badge {{ 'done' if run.status == 'ok' else run.status }}">{{ run.status }}</span></h1>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Summary</h2>
+    <dl class="facts">
+      <dt>Chat</dt><dd>{% if chat %}<a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a>{% else %}{{ run.chat_id }}{% endif %}</dd>
+      <dt>Started</dt><dd>{{ run.started_at|ts("%d %b %Y, %H:%M:%S") }}{% if run.duration_ms is not none %} <span class="muted small">({{ "%.1f"|format(run.duration_ms / 1000) }} s in total)</span>{% endif %}</dd>
+      <dt>Skill</dt><dd>{{ run.skill }}</dd>
+      <dt>Model</dt><dd class="mono">{{ run.model or "—" }}</dd>
+      <dt>Prompt</dt><dd>~{{ run.prompt_tokens or 0 }} tokens (estimate), {{ run.prompt_chars }} characters</dd>
+      <dt>Recent window</dt><dd>{{ run.window_size if run.window_size is not none else "—" }} messages{% if run.dropped %}, {{ run.dropped }} dropped for the budget{% endif %}</dd>
+      <dt>Images</dt><dd>{{ run.image_count or 0 }}</dd>
+      <dt>Model latency</dt><dd>{{ "%.2f s"|format(run.latency_ms / 1000) if run.latency_ms is not none else "—" }}</dd>
+      {% if run.usage %}<dt>Usage</dt><dd class="mono small">{% for key, value in run.usage.items() if value is not none and value is not mapping %}{{ key }}={{ value }} {% endfor %}</dd>{% endif %}
+      <dt>Finish reason</dt><dd>{{ run.finish_reason or "—" }}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>Trigger</h2>
+    {% if trigger %}
+      <p><strong>{{ trigger.sender_name }}</strong> <span class="muted small">{{ trigger.date|ts }} · message {{ trigger.id }}</span></p>
+      <p class="msg-text">{{ trigger|body }}</p>
+    {% else %}
+      <p class="muted">The trigger message is no longer stored.</p>
+    {% endif %}
+    <h2>Answer</h2>
+    {% if run.error %}<p class="notice error">{{ run.error }}</p>{% endif %}
+    {% if run.response %}<p class="msg-text">{{ run.response }}</p>{% elif not run.error %}<p class="muted">No answer.</p>{% endif %}
+    {% if run.reply_message_ids %}<p class="muted small">Sent as Telegram message {{ run.reply_message_ids|join(", ") }}.</p>{% endif %}
+  </section>
+</div>
+
+{% if run.reasoning %}
+<section class="card">
+  <details>
+    <summary><strong>Reasoning</strong> <span class="muted small">({{ run.reasoning|length }} characters)</span></summary>
+    <pre class="prompt">{{ run.reasoning }}</pre>
+  </details>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Prompt sent</h2>
+  {% if run.prompt %}
+    {% for message in run.prompt %}
+      <details {{ 'open' if not loop.first else '' }}>
+        <summary><strong>{{ message.role }}</strong> <span class="muted small">message {{ loop.index }} of {{ run.prompt|length }}</span></summary>
+        {% if message.content is string %}
+          <pre class="prompt">{{ message.content }}</pre>
+        {% else %}
+          {% for part in message.content %}
+            {% if part.type == "text" %}<pre class="prompt">{{ part.text }}</pre>
+            {% else %}<p class="muted small">[image {{ part.image_url.url }}]</p>{% endif %}
+          {% endfor %}
+        {% endif %}
+      </details>
+    {% endfor %}
+  {% else %}
+    <p class="muted">Not recorded.</p>
+  {% endif %}
+</section>
+{% endblock %}

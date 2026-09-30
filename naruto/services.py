@@ -13,6 +13,7 @@ from naruto.db.database import Database
 from naruto.db.logs import LogRepository
 from naruto.db.members import MemberRepository
 from naruto.db.messages import MessageRepository
+from naruto.db.runs import AgentRunRepository
 from naruto.llm import LLMClient
 from naruto.settings.seed import SeedData
 from naruto.settings.service import SettingsService
@@ -52,6 +53,7 @@ class Services:
     members: MemberRepository
     messages: MessageRepository
     logs: LogRepository
+    runs: AgentRunRepository
     llm: LLMClient
     seed: SeedData = field(default_factory=SeedData)
     status: RuntimeStatus = field(default_factory=RuntimeStatus)
@@ -68,6 +70,7 @@ class Services:
             members=MemberRepository(db),
             messages=MessageRepository(db),
             logs=LogRepository(db),
+            runs=AgentRunRepository(db),
             llm=LLMClient(settings, bootstrap.openai_api_key),
             seed=seed or SeedData(),
         )

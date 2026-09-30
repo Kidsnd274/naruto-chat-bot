@@ -286,3 +286,30 @@ def test_logs_page_filters(admin, services):
     assert "Answering message 3" in by_chat and "Model request failed" not in by_chat
     live = admin.client.get("/logs", params={"live": "1"}).text
     assert 'hx-trigger="every 3s"' in live
+
+
+# -------------------------------------------------------------------- runs
+
+def test_runs_list_and_detail(admin, chat, services):
+    run_id = services.runs.start(chat_id=CHAT, skill="banter", trigger_row_id=1,
+                                 trigger_message_id=1, user_id=7)
+    services.runs.update(run_id, status="ok", prompt=[
+        {"role": "system", "content": "You are Naruto."},
+        {"role": "user", "content": [{"type": "text", "text": "## Current request"},
+                                     {"type": "image_url", "image_url": {"url": "<image/jpeg, 12 KB>"}}]},
+    ], prompt_tokens=321, window_size=12, dropped=2, image_count=1, response="Saturday!",
+        reasoning="thinking hard", latency_ms=1500, model="qwen", usage={"prompt_tokens": 300},
+        reply_message_ids=[901])
+    failed = services.runs.start(chat_id=CHAT, skill="banter")
+    services.runs.update(failed, status="error", error="APITimeoutError")
+
+    listing = admin.client.get("/runs").text
+    assert "Saturday!" in listing and "APITimeoutError" in listing and "1.5 s" in listing
+    only_errors = admin.client.get("/runs", params={"status": "error"}).text
+    assert "Saturday!" not in only_errors
+    detail = admin.client.get(f"/runs/{run_id}").text
+    assert "You are Naruto." in detail and "## Current request" in detail
+    assert "&lt;image/jpeg, 12 KB&gt;" in detail and "thinking hard" in detail
+    assert "when is the bbq?" in detail  # the trigger message
+    assert "Telegram message 901" in detail
+    assert admin.client.get("/runs/999").status_code == 404

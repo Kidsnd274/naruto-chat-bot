@@ -143,7 +143,7 @@ class Responder:
     async def _images(self, message: Message, trigger: StoredMessage) -> list[ImageInput]:
         """Download images on demand: the trigger's own, and the one it replies
         to. Only the Telegram file_id is stored; bytes are never kept."""
-        settings = self.services.settings
+        settings = self.services.settings.for_chat(trigger.chat_id)
         if not settings["media.enabled"]:
             return []
         targets = []

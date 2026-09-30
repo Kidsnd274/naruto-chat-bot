@@ -111,6 +111,47 @@ def test_invalid_value_is_rejected_and_not_stored(settings):
     assert settings.history() == []
 
 
+# ---------------------------------------------------------------- per chat
+
+def test_a_chat_can_override_per_chat_settings(db, settings):
+    settings.set("context.recent_window", 30, actor="owner")
+    settings.set_for_chat(-1, "context.recent_window", 80, actor="owner")
+    busy, other = settings.for_chat(-1), settings.for_chat(-2)
+    assert busy["context.recent_window"] == 80 and busy.is_overridden("context.recent_window")
+    assert other["context.recent_window"] == 30 and not other.is_overridden("context.recent_window")
+    assert busy["model.name"] == settings["model.name"]  # not per chat: always global
+
+    # An override equal to the global value stays put when the global value changes.
+    settings.set_for_chat(-2, "context.recent_window", 30, actor="owner")
+    settings.set("context.recent_window", 50, actor="owner")
+    assert settings.for_chat(-2)["context.recent_window"] == 30
+    assert settings.chats_overriding() == {-1: 1, -2: 1}
+
+    assert settings.reset_for_chat(-1, "context.recent_window", actor="owner")
+    assert settings.for_chat(-1)["context.recent_window"] == 50
+    assert not settings.reset_for_chat(-1, "context.recent_window", actor="owner")
+
+
+def test_per_chat_overrides_are_checked(db, settings):
+    with pytest.raises(SettingError, match="can't be set per chat"):
+        settings.set_for_chat(-1, "model.name", "x", actor="owner")
+    with pytest.raises(SettingError):
+        settings.set_for_chat_from_form(-1, "context.recent_window", "-5", actor="owner")
+    assert settings.chat_overrides(-1) == {}
+    db.execute("INSERT INTO chat_settings (chat_id, key, value, updated_at, updated_by) "
+               "VALUES (-1, 'context.recent_window', '\"lots\"', 0, 'x')")
+    assert settings.for_chat(-1)["context.recent_window"] == 40  # invalid: the global value
+
+
+def test_overrides_move_with_a_group_upgrade(db, settings):
+    chats = ChatRepository(db)
+    chats.upsert_seen(-4001, title="BBQ crew")
+    settings.set_for_chat(-4001, "board.pin", False, actor="owner")
+    chats.migrate(-4001, -1004001)
+    assert settings.for_chat(-1004001)["board.pin"] is False
+    assert settings.chat_overrides(-4001) == {}
+
+
 def test_revert_and_reset(settings):
     settings.set("model.temperature", 0.5, actor="owner")
     settings.set("model.temperature", 0.9, actor="owner")

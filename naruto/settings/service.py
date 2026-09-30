@@ -34,6 +34,35 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+@dataclass
+class ChatOverride:
+    key: str
+    value: Any
+    updated_at: int
+    updated_by: str
+
+
+class ChatSettings:
+    """Settings as one chat sees them: its overrides of per-chat settings,
+    otherwise the global values. Read once when made, so take a fresh one
+    for each request."""
+
+    def __init__(self, service: "SettingsService", chat_id: int,
+                 overrides: dict[str, ChatOverride]):
+        self.service = service
+        self.chat_id = chat_id
+        self.overrides = overrides
+
+    def get(self, key: str) -> Any:
+        override = self.overrides.get(key)
+        return override.value if override is not None else self.service.get(key)
+
+    __getitem__ = get
+
+    def is_overridden(self, key: str) -> bool:
+        return key in self.overrides
+
+
 class SettingsService:
     def __init__(self, db: Database, registry: dict[str, Setting] | None = None):
         self.db = db
@@ -146,6 +175,63 @@ class SettingsService:
                 listener(key, new_value)
             except Exception:
                 logger.exception("Settings listener failed for %s", key)
+
+    # ------------------------------------------------------------ per chat
+
+    def for_chat(self, chat_id: int) -> ChatSettings:
+        return ChatSettings(self, chat_id, self.chat_overrides(chat_id))
+
+    def chat_overrides(self, chat_id: int) -> dict[str, ChatOverride]:
+        overrides = {}
+        for row in self.db.query("SELECT * FROM chat_settings WHERE chat_id = ?", (chat_id,)):
+            setting = self.registry.get(row["key"])
+            if setting is None or not setting.per_chat:
+                continue  # no longer overridable; kept until reset
+            try:
+                value = setting.validate(json.loads(row["value"]))
+            except (SettingError, json.JSONDecodeError) as exc:
+                logger.warning("Chat %s's value for %s is invalid (%s); using the global one.",
+                               chat_id, row["key"], exc)
+                continue
+            overrides[row["key"]] = ChatOverride(row["key"], value, row["updated_at"],
+                                                 row["updated_by"])
+        return overrides
+
+    def set_for_chat(self, chat_id: int, key: str, value: Any, *, actor: str) -> Any:
+        """Override a per-chat setting for one chat. Unlike global settings,
+        an override equal to the global value is kept: it stays put if the
+        global value changes later."""
+        setting = self.definition(key)
+        if not setting.per_chat:
+            raise SettingError(f"{setting.label} can't be set per chat.")
+        value = setting.validate(value)
+        self.db.execute(
+            "INSERT INTO chat_settings (chat_id, key, value, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, key) DO UPDATE SET "
+            "value = excluded.value, updated_at = excluded.updated_at, "
+            "updated_by = excluded.updated_by",
+            (chat_id, key, _dump(value), now_ts(), actor))
+        logger.info("Setting %s for chat %s changed by %s", key, chat_id, actor,
+                    extra={"chat_id": chat_id})
+        return value
+
+    def set_for_chat_from_form(self, chat_id: int, key: str, raw: str | None, *,
+                               actor: str) -> Any:
+        return self.set_for_chat(chat_id, key, self.definition(key).parse_form(raw), actor=actor)
+
+    def reset_for_chat(self, chat_id: int, key: str, *, actor: str) -> bool:
+        """Back to the global value. Returns False if there was no override."""
+        removed = self.db.execute("DELETE FROM chat_settings WHERE chat_id = ? AND key = ?",
+                                  (chat_id, key)).rowcount > 0
+        if removed:
+            logger.info("Setting %s for chat %s reset to the global value by %s", key,
+                        chat_id, actor, extra={"chat_id": chat_id})
+        return removed
+
+    def chats_overriding(self) -> dict[int, int]:
+        """chat_id -> number of overrides, for the Chats page."""
+        return {row[0]: row[1] for row in self.db.query(
+            "SELECT chat_id, COUNT(*) FROM chat_settings GROUP BY chat_id")}
 
     # -------------------------------------------------------------- history
 

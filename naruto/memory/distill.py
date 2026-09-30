@@ -95,7 +95,7 @@ class Distiller:
 
     async def distill(self, record: ImportRecord, chat_id: int, stopping: threading.Event) -> None:
         services = self.services
-        settings = services.settings
+        settings = services.settings.for_chat(chat_id)
         first_live = services.messages.first_live_date(chat_id)
         chunks = export_chunks(services, record.file_path, before=first_live,
                                chunk_tokens=settings["import.distill_chunk_tokens"])

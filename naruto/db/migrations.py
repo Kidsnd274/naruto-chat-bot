@@ -414,6 +414,19 @@ ALTER TABLE reminders ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE reminders ADD COLUMN next_attempt_at INTEGER;
 """
 
+_V8_CHAT_SETTINGS = """
+-- Per-chat overrides of settings marked per_chat in the registry; a chat
+-- without a row uses the global value.
+CREATE TABLE chat_settings (
+    chat_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    PRIMARY KEY (chat_id, key)
+);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -422,10 +435,11 @@ MIGRATIONS: list[str] = [
     _V5_AGENT_TOOLS,
     _V6_MEMORY,
     _V7_REMINDER_RETRIES,
+    _V8_CHAT_SETTINGS,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
 CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans",
                       "digests", "memory_notes", "memory_note_history", "reminders",
-                      "media_descriptions")
+                      "media_descriptions", "chat_settings")

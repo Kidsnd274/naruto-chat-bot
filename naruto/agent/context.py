@@ -79,6 +79,7 @@ class ContextBuilder:
         self.self_label = self_label
         self._names: dict[int, str] = {}
         self._descriptions: dict[int, str] = {}
+        self._settings = services.settings  # the chat's view once build() runs
 
     # ---------------------------------------------------------------- build
 
@@ -98,7 +99,7 @@ class ContextBuilder:
         """``since`` replaces the recent window with every message since
         then; ``note`` is added to the current request (e.g. what a command
         asked for); ``reserved_tokens`` are kept free for the tool list."""
-        settings = self.services.settings
+        settings = self._settings = self.services.settings.for_chat(chat.chat_id)
         tz = self.services.timezone()
         now = (now or datetime.now(tz)).astimezone(tz)
 
@@ -148,7 +149,7 @@ class ContextBuilder:
 
     def _fit_budget(self, system, header, window, current, bot, tz, reserved_tokens=0):
         """Drop the oldest recent messages until the estimate fits."""
-        settings = self.services.settings
+        settings = self._settings
         budget = settings["context.input_token_budget"] - reserved_tokens
         image_tokens = settings["media.estimated_image_tokens"]
         lines = self._lines(window, bot, tz, {m.id for m in window})
@@ -208,7 +209,7 @@ class ContextBuilder:
         people = {person.id for person in services.people.for_users(
             {m.sender_id for m in window}).values()}
         notes = notes_for_prompt(services, chat.chat_id, people,
-                                 services.settings["memory.prompt_notes"])
+                                 self._settings["memory.prompt_notes"])
         if notes:
             parts.append("Group memory (notes you keep):\n"
                          + "\n".join(f"- {line}" for line in note_lines(services, notes)))

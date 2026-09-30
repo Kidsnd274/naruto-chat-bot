@@ -186,6 +186,7 @@ async def chat_detail(request: Request, chat_id: int):
         "senders": _senders(services, chat),
         "live_count": services.messages.count(chat.chat_id, LIVE),
         "import_count": services.messages.count(chat.chat_id, IMPORT),
+        "setting_overrides": len(services.settings.chat_overrides(chat.chat_id)),
         **_browse(services, chat, request.query_params),
         **(await _extra_detail(request, chat)),
     }

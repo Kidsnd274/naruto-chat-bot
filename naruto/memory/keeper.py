@@ -60,11 +60,11 @@ class MemoryKeeper:
 
     def due_chats(self, now: float | None = None) -> list[Chat]:
         now = now or time.time()
-        settings = self.services.settings
-        every = settings["memory.digest_every_messages"]
-        quiet = settings["memory.digest_quiet_minutes"] * 60
         due = []
         for chat in self.services.chats.list_by_status(ENABLED):
+            settings = self.services.settings.for_chat(chat.chat_id)
+            every = settings["memory.digest_every_messages"]
+            quiet = settings["memory.digest_quiet_minutes"] * 60
             digest = self.services.digests.get(chat.chat_id)
             requested = chat.chat_id in self._requested
             if (digest and digest.failed_at and now - digest.failed_at < RETRY_AFTER_SECONDS
@@ -119,7 +119,7 @@ class MemoryKeeper:
 
     def build_prompt(self, chat: Chat, batch: list[StoredMessage], *, more: bool) -> list[dict]:
         services = self.services
-        settings = services.settings
+        settings = services.settings.for_chat(chat.chat_id)
         bot = self._identity()
         system = fill(settings["memory.instructions"], bot_name=bot.name,
                       digest_max_chars=settings["memory.digest_max_chars"])
@@ -164,7 +164,7 @@ class MemoryKeeper:
     async def _update(self, chat: Chat, messages: list[StoredMessage] | None,
                       actor: str | None) -> str | None:
         services = self.services
-        settings = services.settings
+        settings = services.settings.for_chat(chat.chat_id)
         batch, more = self._batch(chat, messages)
         if not batch:
             return None

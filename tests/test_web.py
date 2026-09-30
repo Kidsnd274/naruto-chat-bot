@@ -573,6 +573,31 @@ def test_memory_page_add_edit_lock_delete(admin, chat, services):
     assert services.notes.count(CHAT) == 0
 
 
+def test_settings_for_one_chat(admin, chat, services):
+    assert "Settings for this chat" in admin.client.get(f"/chats/{CHAT}").text
+    page = admin.client.get(f"/chats/{CHAT}/settings").text
+    assert 'id="persona.prompt"' in page and 'id="board.pin"' in page
+    assert 'id="model.name"' not in page  # global only
+    assert "Nothing is set for this chat yet." in page
+
+    response = admin.post(f"/chats/{CHAT}/settings/context.recent_window", {"value": "80"})
+    assert response.status_code == 303
+    assert services.settings.for_chat(CHAT)["context.recent_window"] == 80
+    page = admin.client.get(f"/chats/{CHAT}/settings").text
+    assert "1 set for this chat." in page and "global: 40" in page
+    assert "Settings for this chat (1)" in admin.client.get(f"/chats/{CHAT}").text
+
+    admin.post(f"/chats/{CHAT}/settings/context.recent_window", {"value": "-3"})
+    assert services.settings.for_chat(CHAT)["context.recent_window"] == 80  # rejected
+    assert "Recent-window size: Must be at least 1." in \
+        admin.client.get(f"/chats/{CHAT}/settings").text
+
+    admin.post(f"/chats/{CHAT}/settings/context.recent_window/reset")
+    assert services.settings.chat_overrides(CHAT) == {}
+    assert admin.post(f"/chats/{CHAT}/settings/model.name", {"value": "x"}).status_code == 404
+    assert admin.client.get("/chats/-999/settings").status_code == 404
+
+
 def test_digest_and_reminders_on_the_chat_page(admin, chat, services):
     from naruto.memory.keeper import MemoryKeeper
 

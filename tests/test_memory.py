@@ -206,6 +206,17 @@ async def test_digest_schedule(services, chat):
     assert [c.chat_id for c in keeper.due_chats(now=fakes.T0 + 20)] == [GROUP_ID]
 
 
+async def test_a_busy_chat_can_update_its_digest_less_often(services, chat):
+    keeper = MemoryKeeper(services)
+    services.settings.set("memory.digest_quiet_minutes", 0, actor="t")
+    services.settings.set_for_chat(GROUP_ID, "memory.digest_every_messages", 200, actor="t")
+    for i in range(60):
+        store(services, i + 1, f"m{i}", offset=i)
+    assert keeper.due_chats(now=fakes.T0 + 100) == []  # 60 is the global threshold
+    services.settings.reset_for_chat(GROUP_ID, "memory.digest_every_messages", actor="t")
+    assert [c.chat_id for c in keeper.due_chats(now=fakes.T0 + 100)] == [GROUP_ID]
+
+
 async def test_automatic_notes_can_be_turned_off(services, chat):
     store(services, 1, "I love hiking")
     services.settings.set("memory.auto_notes", False, actor="t")

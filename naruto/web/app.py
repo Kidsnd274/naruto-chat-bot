@@ -12,6 +12,7 @@ from naruto.services import Services
 from naruto.web import (
     auth,
     board,
+    chat_settings,
     chats,
     imports,
     logs_page,
@@ -76,6 +77,7 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(pages.router)
     app.include_router(chats.router)
+    app.include_router(chat_settings.router)
     app.include_router(board.router)
     app.include_router(memory.router)
     app.include_router(people.router)

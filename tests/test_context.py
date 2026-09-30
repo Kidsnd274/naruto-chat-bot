@@ -96,6 +96,21 @@ def test_prefix_stays_the_same_as_time_passes_and_people_talk(services, builder,
     assert members.splitlines() == ["- Alice (@alice)", "- Bob (no @username), also called Big B"]
 
 
+def test_one_chat_can_have_its_own_persona(services, builder, chat):
+    services.settings.set_for_chat(CHAT, "persona.prompt", "You are Naruto, but polite.",
+                                   actor="owner")
+    trigger = add(services, 1, "@naruto_bot hi")
+    system = build(builder, services, chat, trigger).messages[0]["content"]
+    assert system.startswith("You are Naruto, but polite.\n\n")
+    services.chats.upsert_seen(-4002, title="Other")
+    other = services.chats.get(-4002)
+    trigger = services.messages.insert_live(NewMessage(
+        chat_id=-4002, origin_chat_id=-4002, source=LIVE, message_id=1, sender_id=7,
+        sender_name="Alice", date=T0, text="@naruto_bot hi"))
+    system = build(builder, services, other, trigger).messages[0]["content"]
+    assert system.startswith(services.settings["persona.prompt"].strip())
+
+
 def test_bot_itself_is_not_listed_as_member(services, builder, chat):
     services.members.upsert_live(CHAT, 42, "Naruto", "naruto_bot", is_bot=True)
     trigger = add(services, 1, "hi")

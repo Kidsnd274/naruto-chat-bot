@@ -84,7 +84,8 @@ class BoardPublisher:
         Returns a short description of what happened."""
         boards = self.services.boards
         board = boards.get(chat.chat_id)
-        wanted = self.services.settings["board.format"]
+        settings = self.services.settings.for_chat(chat.chat_id)
+        wanted = settings["board.format"]
         same_chat = board.message_chat_id == chat.chat_id
         if board.message_id and same_chat and not fresh and board.format in (wanted, HTML):
             try:
@@ -122,7 +123,7 @@ class BoardPublisher:
             return f"Saved, but sending the board failed: {exc}"
         note = "Sent the board."
         pinned = False
-        if self.services.settings["board.pin"]:
+        if self.services.settings.for_chat(chat.chat_id)["board.pin"]:
             try:
                 await telegram.pin_chat_message(chat_id, message_id, disable_notification=True)
                 pinned = True

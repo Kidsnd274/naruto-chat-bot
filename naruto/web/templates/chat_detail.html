@@ -19,6 +19,7 @@
         <button type="submit">Disable</button>
       </form>
     {% endif %}
+    <a class="button" href="/chats/{{ chat.chat_id }}/settings">Settings for this chat{% if setting_overrides %} ({{ setting_overrides }}){% endif %}</a>
     <form method="post" action="/chats/{{ chat.chat_id }}/rights">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="back" value="detail">

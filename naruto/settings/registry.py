@@ -4,7 +4,7 @@ This one list drives validation, defaults and the web admin's Settings page.
 Values are stored as JSON; a setting with no stored row uses its default.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import math
 from typing import Any
@@ -37,6 +37,7 @@ class Setting:
     max: float | None = None
     choices: tuple[str, ...] = field(default_factory=tuple)
     restart_required: bool = False
+    per_chat: bool = False  # a chat may override it (Settings for one chat)
 
     # ------------------------------------------------------------ validate
 
@@ -435,9 +436,28 @@ SETTINGS: tuple[Setting, ...] = (
             "int", 0, min=0, max=24 * 365),
 )
 
+# Settings one chat may override on its Settings page (a different persona
+# for one group, fewer digest updates in a busy one...). Everything that runs
+# for a chat reads them through SettingsService.for_chat().
+PER_CHAT: frozenset[str] = frozenset({
+    "persona.prompt",
+    "skills.banter.reasoning",
+    "context.recent_window",
+    "context.input_token_budget",
+    "memory.auto_notes",
+    "memory.prompt_notes",
+    "memory.digest_every_messages",
+    "memory.digest_quiet_minutes",
+    "board.format",
+    "board.pin",
+    "media.enabled",
+})
+SETTINGS = tuple(replace(s, per_chat=True) if s.key in PER_CHAT else s for s in SETTINGS)
+
 REGISTRY: dict[str, Setting] = {setting.key: setting for setting in SETTINGS}
 
 assert len(REGISTRY) == len(SETTINGS), "duplicate setting keys"
+assert PER_CHAT <= set(REGISTRY), "unknown per-chat setting"
 assert {s.section for s in SETTINGS} <= {s.id for s in SECTIONS}, "unknown section"
 for _setting in SETTINGS:  # defaults must pass their own validation
     _setting.validate(_setting.default)

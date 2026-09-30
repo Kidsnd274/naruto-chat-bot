@@ -108,7 +108,7 @@ class AgentRunner:
                  state: RunState, builder: ContextBuilder) -> tuple:
         """The first request for ``skill``: prompt, tools and tool context."""
         services = self.services
-        settings = services.settings
+        settings = services.settings.for_chat(request.chat.chat_id)
         allowed = list(skill.tools) if settings["agent.max_tool_calls"] else []
         tools = self.registry.schemas(allowed)
         reserved = estimate_text_tokens(json.dumps(tools)) if tools else 0
@@ -131,7 +131,7 @@ class AgentRunner:
 
     async def _loop(self, request: RunRequest, state: RunState) -> RunOutcome:
         services = self.services
-        settings = services.settings
+        settings = services.settings.for_chat(request.chat.chat_id)
         skill = get_skill(request.skill)
         since = request.since
         builder = ContextBuilder(services)

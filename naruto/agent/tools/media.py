@@ -25,7 +25,7 @@ async def describe_image(ctx: ToolContext, args: dict) -> str:
                         "kept, so I can't look at it. Ask them to send it again.")
     if not media.stored_media_supported(message.media_kind, message.media_meta):
         raise ToolError(f"Message {message.id} has a {message.media_kind}, not an image.")
-    if not services.settings["media.enabled"]:
+    if not services.settings.for_chat(ctx.chat.chat_id)["media.enabled"]:
         raise ToolError("Looking at images is turned off (Settings → Media).")
     if ctx.state.model_requests_left < 2:
         raise ToolError("No time left in this response to look at the image. Answer now and "

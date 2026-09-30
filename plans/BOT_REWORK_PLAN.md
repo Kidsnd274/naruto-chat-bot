@@ -1,6 +1,6 @@
 # Bot rework plan
 
-Status: planning draft, 2026-09-30, branch `bot_rework`. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted. No implementation yet.
+Status: phases 1–2 implemented on branch `bot_rework` (2026-09-30); phases 3–5 not started. See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
 
 ## 1. Goal
 
@@ -446,3 +446,36 @@ Checked 2026-09-30:
 - Telethon's MTProto reference (via Context7): `messages.getHistory` is restricted to user accounts; `messages.getMessages` / `channels.getMessages` are available to bots by ID.
 - Telegram Desktop export format: confirmed against a 40-message real export from a basic group (structure only; content not recorded here).
 - Gufo figures are from the user-supplied summary of the [gufo-org/gufo README](https://github.com/gufo-org/gufo) and have not been independently verified.
+
+## 18. Implementation status (2026-09-30)
+
+### Built (phases 1–2)
+
+- `naruto/` package replacing `app/`: SQLite store (`db/`), settings registry with one-time seed (`settings/`), Telegram handlers (`tg/`), prompt building (`agent/`), history import (`importer/`), web admin (`web/`), evaluation harness (`evaluation/`). Redis, `/clear` and the private-chat whitelist are gone.
+- Recorder for enabled groups (edits, group upgrades with chat-ID aliases, media as `file_id` plus markers), chat approval (pending by default, owner DM buttons, ephemeral `/enable` / `/disable`, web admin), admin-rights check.
+- Web admin on `127.0.0.1:8765`: Dashboard, Chats (roster, aliases, message browser with FTS search, two-step deletion), Import, Agent runs, Settings (validation, history, revert, reset, drift notice), Logs (live tail).
+- New prompt layout (§9) with a recent window whose start moves in steps (`context.window_step`) so the prefix stays cacheable; persona v2 (§12) as the default persona.
+- Telegram Desktop import (§6) with automatic group matching, overlap and retention rules, replace-on-reimport and a progress bar.
+- `python -m naruto.evaluation` (`run`, `extract`) for §11's model comparison.
+
+### Deviations from the plan
+
+- The new prompt layout landed in phase 1: the responder had to be rewritten anyway once history moved to SQLite.
+- A minimal agent-run trace (prompt, answer, timing, errors) and the Agent runs page were pulled forward from phase 3, to inspect the new prompt and the evaluation. Tool calls get added with the agent loop.
+- The Telegram subpackage is `naruto/tg/`, not `telegram/`, so it can't be confused with the python-telegram-bot package.
+- Images: the trigger's image and the image it replies to are downloaded on demand; older images are markers only (the old bot kept Base64 for every image). Cached descriptions and `describe_image` stay in phase 4.
+- Retention: logs and agent runs are cleaned daily, and imports honour the imported-messages retention, but **live messages are not deleted yet**; that waits for group memory in phase 4, so nothing is lost before notes exist.
+- `system_prompt.md` moved to `naruto/prompts/persona.md` (the persona setting's default); a `system_prompt.md` present on first start still seeds the database.
+
+### Needs checking against live Telegram and Gufo
+
+- python-telegram-bot 22.8 (latest) knows Bot API 10.0. Ephemeral commands and replies are sent through `api_kwargs` using the 10.3 fields (`BotCommand.is_ephemeral`, `ephemeral_message_parameters`, `reply_parameters.ephemeral_message_id`). Check that `/enable` in a group stays invisible and the reply arrives; if an incoming ephemeral message lacks `message_id`, `ResilientBot` patches it rather than stalling polling.
+- `getMe().can_read_all_group_messages` and pin-right detection in basic groups.
+- Gufo: served model ID (an empty `model.name` uses the first listed model), streaming for time to first token, `reasoning_content`, and image input with Qwen3.8.
+- Rich messages being editable and pinnable (the API docs say yes), before building the board in phase 3.
+
+### Next
+
+1. Deploy Gufo with Qwen3.8 27B, build ~20 cases from real exports with `python -m naruto.evaluation extract`, run them against 27B and Flash-Next, and settle the model (§11).
+2. Phase 3: bounded agent loop, search tools, board as a rich message, pin, propose-plan, polls; tool calls in the Agent runs page.
+

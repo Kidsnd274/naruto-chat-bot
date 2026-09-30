@@ -1,6 +1,8 @@
 """Web admin: authentication, CSRF, pages and actions."""
 
+from pathlib import Path
 import re
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -286,6 +288,85 @@ def test_logs_page_filters(admin, services):
     assert "Answering message 3" in by_chat and "Model request failed" not in by_chat
     live = admin.client.get("/logs", params={"live": "1"}).text
     assert 'hx-trigger="every 3s"' in live
+
+
+# ------------------------------------------------------------------ import
+
+FIXTURE = Path(__file__).parent / "fixtures" / "export_basic_group.json"
+
+
+@pytest.fixture
+def importer(services, tmp_path):
+    from naruto.importer.service import ImportService
+
+    services.settings.set("retention.imported_messages_days", 0, actor="t")
+    services.imports = ImportService(services, tmp_path / "imports")
+    return services.imports
+
+
+def upload(admin, content: bytes, name="result.json"):
+    return admin.client.post("/import", files={"file": (name, content, "application/json")},
+                             headers={"X-CSRF-Token": admin.token, "HX-Request": "true"})
+
+
+def test_import_upload_preview_and_run(admin, importer, services):
+    assert "Upload a Telegram Desktop export" in admin.client.get("/import").text
+    response = upload(admin, FIXTURE.read_bytes())
+    assert response.status_code == 204
+    location = response.headers["HX-Redirect"]
+    record_id = int(location.rsplit("/", 1)[1])
+
+    preview = admin.client.get(location).text
+    assert "BBQ crew" in preview and "private_group" in preview
+    assert "Alice Tan" in preview and "No known group matches" in preview
+    assert "New pending group" in preview and "<strong>12</strong> messages in the export" in preview
+
+    started = admin.post(f"/import/{record_id}/start", {"target": "new"})
+    assert started.status_code == 303
+    for _ in range(200):  # the job runs in a worker thread
+        if importer.repo.get(record_id).status == "done":
+            break
+        time.sleep(0.02)
+    result = admin.client.get(location).text
+    assert "<strong>12</strong> messages imported" in result
+    assert services.chats.get(-4001).status == "pending"
+    assert "Imports" in admin.client.get("/chats/-4001").text
+    progress = admin.client.get(f"/import/{record_id}/progress")
+    assert progress.status_code == 204 and progress.headers["HX-Refresh"] == "true"
+
+
+def test_import_estimate_follows_the_chosen_group(admin, importer, services):
+    services.chats.upsert_seen(-4001, title="BBQ crew")
+    services.chats.upsert_seen(-777, title="Other")
+    record_id = int(upload(admin, FIXTURE.read_bytes()).headers["HX-Redirect"].rsplit("/", 1)[1])
+    preview = admin.client.get(f"/import/{record_id}").text
+    assert "Matched by chat ID" in preview
+    estimate = admin.client.get(f"/import/{record_id}/estimate", params={"target": "-777"}).text
+    assert "No overlap" in estimate
+
+
+def test_import_upload_errors(admin, importer, services):
+    bad = upload(admin, b"{broken")
+    assert bad.status_code == 400 and "not valid JSON" in bad.text
+    services.settings.set("import.max_upload_mb", 1, actor="t")
+    big = upload(admin, b" " * (2 * 1024 * 1024))
+    assert big.status_code == 413 and "1 MB limit" in big.text
+    missing = admin.client.post("/import", data={"csrf_token": admin.token})
+    assert missing.status_code == 400
+
+
+def test_import_discard_and_invalid_start(admin, importer):
+    record_id = int(upload(admin, FIXTURE.read_bytes()).headers["HX-Redirect"].rsplit("/", 1)[1])
+    assert admin.post(f"/import/{record_id}/start", {"target": "abc"}).status_code == 400
+    assert admin.post(f"/import/{record_id}/discard").status_code == 303
+    assert importer.repo.get(record_id).status == "discarded"
+    assert admin.post(f"/import/{record_id}/start", {"target": "new"}).status_code == 409
+    assert admin.client.get("/import/999").status_code == 404
+
+
+def test_import_page_without_service(admin, services):
+    services.imports = None
+    assert admin.client.get("/import").status_code == 503
 
 
 # -------------------------------------------------------------------- runs

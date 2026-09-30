@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Import #{{ record.id }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/import">Import</a> /</p>
+<h1>Import #{{ record.id }} <span class="badge {{ record.status }}">{{ record.status }}</span></h1>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Export</h2>
+    <dl class="facts">
+      <dt>File</dt><dd>{{ record.file_name }} <span class="muted small">({{ (record.file_size / 1024)|round(1) }} KB)</span></dd>
+      <dt>Chat</dt><dd>{{ record.export_name or "—" }} <span class="muted small">{{ record.export_type }}{% if record.export_id is not none %} · export ID {{ record.export_id }}{% endif %}</span></dd>
+      {% if record.preview %}
+        {% set p = record.preview %}
+        <dt>Messages</dt><dd>{{ p.total }}{% if p.service %} <span class="muted small">(+{{ p.service }} service messages, skipped)</span>{% endif %}{% if p.unreadable %} <span class="muted small">({{ p.unreadable }} unreadable)</span>{% endif %}</dd>
+        <dt>Date range</dt><dd>{{ p.first_date|ts("%d %b %Y") }} – {{ p.last_date|ts("%d %b %Y") }}</dd>
+        <dt>Participants</dt><dd>{{ p.participant_count }}</dd>
+      {% endif %}
+      <dt>Uploaded</dt><dd>{{ record.created_at|ts }}</dd>
+    </dl>
+  </section>
+
+  {% if record.preview %}
+  <section class="card">
+    <h2>Most active</h2>
+    <ul class="plain">
+      {% for person in record.preview.participants[:10] %}
+        <li class="row-actions"><span>{{ person.name }}</span><span class="muted small">{{ person.count }} messages</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+
+{% if record.status == "preview" %}
+<section class="card">
+  <h2>Import into</h2>
+  {% if match.how == "id" %}
+    <p class="ok-text small">Matched by chat ID.</p>
+  {% elif match.how == "name" %}
+    <p class="small">Matched by name — check that this is the right group.</p>
+  {% else %}
+    <p class="small">No known group matches this export. Pick one, or create it as a new pending group (useful before adding the bot).</p>
+  {% endif %}
+  <form method="post" action="/import/{{ record.id }}/start" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="target" hx-get="/import/{{ record.id }}/estimate" hx-target="#estimate" hx-trigger="change">
+      {% for chat in chats %}
+        <option value="{{ chat.chat_id }}" {{ 'selected' if target == chat.chat_id else '' }}>{{ chat.display_title }} ({{ chat.status }}, {{ chat.chat_id }})</option>
+      {% endfor %}
+      {% if match.suggested_chat_id is not none %}
+        <option value="new" {{ 'selected' if target is none else '' }}>New pending group “{{ record.export_name }}” ({{ match.suggested_chat_id }})</option>
+      {% endif %}
+    </select>
+    <button type="submit" class="primary">Import</button>
+  </form>
+  <div id="estimate">{% include "_import_estimate.html" %}</div>
+  <form method="post" action="/import/{{ record.id }}/discard">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="small">Discard upload</button>
+  </form>
+</section>
+{% elif record.status == "running" %}
+<section class="card">
+  <h2>Importing…</h2>
+  {% include "_import_progress.html" %}
+</section>
+{% else %}
+<section class="card">
+  <h2>Result</h2>
+  {% if record.status in ("done", "replaced") %}
+    <p><strong>{{ record.imported }}</strong> messages imported into {% if chat %}<a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a>{% else %}chat {{ record.chat_id }}{% endif %}.</p>
+    <ul class="plain small">
+      <li>{{ record.skipped_overlap }} skipped: already recorded live (on or after the first live message)</li>
+      <li>{{ record.skipped_retention }} skipped: older than the retention period</li>
+      <li>{{ record.skipped_service }} service messages skipped</li>
+      {% if record.first_date %}<li>Imported range: {{ record.first_date|ts("%d %b %Y") }} – {{ record.last_date|ts("%d %b %Y") }}</li>{% endif %}
+    </ul>
+    {% if record.status == "replaced" %}<p class="muted">A later import of the same group replaced this one.</p>{% endif %}
+  {% elif record.status == "failed" %}
+    <p class="notice error">{{ record.error }}</p>
+  {% else %}
+    <p class="muted">Discarded.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

@@ -245,7 +245,7 @@ dl.facts dd { margin: 0; }
 .setting-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.6rem; }
 .switch { display: inline-flex; gap: 0.4rem; align-items: center; }
 
-/* -------------------------------------------------------------------- runs */
+/* ------------------------------------------------------------ runs, import */
 
 pre.prompt {
   font-family: var(--mono);
@@ -260,6 +260,9 @@ pre.prompt {
   overflow: auto;
 }
 details summary { cursor: pointer; padding: 0.3rem 0; }
+ol.steps { margin: 0.3rem 0 0.6rem; padding-left: 1.3rem; }
+ol.steps li { margin: 0.2rem 0; }
+.estimate { margin: 0.6rem 0; }
 
 /* --------------------------------------------------------------- progress */
 

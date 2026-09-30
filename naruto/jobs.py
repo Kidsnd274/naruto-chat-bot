@@ -38,6 +38,13 @@ def cleanup_agent_runs(services: Services) -> str | None:
     return f"{deleted} agent runs" if deleted else None
 
 
+def cleanup_import_previews(services: Services) -> str | None:
+    if services.imports is None:
+        return None
+    discarded = services.imports.cleanup_stale_previews()
+    return f"{discarded} unstarted import uploads" if discarded else None
+
+
 async def leave_stale_pending(services: Services) -> int:
     hours = services.settings["behaviour.pending_leave_hours"]
     if hours <= 0 or services.access is None:
@@ -53,7 +60,7 @@ async def leave_stale_pending(services: Services) -> int:
 
 async def run_maintenance(services: Services) -> None:
     done = []
-    for step in [cleanup_logs, cleanup_agent_runs, *cleanup_steps]:
+    for step in [cleanup_logs, cleanup_agent_runs, cleanup_import_previews, *cleanup_steps]:
         try:
             result = step(services)
         except Exception:

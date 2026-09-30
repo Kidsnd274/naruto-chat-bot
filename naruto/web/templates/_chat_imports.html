@@ -1,0 +1,18 @@
+<section class="card">
+  <h2>Imports</h2>
+  {% if imports %}
+    <ul class="plain">
+      {% for r in imports %}
+        <li class="row-actions">
+          <a href="/import/{{ r.id }}">#{{ r.id }}</a>
+          <span class="badge {{ r.status }}">{{ r.status }}</span>
+          <span class="small">{{ r.file_name }}</span>
+          {% if r.status in ("done", "replaced") %}<span class="muted small">{{ r.imported }} messages{% if r.first_date %}, {{ r.first_date|ts("%d %b %Y") }} – {{ r.last_date|ts("%d %b %Y") }}{% endif %}</span>{% endif %}
+          <span class="muted small">{{ r.created_at|ago }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">None yet. <a href="/import">Import a Telegram Desktop export</a> to add older history.</p>
+  {% endif %}
+</section>

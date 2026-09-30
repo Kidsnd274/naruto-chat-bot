@@ -170,6 +170,11 @@ class MessageRepository:
             (import_id,),
         )
 
+    def delete_import(self, import_id: int) -> int:
+        return self.db.execute(
+            "DELETE FROM messages WHERE source = 'import' AND import_id = ?", (import_id,)
+        ).rowcount
+
     def apply_edit(
         self,
         origin_chat_id: int,

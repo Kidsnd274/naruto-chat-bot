@@ -1,0 +1,4 @@
+<div id="progress" hx-get="/import/{{ record.id }}/progress" hx-trigger="every 1s" hx-swap="outerHTML">
+  <progress value="{{ record.processed }}" max="{{ record.total or 1 }}"></progress>
+  <p class="muted small">{{ record.processed }} of {{ record.total }} messages read ({{ record.progress_percent }}%), {{ record.imported }} imported.</p>
+</div>

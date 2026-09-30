@@ -2,6 +2,7 @@
 
 import pytest
 
+from naruto.db import open_database
 from naruto.db.chats import ChatRepository, infer_chat_type
 from naruto.db.members import MemberRepository
 from naruto.db.messages import IMPORT, LIVE, MessageRepository, NewMessage, fts_query
@@ -295,3 +296,20 @@ def test_senders_uses_latest_name(messages):
     messages.insert_live(live(BASIC, 1, date=100, name="Old Name"))
     messages.insert_live(live(BASIC, 2, date=200, name="New Name"))
     assert messages.senders(BASIC) == [(7, "New Name", 2)]
+
+
+def test_upgrade_from_version_1_keeps_data(tmp_path):
+    from naruto.db.database import Database
+    from naruto.db.migrations import MIGRATIONS
+
+    path = str(tmp_path / "old.db")
+    old = Database(path)
+    old._conn.executescript(f"BEGIN; {MIGRATIONS[0]} PRAGMA user_version = 1; COMMIT;")
+    ChatRepository(old).upsert_seen(BASIC, title="kept")
+    old.close()
+
+    upgraded = open_database(path)
+    assert upgraded.schema_version == len(MIGRATIONS)
+    assert ChatRepository(upgraded).get(BASIC).title == "kept"
+    assert upgraded.scalar("SELECT COUNT(*) FROM imports") == 0
+    upgraded.close()

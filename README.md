@@ -88,8 +88,20 @@ python3 -m venv .venv
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
 | Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), a searchable message browser and data deletion. |
+| Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
+| Agent runs | One row per bot response: the exact prompt sent, the answer, timing and errors. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
+
+### Importing older history
+
+The bot only sees messages from when it joined. To give it older history:
+
+1. In Telegram Desktop, open the group → ⋮ → **Export chat history**, choose **Machine-readable JSON**, and untick photos, videos, voice messages, stickers and files (media becomes markers such as `[photo]`).
+2. On the web admin's **Import** page, upload `result.json`. The preview shows the message count, date range, participants and how much would be kept, and pre-selects the group by chat ID (or name).
+3. Click **Import**.
+
+Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. The uploaded file is deleted when the import finishes. You can also import into a group the bot hasn't joined yet; it is created as pending.
 
 ## Development
 

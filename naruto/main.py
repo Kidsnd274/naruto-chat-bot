@@ -3,6 +3,7 @@ background jobs, sharing one SQLite database."""
 
 import asyncio
 import logging
+from pathlib import Path
 import signal
 import sys
 
@@ -12,6 +13,7 @@ import uvicorn
 
 from naruto.bootstrap import Bootstrap, load_bootstrap
 from naruto.db import open_database
+from naruto.importer.service import ImportService
 from naruto.jobs import start_background_jobs
 from naruto.logs import flush_periodically, set_level, setup_logging
 from naruto.services import Services
@@ -69,6 +71,9 @@ async def run() -> None:
     seed = collect_seed()
     services = Services.create(bootstrap, db, seed)
     apply_seed_if_needed(db, services.settings, services.chats, seed)
+    services.imports = ImportService(
+        services, Path(bootstrap.database_path).resolve().parent / "imports")
+    services.imports.recover()
     set_level(services.settings["general.log_level"])
     services.settings.on_change(
         lambda key, value: set_level(value) if key == "general.log_level" else None)

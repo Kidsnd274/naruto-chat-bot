@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Import{% endblock %}
+{% block content %}
+<h1>Import history</h1>
+
+<section class="card">
+  <h2>Upload a Telegram Desktop export</h2>
+  <ol class="steps">
+    <li>In Telegram Desktop, open the group → ⋮ → <strong>Export chat history</strong>.</li>
+    <li>Choose <strong>Machine-readable JSON</strong>. Untick photos, videos, voice messages, stickers and files: text only keeps the file small (media is stored as markers like <code>[photo]</code>).</li>
+    <li>Upload the <code>result.json</code> it creates. You'll see a preview before anything is imported.</li>
+  </ol>
+  <p class="muted small">Only messages from before the bot's first recorded message are imported, and only those from the last {{ retention_days if retention_days else "∞" }} days (Settings → Retention). Importing the same group again replaces the previous import. The uploaded file is deleted once the import finishes.</p>
+  {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
+  <form method="post" action="/import" enctype="multipart/form-data" class="filters"
+        hx-post="/import" hx-encoding="multipart/form-data" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-indicator="#upload-indicator">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="file" name="file" accept=".json,application/json" required>
+    <button type="submit" class="primary">Upload and preview</button>
+    <span id="upload-indicator" class="htmx-indicator muted small">Uploading and reading the file…</span>
+  </form>
+  <p class="muted small">Maximum size: {{ max_mb }} MB.</p>
+</section>
+
+{% if records %}
+<section class="card">
+  <h2>Recent imports</h2>
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th>#</th><th>File</th><th>Export</th><th>Group</th><th>Status</th><th class="num">Imported</th><th>When</th></tr></thead>
+    <tbody>
+    {% for r in records %}
+      <tr>
+        <td><a href="/import/{{ r.id }}">{{ r.id }}</a></td>
+        <td class="small">{{ r.file_name }}</td>
+        <td class="small">{{ r.export_name or "—" }}</td>
+        <td class="small">{% if r.chat_id is not none %}<a href="/chats/{{ r.chat_id }}">{{ chat_titles.get(r.chat_id, r.chat_id) }}</a>{% else %}—{% endif %}</td>
+        <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+        <td class="num">{{ r.imported if r.status in ("done", "replaced", "running") else "" }}</td>
+        <td class="small nowrap">{{ r.created_at|ago }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

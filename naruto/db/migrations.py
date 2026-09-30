@@ -183,11 +183,43 @@ CREATE INDEX agent_runs_chat ON agent_runs (chat_id, id);
 CREATE INDEX agent_runs_started ON agent_runs (started_at);
 """
 
+_V3_IMPORTS = """
+-- Telegram Desktop history imports. The uploaded file is kept only until
+-- the import finishes or is discarded.
+CREATE TABLE imports (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER,
+    status TEXT NOT NULL
+        CHECK (status IN ('preview', 'running', 'done', 'failed', 'replaced', 'discarded')),
+    file_name TEXT NOT NULL,
+    file_path TEXT,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    export_name TEXT NOT NULL DEFAULT '',
+    export_type TEXT NOT NULL DEFAULT '',
+    export_id INTEGER,
+    preview TEXT,
+    total INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0,
+    imported INTEGER NOT NULL DEFAULT 0,
+    skipped_overlap INTEGER NOT NULL DEFAULT 0,
+    skipped_retention INTEGER NOT NULL DEFAULT 0,
+    skipped_service INTEGER NOT NULL DEFAULT 0,
+    first_date INTEGER,
+    last_date INTEGER,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER
+);
+CREATE INDEX imports_chat ON imports (chat_id, id);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
+    _V3_IMPORTS,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
-CHAT_SCOPED_TABLES = ("messages", "members", "member_aliases", "agent_runs")
+CHAT_SCOPED_TABLES = ("messages", "members", "member_aliases", "imports", "agent_runs")

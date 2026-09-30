@@ -1,0 +1,9 @@
+<ul class="plain small estimate">
+  <li><strong>{{ estimate.total }}</strong> messages in the export</li>
+  {% if estimate.overlap %}
+    <li><strong>{{ estimate.overlap }}</strong> overlap what the bot recorded live and will be skipped</li>
+  {% else %}
+    <li>No overlap with live-recorded messages</li>
+  {% endif %}
+  <li>About <strong>{{ estimate.in_retention }}</strong> fall inside the retention period{% if estimate.retention_days %} (last {{ estimate.retention_days }} days){% else %} (kept forever){% endif %}</li>
+</ul>

@@ -19,6 +19,7 @@ from naruto.settings.seed import SeedData
 from naruto.settings.service import SettingsService
 
 if TYPE_CHECKING:
+    from naruto.importer.service import ImportService
     from naruto.tg.access import ChatAccess
 
 
@@ -58,6 +59,7 @@ class Services:
     seed: SeedData = field(default_factory=SeedData)
     status: RuntimeStatus = field(default_factory=RuntimeStatus)
     access: "ChatAccess | None" = None  # set once the Telegram bot exists
+    imports: "ImportService | None" = None  # set by main (needs an upload directory)
 
     @classmethod
     def create(cls, bootstrap: Bootstrap, db: Database, seed: SeedData | None = None) -> "Services":

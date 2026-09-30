@@ -52,7 +52,9 @@ async def leave_stale_pending(services: Services) -> int:
     cutoff = time.time() - hours * 3600
     left = 0
     for chat in services.chats.list_by_status(PENDING):
-        if chat.created_at < cutoff and chat.membership not in ("left", "kicked"):
+        # Only groups the bot is actually in (an import can create a pending
+        # group before the bot joins).
+        if chat.created_at < cutoff and chat.membership in ("member", "administrator", "restricted"):
             await services.access.leave(chat.chat_id, actor=f"auto-leave after {hours} h pending")
             left += 1
     return left

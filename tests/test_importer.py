@@ -220,3 +220,25 @@ async def test_stale_previews_are_discarded(importer):
     importer.repo.update(record.id, created_at=record.created_at - 2 * 86400)
     assert importer.cleanup_stale_previews() == 1
     assert importer.repo.get(record.id).status == DISCARDED
+
+
+async def test_shutdown_stops_a_running_import(importer, services):
+    services.chats.upsert_seen(CHAT)
+    record = await upload(importer)
+    importer._stopping.set()  # as if shutdown began before the first batch
+    await importer.start(record.id, CHAT)
+    await importer.shutdown()
+    stopped = importer.repo.get(record.id)
+    assert stopped.status == FAILED and "shut down" in stopped.error
+    assert services.messages.count(CHAT) == 0 and stopped.file_path is None
+
+
+async def test_unexpected_read_errors_clean_up(importer, monkeypatch):
+    def broken(path):
+        raise PermissionError("nope")
+
+    monkeypatch.setattr(importer, "analyse", broken)
+    with pytest.raises(ImportProblem, match="Could not read the file"):
+        await upload(importer)
+    assert importer.repo.recent()[0].status == FAILED
+    assert list(importer.upload_dir.iterdir()) == []

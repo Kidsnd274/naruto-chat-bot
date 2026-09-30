@@ -16,6 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import threading
 import time
 from typing import IO
 import uuid
@@ -52,6 +53,10 @@ class UploadTooLarge(ImportProblem):
     pass
 
 
+class ImportCancelled(Exception):
+    """The process is shutting down; the import is rolled back."""
+
+
 @dataclass
 class Match:
     chat: Chat | None
@@ -71,6 +76,7 @@ class ImportService:
         self.repo = ImportRepository(services.db)
         self.upload_dir = Path(upload_dir)
         self._tasks: dict[int, asyncio.Task] = {}
+        self._stopping = threading.Event()
 
     # --------------------------------------------------------------- upload
 
@@ -101,11 +107,15 @@ class ImportService:
                                   file_path=str(path), file_size=size)
         try:
             preview = await asyncio.to_thread(self.analyse, path)
-        except ExportError as exc:
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, ExportError) else \
+                f"Could not read the file ({type(exc).__name__})."
+            if not isinstance(exc, ExportError):
+                logger.exception("Reading upload %s failed", record.id)
             path.unlink(missing_ok=True)
-            self.repo.update(record.id, status=FAILED, file_path=None, error=str(exc),
+            self.repo.update(record.id, status=FAILED, file_path=None, error=message,
                              finished_at=now_ts())
-            raise ImportProblem(str(exc)) from None
+            raise ImportProblem(message) from None
         self.repo.update(
             record.id,
             export_name=preview["name"], export_type=preview["type"],
@@ -248,6 +258,8 @@ class ImportService:
         try:
             with open(record.file_path, "rb") as handle:
                 for message in ExportReader(handle).messages():
+                    if self._stopping.is_set():
+                        raise ImportCancelled
                     if message.is_service:
                         counts["service"] += 1
                         continue
@@ -295,6 +307,12 @@ class ImportService:
             logger.info("Import %s done: %s imported, %s overlapped live history, %s outside "
                         "retention", import_id, counts["imported"], counts["overlap"],
                         counts["retention"], extra={"chat_id": chat_id})
+        except ImportCancelled:
+            messages.delete_import(import_id)
+            self.repo.update(import_id, status=FAILED, finished_at=now_ts(),
+                             error="Stopped because the bot shut down. Upload the file again.")
+            logger.warning("Import %s stopped by shutdown and rolled back", import_id,
+                           extra={"chat_id": chat_id})
         except Exception as exc:
             messages.delete_import(import_id)
             self.repo.update(import_id, status=FAILED, finished_at=now_ts(),
@@ -338,6 +356,12 @@ class ImportService:
 
     def running(self) -> bool:
         return bool(self._tasks)
+
+    async def shutdown(self) -> None:
+        """Stop running imports (they roll back) and wait for them."""
+        self._stopping.set()
+        if self._tasks:
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
 
 
 def _count_before(sorted_dates: list[int], limit: int) -> int:

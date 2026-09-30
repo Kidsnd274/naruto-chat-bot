@@ -97,6 +97,7 @@ async def run() -> None:
             await bot.stop()
         except Exception:
             logger.exception("Error while stopping the bot")
+        await services.imports.shutdown()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

@@ -41,6 +41,8 @@ async def test_stale_pending_groups_are_left(services):
     services.access = FakeAccess()
     services.chats.upsert_seen(-1)
     services.chats.upsert_seen(-2)
+    services.chats.set_membership(-1, "member")
+    services.chats.set_membership(-2, "member")
     services.db.execute("UPDATE chats SET created_at = ? WHERE chat_id = -1", (time.time() - 7200,))
     assert await jobs.leave_stale_pending(services) == 0  # off by default
 
@@ -106,3 +108,18 @@ def test_cleanup_agent_runs_follows_retention(services):
     assert services.runs.recent()[1] == 1
     services.settings.set("retention.agent_runs_days", 0, actor="t")
     assert jobs.cleanup_agent_runs(services) is None
+
+
+async def test_auto_leave_skips_groups_the_bot_never_joined(services):
+    left = []
+
+    class FakeAccess:
+        async def leave(self, chat_id, actor):
+            left.append(chat_id)
+
+    services.access = FakeAccess()
+    services.settings.set("behaviour.pending_leave_hours", 1, actor="t")
+    services.chats.upsert_seen(-3)  # created by an import: membership unknown
+    services.db.execute("UPDATE chats SET created_at = ?", (time.time() - 7200,))
+    assert await jobs.leave_stale_pending(services) == 0
+    assert left == []

@@ -1,5 +1,6 @@
 """Text helpers for prompts and model output (carried over from app/bot.py)."""
 
+import json
 import re
 
 # Optional [REPLY] prefix the model uses to ask for its message to be sent as
@@ -10,6 +11,13 @@ _REPLY_MARKER = re.compile(r"^\s*\**\s*\[reply\]\s*\**\s*", re.IGNORECASE)
 # The model sometimes imitates the transcript format and starts its answer
 # with "[123] Naruto (you) (18:05):".
 _TRANSCRIPT_PREFIX = re.compile(r"^\s*\[\d+\]\s*[^\n:]{0,80}?\([^)\n]*\)\s*:\s*")
+
+# Keys of the JSON the bot asks for in background requests (digest updates,
+# import distillation). A chat reply that starts with such an object is the
+# model answering in the wrong format, never something to post.
+INTERNAL_JSON_KEYS = frozenset({"digest", "notes"})
+_FENCE_OPEN = re.compile(r"^\s*```(?:json)?\s*", re.IGNORECASE)
+_FENCE_CLOSE = re.compile(r"^\s*```")
 
 # Portable estimate for OpenAI-compatible servers with different tokenizers.
 _BYTES_PER_TOKEN = 4
@@ -25,6 +33,33 @@ def parse_reply_marker(text: str) -> tuple[bool, str]:
     if match:
         return True, text[match.end():]
     return False, text
+
+
+def strip_internal_json(text: str) -> tuple[str, str | None]:
+    """Remove a JSON object in an internal format (e.g. ``{"digest": "",
+    "notes": []}``, optionally in a code fence) from the start of a chat
+    reply. A ``reply`` string inside it, or text after it, is kept. Returns
+    ``(text, removed)``; ``removed`` is None when nothing was removed."""
+    body = text or ""
+    fence = _FENCE_OPEN.match(body)
+    if fence:
+        body = body[fence.end():]
+    body = body.lstrip()
+    if not body.startswith("{"):
+        return text, None
+    try:
+        value, end = json.JSONDecoder().raw_decode(body)
+    except json.JSONDecodeError:
+        return text, None
+    if not isinstance(value, dict) or not INTERNAL_JSON_KEYS & set(value):
+        return text, None
+    rest = body[end:]
+    if fence:
+        rest = _FENCE_CLOSE.sub("", rest, count=1)
+    reply = value.get("reply")
+    kept = "\n\n".join(part for part in (
+        reply.strip() if isinstance(reply, str) else "", rest.strip()) if part)
+    return kept, body[:end]
 
 
 def clean_model_output(text: str, bot_name: str = "") -> tuple[bool, str]:

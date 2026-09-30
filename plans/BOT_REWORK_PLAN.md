@@ -506,6 +506,10 @@ Checked 2026-09-30:
 - Retention: logs and agent runs are cleaned daily, and imports honour the imported-messages retention, but **live messages are not deleted yet**; that waits for group memory in phase 4, so nothing is lost before notes exist.
 - `system_prompt.md` moved to `naruto/prompts/persona.md` (the persona setting's default); a `system_prompt.md` present on first start still seeds the database.
 
+### Found in the live test (2026-10-01, Lemonade)
+
+- Gemma 4 31B on Lemonade (nightly ROCm llama-server, MTP speculative decoding, one slot) answered a chat request with the digest update's format, `{"digest": "", "notes": []}`, even when "digest" appeared nowhere in the request (7 of 8 replays). A canary written by the preceding request never carried over, so it looks like server-side state from earlier, similar requests rather than the last one. Mitigated in the bot: the rules no longer describe a Background section (each Background explains itself when present), and a reply that starts with internal JSON is not posted: text after it (or its `reply` field) is kept, otherwise the identical request is sent once more, and failing that the "got stuck" line is sent. The server itself still needs checking: reload the model, and if it recurs, run it without `--spec-type draft-mtp`.
+
 ### Needs checking against live Telegram and Gufo
 
 - `/catchup`: a non-admin bot may only answer an ephemeral command within 15 seconds, and a catch-up with reasoning usually takes longer; check which fallback (DM or group) people get, or make the bot an admin.

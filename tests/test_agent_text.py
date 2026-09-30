@@ -7,6 +7,7 @@ from naruto.agent.text import (
     estimate_message_tokens,
     parse_reply_marker,
     strip_bot_mention,
+    strip_internal_json,
     without_image_data,
 )
 
@@ -78,3 +79,21 @@ def test_without_image_data_never_contains_base64():
     assert cleaned[1]["content"][1]["image_url"]["url"].startswith("<image/jpeg,")
     assert cleaned[0] == messages[0]
     assert "U0VDUkVU" in str(messages)  # the original is untouched
+
+
+@pytest.mark.parametrize("text,kept", [
+    ('```json\n{"digest": "", "notes": []}\n```', ""),
+    ('{"digest": "", "notes": []}', ""),
+    ('{"digest": "", "notes": []}\n\n[REPLY] My apologies!', "[REPLY] My apologies!"),
+    ('{"digest": "", "notes": [], "reply": "[REPLY] Hi there"}', "[REPLY] Hi there"),
+])
+def test_internal_json_is_stripped_from_replies(text, kept):
+    rest, removed = strip_internal_json(text)
+    assert rest == kept and removed.startswith("{")
+
+
+@pytest.mark.parametrize("text", [
+    "[REPLY] hi", 'Here: {"digest": 1}', '{"name": "search_chat"}', "{not json", "",
+])
+def test_other_replies_are_left_alone(text):
+    assert strip_internal_json(text) == (text, None)

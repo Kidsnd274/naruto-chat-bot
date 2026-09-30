@@ -359,8 +359,9 @@ async def test_board_and_open_plans_are_background(services, wired, bot, chat):
     services.llm = ScriptedLLM("Oi!")
     await say(wired, bot, message(6, "@naruto_bot status?"))
     context_block = services.llm.calls[0]["messages"][1]["content"]
-    assert "## Background\nPinned board:\n❓ Open questions (questions)\n  • Who brings the grill?" \
+    assert "\n\nPinned board:\n❓ Open questions (questions)\n  • Who brings the grill?" \
         in context_block
+    assert "## Background\nWhat you know beyond the recent messages." in context_block
     assert "- plan 1: BBQ: Sat 6pm" in context_block
 
 
@@ -491,3 +492,44 @@ def test_board_and_plans_move_with_a_group_upgrade(services, chat):
     assert services.plans.for_chat(-1004001)[0].title == "BBQ"
     assert json.loads(json.dumps(board.sections["plans"][0].as_dict())) == {"text": "BBQ",
                                                                              "done": False}
+
+
+# ------------------------------------------------- internal JSON in replies
+
+DIGEST_SHAPE = '```json\n{"digest": "", "notes": []}\n```'
+
+
+async def test_internal_json_answer_is_asked_again_not_posted(services, wired, bot, chat):
+    services.llm = ScriptedLLM(DIGEST_SHAPE, "[REPLY] Your first message was hi!")
+    await say(wired, bot, message(6, "@naruto_bot check again"))
+    assert bot.sent[-1]["text"] == "Your first message was hi!"
+    assert len(services.llm.calls) == 2
+    assert services.llm.calls[1]["messages"] == services.llm.calls[0]["messages"]  # identical
+    run = services.runs.recent()[0][0]
+    assert run.status == "ok" and run.model_requests == 2
+    assert run.steps[-1]["purpose"].startswith("asked again")
+
+
+async def test_internal_json_twice_sends_the_stuck_line(services, wired, bot, chat):
+    services.llm = ScriptedLLM(DIGEST_SHAPE)
+    await say(wired, bot, message(6, "@naruto_bot check again"))
+    assert bot.sent[-1]["text"] == STUCK_TEXT
+    assert all('"digest"' not in sent["text"] for sent in bot.sent)
+    assert services.messages.search(GROUP_ID, "digest") == []  # nothing stored either
+    run = services.runs.recent()[0][0]
+    assert run.status == "error" and "internal JSON" in run.error
+
+
+async def test_text_after_internal_json_is_kept(services, wired, bot, chat):
+    services.llm = ScriptedLLM('{"digest": "", "notes": []}\n\n[REPLY] My apologies, it was hi.')
+    await say(wired, bot, message(6, "@naruto_bot check again"))
+    assert bot.sent[-1]["text"] == "My apologies, it was hi."
+    assert bot.sent[-1]["reply_parameters"].message_id == 6
+    assert len(services.llm.calls) == 1
+
+
+async def test_a_chat_without_background_never_reads_about_one(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Oi!")
+    await say(wired, bot, message(6, "@naruto_bot hi"))
+    request = json.dumps(services.llm.calls[0]["messages"]).lower()
+    assert "digest" not in request and "background" not in request

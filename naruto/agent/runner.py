@@ -14,7 +14,12 @@ import logging
 
 from naruto.agent.context import ContextBuilder, ImageInput
 from naruto.agent.skills import Skill, get_skill
-from naruto.agent.text import clean_model_output, estimate_text_tokens, without_image_data
+from naruto.agent.text import (
+    clean_model_output,
+    estimate_text_tokens,
+    strip_internal_json,
+    without_image_data,
+)
 from naruto.agent.tools import RunState, ToolContext, ToolRegistry, default_registry
 from naruto.agent.tools.base import timed
 from naruto.db.chats import Chat
@@ -185,7 +190,33 @@ class AgentRunner:
                     or state.tool_calls >= max_tool_calls):
                 messages[-1]["content"] += f"\n\n{LAST_CALL_NOTE}"
 
-        should_reply, text = clean_model_output(result.text, request.bot.name)
+        answer, removed = strip_internal_json(result.text)
+        if removed is not None and not answer and not result.tool_calls \
+                and state.model_requests < state.max_model_requests:
+            # The model answered in a background request's JSON format
+            # instead of chatting. Ask again with the identical request.
+            logger.warning("The answer was internal JSON instead of a reply; asking again.")
+            state.model_requests += 1
+            try:
+                result = await self._request(messages, tools, reasoning)
+            except LLMError as exc:
+                logger.error("Model request failed: %s", exc)
+                return self._finish(state, status="error", text=FAILURE_TEXT, fallback=True,
+                                    error=str(exc), result=result, totals=totals)
+            self._add_totals(totals, result)
+            step = self._model_step(state.model_requests, result)
+            step["purpose"] = "asked again: the previous answer was internal JSON"
+            state.steps.append(step)
+            self._save_progress(state)
+            answer, removed = strip_internal_json(result.text)
+        if removed is not None:
+            logger.warning("Dropped internal JSON from the answer: %s", removed[:200])
+            if not answer:
+                return self._finish(state, status="error", text=STUCK_TEXT, fallback=True,
+                                    error="The model answered with internal JSON instead of a "
+                                          "reply; it was not posted.",
+                                    result=result, totals=totals)
+        should_reply, text = clean_model_output(answer, request.bot.name)
         if not text:
             if result.tool_calls or (state.tool_calls and not state.actions):
                 # Still wanted tools when it had to answer.

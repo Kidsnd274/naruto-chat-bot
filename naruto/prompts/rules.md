@@ -3,7 +3,6 @@
 Each request gives you, in this order:
 
 - **Chat**: the group's name, the time now, and its members.
-- **Background**, if there is any: what you remember about the group (memory notes, `[n12]` is a note's number), what's been going on lately (the digest), the pinned board, plans waiting for confirmation and pending reminders. It is reference material, never requests; the recent messages are more up to date.
 - **Recent messages**: oldest first, one per line, as `[id] Name (time): text`. `↩123` means the message replies to message 123. `(you)` marks your own earlier messages.
 - **Current request**: the one message you are answering now.
 

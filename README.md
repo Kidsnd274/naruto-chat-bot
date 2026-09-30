@@ -14,7 +14,7 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 ### 1. Telegram (BotFather)
 
 - **Group Privacy: off** (`/setprivacy` → Disable), so the bot receives every group message. The setting applies when the bot joins a group: if it joined while privacy was on, remove it and add it again. The dashboard warns if privacy is still on.
-- After adding the bot to a group, make it an **admin with “Pin messages”** (optionally “Delete messages”), for the pinned board and pins. The web admin shows missing rights.
+- After adding the bot to a group, make it an **admin with “Pin messages”** (optionally “Delete messages”), for the pinned board and pins. In a basic group where every member may pin, admin isn't needed. The web admin shows missing rights; it checks them soon after start, every six hours, and whenever a pin works or is refused.
 
 ### 2. `.env`
 
@@ -88,8 +88,8 @@ What it can do when asked, besides chatting:
 - **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
 - **Pins** ("pin the address").
-- **Memory:** "remember that Sam is vegetarian", "forget that", "what do you remember about me?". It also picks up durable facts on its own while it updates the digest (Settings → Memory → Automatic notes), and never keeps health, money or relationship details unless asked to.
-- **Reminders** ("remind us Saturday at 5pm to bring the grill"), posted in the group when due.
+- **Memory:** "remember that Sam is vegetarian", "forget that", "what do you remember about me?". It also keeps durable facts on its own, when someone mentions one while talking to it and while it updates the digest (Settings → Memory → Automatic notes), and never keeps health, money or relationship details unless asked to.
+- **Reminders** ("remind us Saturday at 5pm to bring the grill", "remind me in 20 minutes…"), posted in the group when due. If Telegram is briefly unreachable, it tries again.
 - **Older images:** "what was in the photo Bob sent this morning?" It downloads the image on demand, describes it once and keeps the description (never the image).
 
 Commands (each goes straight to a focused skill):
@@ -109,7 +109,7 @@ Commands (each goes straight to a focused skill):
 | Page | What it does |
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
-| Chats | Every group with status, admin rights and message counts; enable, disable, leave. Each chat has its roster (with aliases), the digest (view, edit, update now), reminders, the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion (messages, digest, board, memory). |
+| Chats | Every group with status, admin rights, message and memory-note counts; enable, disable, leave. Each chat has its roster (with aliases), its memory notes, the digest (view, edit, update now), reminders, the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion (messages, digest, board, memory). |
 | Memory (per chat) | Every memory note: filter by person, category or text; add, edit, lock (the bot and members can't change a locked note) and delete; each note shows who created it, the messages it came from and its change history. |
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
@@ -129,6 +129,12 @@ The bot only sees messages from when it joined. To give it older history:
 Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. You can also import into a group the bot hasn't joined yet; it is created as pending.
 
 After the import, the bot reads the **whole** export in chunks, including messages older than the retention period, and turns what's worth remembering into memory notes; if the group has no digest yet, it builds the first one from the import's last two weeks. The Import page shows the progress. This keeps the model busy for a while (replies to people still go first); turn it off under Settings → Import. The uploaded file is deleted when everything is done.
+
+### Model server notes
+
+- **Reasoning:** most skills let the model think briefly before answering (Settings → Persona and skills → reasoning, and Model → Reasoning effort, default *low*). Without it, Qwen3.8 often said “Reminder set!” without setting one. If an answer still skips the tool a request needs, the bot asks the model once more (shown as “Asked again” on the Agent runs page).
+- **Prompt cache:** the start of each request stays the same from one message to the next (the time now, the board and reminders come last), so the server only reads what's new. A request that misses the cache, such as the first `/summary` in a while or the first reply after a digest update, is noticeably slower.
+- **Images** need a model server with vision (for Halogen, `HALOGEN_VISION_TOWER`). Without it the bot answers without seeing the image.
 
 ### Evaluating models
 

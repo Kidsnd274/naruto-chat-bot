@@ -316,12 +316,12 @@ A skill is: focused instructions + output template + tool subset + reasoning on/
 
 | Skill | Trigger | Reasoning |
 | --- | --- | --- |
-| Banter (default) | Mention or reply with no task | Off |
+| Banter (default) | Mention or reply with no task | Off (brief since 2026-10-01, §18) |
 | Summarize topic | `/summary`, `/catchup`, or "what did we talk about…" | On |
 | Consolidate plan | `/plan`, or planning talk | On |
 | Consolidate questions | `/questions` | On |
 | Confirm / decide | Plan ready, or "let's vote" | Off |
-| Reminder | `/remind`, or "remind us…" | Off |
+| Reminder | `/remind`, or "remind us…" | Off (brief since 2026-10-01, §18) |
 
 Routing: commands map directly. For free-form mentions, the model chooses via a `use_skill` tool or a short classification step, falling back to banter.
 
@@ -368,7 +368,7 @@ Record pass rate, time to first token and total latency.
 
 - **Prompt caching:** keep the system prompt and older context as a stable prefix, and put new material at the end so Gufo's conversation cache is reused.
 - **Context budget:** aim for 8–16k tokens per request; use search rather than larger windows.
-- **Reasoning per skill:** on for summarize and plan, off for banter.
+- **Reasoning per skill:** on for summarize and plan; banter, reminders and memory think briefly too (reasoning effort low), because without it Qwen skipped tool calls (§18, 2026-10-01).
 - **Fedora:** `sudo setsebool -P container_use_devices true` for `/dev/kfd` in containers. Check port 8080 against Lemonade and Halogen. Watch shared memory if several servers load models.
 
 ## 12. Persona prompt
@@ -509,6 +509,21 @@ Checked 2026-09-30:
 ### Found in the live test (2026-10-01, Lemonade)
 
 - Gemma 4 31B on Lemonade (nightly ROCm llama-server, MTP speculative decoding, one slot) answered a chat request with the digest update's format, `{"digest": "", "notes": []}`, even when "digest" appeared nowhere in the request (7 of 8 replays). A canary written by the preceding request never carried over, so it looks like server-side state from earlier, similar requests rather than the last one. Mitigated in the bot: the rules no longer describe a Background section (each Background explains itself when present), and a reply that starts with internal JSON is not posted: text after it (or its `reply` field) is kept, otherwise the identical request is sent once more, and failing that the "got stuck" line is sent. The server itself still needs checking: reload the model, and if it recurs, run it without `--spec-type draft-mtp`.
+
+### Phase 3–4 live test fixes (2026-10-01, Halogen + Qwen3.8 Flash-Next)
+
+The owner tested phases 3–4 in a test group, first on Lemonade (Gemma 4 31B), then on Halogen serving `halogen-qwen3.8-flash-next` (4 slots, prompt cache, no vision tower). Stored requests were replayed against Halogen to separate model, prompt and server problems.
+
+- **"Internal JSON instead of a reply"** (every failed `/summary` and "remember that…"): only on Lemonade, where a chat request came back in the digest's JSON format with the digest's field names. Halogen answered a digest request followed by a chat request normally, so this stays a Lemonade/llama-server problem; the guard from the previous test remains.
+- **Reminders were never set.** Answers said "I've set a reminder" with no `set_reminder` call, and once those lines were in the transcript the next requests copied them (the transcript shows the bot's words, not its tool calls). With thinking off, Qwen didn't call the tool even with a clean transcript, an explicit rule, or only the two reminder tools; with brief thinking (`reasoning_effort: low`) it called it every time. Fixes: reasoning on by default for banter, reminders and memory, with a **Reasoning effort** setting (default low; Halogen's default is xhigh, which made `/summary` take 43 s); a rule against claiming actions no tool did; and a one-time re-ask when the request clearly asks for an action, or the answer claims one, and no tool did it (`agent/claims.py`, "Asked again" on the run page).
+- **Slow replies (17–30 s) were prompt-cache misses.** The header's "Now: …, 01:48" changed every minute; members were listed by last activity (reorders whenever someone else speaks); and the board, open plans and pending reminders sat before the transcript, so every bot action invalidated it. The time now moved to the current request, members are listed by name, and the board, plans and reminders moved next to the current request. Replies after an action now take 5–9 s. Halogen processes an uncached prompt at only about 160 tokens/s, so a cold request (first of a skill, after a digest update) still takes 15–35 s.
+- **Polls:** the model can answer `[NO REPLY]` after a poll, plan or board update, and nothing more is sent.
+- **Images:** Halogen without a vision tower refuses image input with a 400; the run now asks again without the images instead of failing.
+- **Pin right "not checked yet"** in the group where the bot was an admin: rights were only read on join or promotion and on `/enable`. Enabled chats are now checked soon after start and every six hours; a member counts as able to pin where the group lets everyone pin (basic groups do by default); every real pin updates the right.
+- **Pin service messages** ("Naruto pinned …") looked like replies to the bot and logged "Trigger message … was not recorded".
+- **Memory notes** are listed on each chat's page and counted on the Chats page (they were only behind a button in the digest card), and `remember` may be used on the bot's own initiative (notes marked as the bot's).
+- From a code review: a reply queued behind another run still answered after the chat was disabled; merging two people orphaned the source's memory notes; a network error, time-out or flood limit failed a reminder for good (now retried with backoff; migration 7).
+- `set_reminder` accepts "in a minute", "90 mins", "1h 30m", "17:30", "tomorrow 9am".
 
 ### Needs checking against live Telegram and Gufo
 

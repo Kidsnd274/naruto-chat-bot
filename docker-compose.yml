@@ -7,6 +7,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    extra_hosts:
+      # Lets the container reach a model server on this machine at
+      # http://host.docker.internal:<port>/v1 ("localhost" is the container).
+      - "host.docker.internal:host-gateway"
     ports:
       # Web admin: reachable from this machine only. Use an SSH tunnel for
       # remote access (ssh -L 8765:127.0.0.1:8765 server).

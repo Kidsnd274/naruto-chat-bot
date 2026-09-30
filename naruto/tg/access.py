@@ -61,15 +61,20 @@ class ChatAccess:
     # -------------------------------------------------------------- actions
 
     async def enable(self, chat_id: int, *, actor: str) -> Chat | None:
+        """Enable a chat (no-op if it already is) and re-check admin rights."""
+        before = self.services.chats.get(chat_id)
         chat = self.services.chats.set_status(chat_id, ENABLED)
         if chat is None:
             return None
-        logger.info("Chat %s enabled by %s", chat.chat_id, actor, extra={"chat_id": chat.chat_id})
+        if not (before and before.enabled):
+            logger.info("Chat %s enabled by %s", chat.chat_id, actor,
+                        extra={"chat_id": chat.chat_id})
         return await self.check_rights(chat.chat_id)
 
     async def disable(self, chat_id: int, *, actor: str) -> Chat | None:
+        before = self.services.chats.get(chat_id)
         chat = self.services.chats.set_status(chat_id, DISABLED)
-        if chat is not None:
+        if chat is not None and not (before and before.status == DISABLED):
             logger.info("Chat %s disabled by %s", chat.chat_id, actor,
                         extra={"chat_id": chat.chat_id})
         return chat
@@ -90,11 +95,12 @@ class ChatAccess:
         """Ask Telegram what the bot may do in the chat (pin is needed for
         the board, delete is optional)."""
         chat = self.services.chats.get(chat_id)
-        bot_identity = self.services.status.bot
-        if chat is None or bot_identity is None:
+        if chat is None:
             return chat
+        identity = self.services.status.bot
+        bot_id = identity.id if identity else self.bot.id
         try:
-            member = await self.bot.get_chat_member(chat.chat_id, bot_identity.id)
+            member = await self.bot.get_chat_member(chat.chat_id, bot_id)
         except TelegramError as exc:
             logger.warning("Could not check rights in chat %s: %s", chat.chat_id, exc)
             return chat
@@ -197,12 +203,17 @@ class ChatAccess:
         chat, _ = self.services.chats.upsert_seen(message.chat_id, title=message.chat.title,
                                                   chat_type=message.chat.type)
         if enable:
+            already = chat.enabled
             chat = await self.enable(chat.chat_id, actor="owner (/enable)")
-            text = "✅ Enabled. I'm reading along now and I'll answer when mentioned."
+            text = ("✅ Already enabled here: I'm reading along and I answer when mentioned."
+                    if already else
+                    "✅ Enabled. I'm reading along now and I'll answer when mentioned.")
             missing = chat.missing_rights()
             if missing:
                 text += ("\n⚠️ Missing admin rights: " + ", ".join(missing)
                          + ". Make me a group admin with “Pin messages”.")
+        elif chat.status == DISABLED:
+            text = "⏸ Already disabled here. Use /enable to turn me back on."
         else:
             await self.disable(chat.chat_id, actor="owner (/disable)")
             text = "⏸ Disabled. I won't record or reply here until you /enable me."
@@ -222,9 +233,14 @@ class ChatAccess:
             await query.answer("Unknown action.")
             return
         if action == "approve":
+            before = self.services.chats.get(chat_id)
             chat = await self.enable(chat_id, actor="owner (DM button)")
-            result = (f"✅ Enabled {_chat_label(chat)}." + _rights_note(chat)
-                      if chat else "That chat is unknown.")
+            if chat is None:
+                result = "That chat is unknown."
+            elif before is not None and before.enabled:
+                result = f"✅ {_chat_label(chat)} was already enabled." + _rights_note(chat)
+            else:
+                result = f"✅ Enabled {_chat_label(chat)}." + _rights_note(chat)
         elif action == "leave":
             chat = await self.leave(chat_id, actor="owner (DM button)")
             result = f"🚪 Left {_chat_label(chat)}." if chat else "That chat is unknown."

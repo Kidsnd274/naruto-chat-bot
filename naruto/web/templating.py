@@ -16,6 +16,11 @@ from naruto.web.auth import csrf_token
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
+def flash(request: Request, message: str, kind: str = "ok") -> None:
+    """Show ``message`` at the top of the next full page (kind: ok, warn, error)."""
+    request.session.setdefault("flash", []).append([kind, message])
+
+
 def make_templates(services: Services) -> Jinja2Templates:
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(TEMPLATE_DIR),
@@ -64,6 +69,8 @@ def make_templates(services: Services) -> Jinja2Templates:
     def context(request: Request) -> dict:
         return {
             "csrf_token": csrf_token(request),
+            # Called by base.html, so partial (htmx) responses leave them queued.
+            "take_flashes": lambda: request.session.pop("flash", []),
             "nav_path": request.url.path,
             "status": services.status,
             "now": time.time(),

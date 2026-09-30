@@ -94,19 +94,19 @@ OWNER_COMMANDS = [BotCommand("start", "Show status and groups waiting for approv
 
 
 class TelegramBot:
-    def __init__(self, services: Services):
+    def __init__(self, services: Services, *, request=None, get_updates_request=None):
+        """``request`` / ``get_updates_request`` replace the HTTP layer (tests)."""
         self.services = services
         token = services.bootstrap.telegram_bot_token
         bot = ResilientBot(
             token=token,
-            request=HTTPXRequest(connection_pool_size=16),
-            get_updates_request=HTTPXRequest(),
+            request=request or HTTPXRequest(connection_pool_size=16),
+            get_updates_request=get_updates_request or HTTPXRequest(),
         )
         self.application: Application = (
             ApplicationBuilder()
             .bot(bot)
             .concurrent_updates(16)
-            .post_init(self._post_init)
             .build()
         )
         self.recorder = Recorder(services)
@@ -156,7 +156,10 @@ class TelegramBot:
         kind = type(update).__name__ if update is not None else "none"
         logger.error("Error while handling an update (%s)", kind, exc_info=context.error)
 
-    async def _post_init(self, application: Application) -> None:
+    async def _after_login(self, application: Application) -> None:
+        """Record who the bot is and register its commands. Must run after
+        initialize(): PTB only calls post_init hooks from run_polling(), and
+        this bot is started by hand next to the web admin."""
         me = await application.bot.get_me()
         name = me.first_name or me.username
         self.services.status.bot = BotIdentity(id=me.id, username=me.username, name=name)
@@ -191,6 +194,7 @@ class TelegramBot:
 
     async def start(self) -> None:
         await self.application.initialize()
+        await self._after_login(self.application)
         await self.application.start()
         await self.application.updater.start_polling(
             allowed_updates=ALLOWED_UPDATES,

@@ -23,6 +23,9 @@
     </form>
   </header>
   <main>
+    {% for kind, text in take_flashes() %}
+      <p class="notice {{ 'info' if kind == 'ok' else kind }} flash">{{ text }}</p>
+    {% endfor %}
     {% block content %}{% endblock %}
   </main>
 </body>

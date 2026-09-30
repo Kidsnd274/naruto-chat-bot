@@ -10,6 +10,7 @@ from naruto.db.chats import DISABLED, ENABLED, Chat
 from naruto.db.messages import IMPORT, LIVE
 from naruto.services import Services
 from naruto.web.auth import require_admin
+from naruto.web.templating import flash
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -61,34 +62,61 @@ async def chats_page(request: Request):
         request, "chats.html", {"summaries": services.chats.summaries()})
 
 
+def _rights_summary(chat: Chat) -> str:
+    if chat.rights_checked_at is None:
+        return "Admin rights unknown (the bot couldn't check)."
+    pin = "✓" if chat.can_pin else "✗"
+    delete = "✓" if chat.can_delete else "✗"
+    return f"Admin rights: pin {pin}, delete {delete}."
+
+
 @router.post("/chats/{chat_id}/enable")
 async def enable_chat(request: Request, chat_id: int):
     services = _services(request)
-    _chat_or_404(services, chat_id)
+    chat = _chat_or_404(services, chat_id)
+    if chat.enabled:
+        flash(request, f"{chat.display_title} is already enabled.")
+        return await _referer_or(request, chat_id)
     if services.access is not None:
-        await services.access.enable(chat_id, actor=ACTOR)
+        chat = await services.access.enable(chat_id, actor=ACTOR)
     else:
-        services.chats.set_status(chat_id, ENABLED)
+        chat = services.chats.set_status(chat_id, ENABLED)
+    message = f"Enabled {chat.display_title}."
+    if chat.rights_checked_at is not None:
+        message += " " + _rights_summary(chat)
+    flash(request, message, "warn" if chat.missing_rights() and chat.rights_checked_at else "ok")
     return await _referer_or(request, chat_id)
 
 
 @router.post("/chats/{chat_id}/disable")
 async def disable_chat(request: Request, chat_id: int):
     services = _services(request)
-    _chat_or_404(services, chat_id)
+    chat = _chat_or_404(services, chat_id)
+    if chat.status == DISABLED:
+        flash(request, f"{chat.display_title} is already disabled.")
+        return await _referer_or(request, chat_id)
     if services.access is not None:
         await services.access.disable(chat_id, actor=ACTOR)
     else:
         services.chats.set_status(chat_id, DISABLED)
+    flash(request, f"Disabled {chat.display_title}: no replies and nothing recorded.")
     return await _referer_or(request, chat_id)
 
 
 @router.post("/chats/{chat_id}/rights")
 async def check_rights(request: Request, chat_id: int):
     services = _services(request)
-    _chat_or_404(services, chat_id)
-    if services.access is not None:
-        await services.access.check_rights(chat_id)
+    chat = _chat_or_404(services, chat_id)
+    if services.access is None:
+        flash(request, "The Telegram bot is not running, so rights can't be checked.", "error")
+        return await _referer_or(request, chat_id)
+    before = chat.rights_checked_at
+    chat = await services.access.check_rights(chat_id)
+    if chat.rights_checked_at == before and before is None:
+        flash(request, "Couldn't check admin rights: is the bot still in this group? "
+                       "See Logs for the error.", "error")
+    else:
+        flash(request, _rights_summary(chat), "warn" if chat.missing_rights() else "ok")
     return await _referer_or(request, chat_id)
 
 
@@ -110,10 +138,11 @@ async def leave_confirm(request: Request, chat_id: int):
 @router.post("/chats/{chat_id}/leave")
 async def leave_chat(request: Request, chat_id: int):
     services = _services(request)
-    _chat_or_404(services, chat_id)
+    chat = _chat_or_404(services, chat_id)
     if services.access is None:
         raise HTTPException(status_code=503, detail="The Telegram bot is not running.")
     await services.access.leave(chat_id, actor=ACTOR)
+    flash(request, f"Left {chat.display_title}. It is now disabled.")
     return _back(chat_id)
 
 
@@ -229,6 +258,7 @@ async def delete_messages(request: Request, chat_id: int):
         })
 
     deleted = services.messages.delete_for_chat(chat.chat_id, before=before, source=source)
+    flash(request, f"Deleted {deleted} messages.")
     logger.info("Deleted %s messages (%s, before=%s, source=%s) from the web admin",
                 deleted, scope, before_raw or "-", source or "all",
                 extra={"chat_id": chat.chat_id})

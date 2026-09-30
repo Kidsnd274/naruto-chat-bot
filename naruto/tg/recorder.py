@@ -53,9 +53,12 @@ class Recorder:
         chat, created = chats.upsert_seen(message.chat_id, title=title,
                                           chat_type=message.chat.type)
         bot_joined = any(u.id == self._bot_id for u in message.new_chat_members or ())
-        if created and not bot_joined and self.services.access is not None:
+        owner_command = is_command(message) and self.services.is_owner(
+            message.from_user.id if message.from_user else None)
+        if created and not (bot_joined or owner_command) and self.services.access is not None:
             # A group the bot joined before it tracked membership. (When the
-            # bot has just been added, the my_chat_member update notifies.)
+            # bot has just been added, the my_chat_member update notifies; an
+            # owner's /enable answers for itself.)
             await self.services.access.notify_pending(chat)
         if not chat.enabled:
             return

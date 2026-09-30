@@ -44,7 +44,10 @@ class Responder:
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.message
         bot = self.services.status.bot
-        if message is None or bot is None or message.chat.type not in GROUP_TYPES:
+        if message is None or message.chat.type not in GROUP_TYPES:
+            return
+        if bot is None:
+            logger.warning("Not answering: the bot's own identity is unknown (not logged in yet).")
             return
         chat = self.services.chats.get(message.chat_id)
         if chat is None or not chat.enabled or not is_trigger(message, bot):

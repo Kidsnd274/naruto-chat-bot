@@ -1,6 +1,6 @@
 """Stored chat messages (live and imported) and full-text search."""
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 import json
 import re
 import sqlite3
@@ -132,6 +132,10 @@ class MessageRepository:
                 "AND message_id = ?",
                 (message.origin_chat_id, message.reply_to_message_id),
             )
+            if reply_row is not None:
+                # The target is stored, so a copy of its text is not needed
+                # (and would outlive the target if it is deleted).
+                message = replace(message, reply_to_snippet=None)
         placeholders = ", ".join("?" for _ in _INSERT_COLUMNS)
         with self.db.transaction():
             self.db.execute(

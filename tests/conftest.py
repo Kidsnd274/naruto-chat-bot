@@ -51,3 +51,41 @@ def initialized_config(fresh_config):
     """Like fresh_config but already `setup()`-ed with defaults."""
     fresh_config.config.setup()
     return fresh_config
+
+
+# ---------------------------------------------------------------- naruto/
+
+@pytest.fixture
+def db():
+    from naruto.db import open_database
+
+    database = open_database(":memory:")
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def bootstrap():
+    from naruto.bootstrap import Bootstrap
+
+    return Bootstrap(
+        telegram_bot_token="123456:TEST-TOKEN",
+        openai_api_key="test-key",
+        admin_password="correct horse",
+        owner_user_id=1000,
+        database_path=":memory:",
+        web_host="127.0.0.1",
+        web_port=8765,
+    )
+
+
+@pytest.fixture
+def services(db, bootstrap):
+    """Services on an in-memory database, with times shown in UTC and the
+    bot already logged in."""
+    from naruto.services import BotIdentity, Services
+
+    services = Services.create(bootstrap, db)
+    services.settings.set("general.timezone", "UTC", actor="test")
+    services.status.bot = BotIdentity(id=42, username="naruto_bot", name="Naruto")
+    return services

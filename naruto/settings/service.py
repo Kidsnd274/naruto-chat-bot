@@ -88,9 +88,9 @@ class SettingsService:
         setting = self.definition(key)
         value = setting.validate(value)
         if value == setting.default:
-            self._write(key, None, actor)
+            self._write(key, actor, reset=True)
         else:
-            self._write(key, value, actor)
+            self._write(key, actor, value=value)
         return value
 
     def set_from_form(self, key: str, raw: str | None, *, actor: str) -> Any:
@@ -98,7 +98,7 @@ class SettingsService:
 
     def reset(self, key: str, *, actor: str) -> None:
         self.definition(key)
-        self._write(key, None, actor)
+        self._write(key, actor, reset=True)
 
     def revert(self, key: str, *, actor: str) -> bool:
         """Go back to the value before the latest change. Returns False when
@@ -113,11 +113,12 @@ class SettingsService:
             self.set(key, last.old_value, actor=actor)
         return True
 
-    def _write(self, key: str, value: Any, actor: str) -> None:
-        """value=None deletes the override (back to default)."""
+    def _write(self, key: str, actor: str, *, value: Any = None, reset: bool = False) -> None:
+        """Store ``value`` (which may be None for nullable settings), or
+        delete the override when ``reset``."""
         old_row = self.db.query_one("SELECT value FROM settings WHERE key = ?", (key,))
         old_json = old_row["value"] if old_row else None
-        new_json = None if value is None else _dump(value)
+        new_json = None if reset else _dump(value)
         if old_json == new_json:
             return
         ts = now_ts()

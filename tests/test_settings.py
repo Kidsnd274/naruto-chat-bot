@@ -253,3 +253,15 @@ def test_seed_differences_report_drift(db, settings, old_config):
     assert differences["model.temperature"].file_value == "0.7"
     assert differences["model.temperature"].db_value == "0.2"
     assert differences["chat:-4001"].db_value == "disabled"
+
+
+def test_nullable_setting_can_be_set_to_none_when_default_is_not(db, settings):
+    assert settings["model.max_output_tokens"] == 2048
+    settings.set_from_form("model.max_output_tokens", "", actor="owner")
+    assert settings["model.max_output_tokens"] is None
+    assert not settings.is_default("model.max_output_tokens")
+    assert SettingsService(db)["model.max_output_tokens"] is None
+    entry = settings.history("model.max_output_tokens")[0]
+    assert entry.new_value is None and not entry.new_is_default
+    settings.reset("model.max_output_tokens", actor="owner")
+    assert settings["model.max_output_tokens"] == 2048

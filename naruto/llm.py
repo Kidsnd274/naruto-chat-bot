@@ -1,10 +1,10 @@
 """Client for the local OpenAI-compatible inference server.
 
 Settings are read on every call, so changes in the web admin apply to the next
-request. All requests are single-flight process-wide: a local server has one
-useful execution slot, so concurrent triggers queue here instead of competing
-for the GPU. Replies to people go first: background work (digests, memory)
-waits while any reply is queued.
+request. At most model.parallel_requests requests run at once, process-wide
+(1 for a server with one slot, so concurrent triggers queue here instead of
+competing for the GPU). Replies to people go first: background work
+(digests, memory) waits while any reply is queued.
 """
 
 import asyncio
@@ -131,7 +131,8 @@ class LLMClient:
         self.api_key = api_key
         self._client: openai.AsyncOpenAI | None = None
         self._client_key: tuple | None = None
-        self._lock = asyncio.Lock()
+        self._slots: asyncio.Semaphore | None = None
+        self._slots_size = 0
         self._listed_model: tuple[str, str] | None = None  # (endpoint, model)
         self.in_flight = 0
         self.waiting = 0
@@ -210,23 +211,33 @@ class LLMClient:
         self._listed_model = (endpoint, models[0])
         return models[0]
 
-    async def _acquire(self, background: bool) -> None:
-        """Take the single inference slot. Background work only gets it when
-        no reply is waiting; a running request is never interrupted."""
+    def _semaphore(self) -> asyncio.Semaphore:
+        """The request slots, resized when the setting changes (requests
+        already running finish on the old ones)."""
+        size = self.settings["model.parallel_requests"]
+        if self._slots is None or self._slots_size != size:
+            self._slots, self._slots_size = asyncio.Semaphore(size), size
+        return self._slots
+
+    async def _acquire(self, background: bool) -> asyncio.Semaphore:
+        """Take a request slot. Background work only gets one when no reply
+        is waiting; a running request is never interrupted."""
         self.waiting += 1
         try:
             if not background:
                 self._foreground_waiting += 1
                 try:
-                    await self._lock.acquire()
+                    slots = self._semaphore()
+                    await slots.acquire()
                 finally:
                     self._foreground_waiting -= 1
-                return
+                return slots
             while True:
-                await self._lock.acquire()
+                slots = self._semaphore()
+                await slots.acquire()
                 if not self._foreground_waiting:
-                    return
-                self._lock.release()
+                    return slots
+                slots.release()
                 await asyncio.sleep(0.05)
         finally:
             self.waiting -= 1
@@ -241,7 +252,7 @@ class LLMClient:
         stream: bool = False,
         background: bool = False,
     ) -> ChatResult:
-        await self._acquire(background)
+        slots = await self._acquire(background)
         self.in_flight += 1
         try:
             model = await self.resolve_model()
@@ -251,7 +262,7 @@ class LLMClient:
                                             tools_offered=bool(tools))
         finally:
             self.in_flight -= 1
-            self._lock.release()
+            slots.release()
 
     # -------------------------------------------------------------- health
 

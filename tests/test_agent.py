@@ -149,6 +149,42 @@ async def test_background_requests_wait_for_replies(services):
     assert client.waiting == 0 and client.in_flight == 0
 
 
+async def test_a_multi_slot_server_takes_requests_side_by_side(services):
+    client = LLMClient(services.settings, "key")
+    services.settings.set("model.name", "m", actor="t")
+    services.settings.set("model.parallel_requests", 2, actor="t")
+    running, most, order = 0, 0, []
+    release = asyncio.Event()
+
+    class Server:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def create(self, **kwargs):
+            nonlocal running, most
+            running += 1
+            most = max(most, running)
+            order.append(kwargs["messages"][0]["content"])
+            await release.wait()
+            running -= 1
+            return api_response("ok")
+
+    client._get_client = lambda: Server()
+
+    def ask(text, background=False):
+        return asyncio.create_task(client.chat([{"role": "user", "content": text}],
+                                               background=background))
+
+    tasks = [ask("chat A"), ask("chat B")]
+    await asyncio.sleep(0.01)
+    tasks += [ask("digest", background=True), ask("chat C")]  # both slots busy
+    await asyncio.sleep(0.01)
+    assert order == ["chat A", "chat B"] and client.waiting == 2
+    release.set()
+    await asyncio.gather(*tasks)
+    assert most == 2 and order[2:] == ["chat C", "digest"]  # the reply went first
+
+
 # ---------------------------------------------------------------- runner
 
 async def test_search_then_answer_is_traced(services, wired, bot, chat):

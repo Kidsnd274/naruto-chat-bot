@@ -238,6 +238,12 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("model.max_output_tokens", "model", "Max output tokens",
             "Upper limit on generated tokens per request, including reasoning.",
             "int", 2048, nullable=True, min=16, max=65536),
+    Setting("model.parallel_requests", "model", "Parallel requests",
+            "How many requests the model server works on at once. 1 for a server with one "
+            "slot (llama-server without --parallel); Halogen lists its slots on /props (4 by "
+            "default). More lets replies in different chats and background digest updates run "
+            "side by side; replies still go first when every slot is busy.",
+            "int", 1, min=1, max=16),
     Setting("model.request_timeout_seconds", "model", "Request timeout (seconds)",
             "Give up on a model request after this long.",
             "int", 180, min=5, max=1800),

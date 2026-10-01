@@ -25,6 +25,7 @@ from naruto.db.lab import (
     LabToken,
 )
 from naruto.lab import config, report, snapshot
+from naruto.lab.errors import LabError
 from naruto.lab.executor import LabExecutor
 from naruto.lab.scenario import ScenarioError, parse_scenario
 from naruto.settings.registry import SettingError
@@ -43,16 +44,6 @@ TOKEN_PREFIX = "nlab_"
 
 def token_hash(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
-
-
-class LabError(Exception):
-    """A request the lab refuses; the message is for whoever asked.
-    ``code``: invalid | not_found | conflict | forbidden."""
-
-    def __init__(self, message: str, code: str = "invalid", **details):
-        super().__init__(message)
-        self.code = code
-        self.details = details
 
 
 def _int(value, name: str, low: int, high: int) -> int:

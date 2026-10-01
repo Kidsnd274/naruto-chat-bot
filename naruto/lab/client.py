@@ -221,14 +221,25 @@ def _text_run(view: dict) -> str:
     return "\n".join(lines)
 
 
-TEXT = {"batch": _text_batch, "run": _text_run}
+def _text_comparison(view: dict) -> str:
+    """Exactly the server's presentation (relay it as it is), then the state."""
+    lines = [view["presentation"], ""]
+    if view.get("choice"):
+        choice = view["choice"]
+        lines.append(f"[{view['status']}: {choice['choice']}"
+                     + (f", “{choice['comment']}”" if choice.get("comment") else "") + "]")
+    if view.get("mapping"):
+        lines.append("[" + ", ".join(f"{label} = {info['configuration']}"
+                                     for label, info in view["mapping"].items()) + "]")
+    return "\n".join(lines).rstrip()
+
+
+TEXT = {"batch": _text_batch, "run": _text_run, "comparison": _text_comparison}
 
 
 def _print(result, args, kind: str | None = None) -> None:
     if args.text and kind in TEXT and isinstance(result, dict):
         print(TEXT[kind](result))
-    elif args.text and isinstance(result, dict) and "presentation" in result:
-        print(result["presentation"])
     elif args.text and isinstance(result, str):
         print(result)
     else:
@@ -389,6 +400,26 @@ def run_command(args, client: Client):
                 return f"Wrote {out / 'report.md'} and {out / 'report.json'}", None
             return text, None
         return client.call("GET", f"/runs/{args.run}/report"), None
+    if command == "ask":
+        return client.call("POST", f"/runs/{args.run}/comparisons",
+                           {"attempts": args.attempt, "turn": args.turn}), "comparison"
+    if command == "comparison":
+        if args.action == "show":
+            return client.call("GET", f"/comparisons/{args.comparison}",
+                               reveal=args.reveal), "comparison"
+        if args.action == "list":
+            return client.call("GET", f"/runs/{args.run}/comparisons"), None
+    if command in ("answer", "correct"):
+        return client.call("POST", f"/comparisons/{args.comparison}/{command}",
+                           {"choice": args.choice, "comment": args.comment,
+                            "channel": args.channel}), "comparison"
+    if command == "withdraw":
+        return client.call("POST", f"/comparisons/{args.comparison}/withdraw",
+                           {"reason": args.reason}), "comparison"
+    if command == "prefs":
+        if args.action == "show":
+            return client.call("GET", f"/runs/{args.run}/preferences"), None
+        return client.call("PUT", f"/runs/{args.run}/preferences", _read_json(args.file)), None
     if command == "export":
         out = Path(args.out).expanduser() if args.out else DEFAULT_EXPORT_DIR
         if _inside_repo(out):
@@ -578,6 +609,40 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("run", type=int)
     report.add_argument("--format", default="json", choices=["json", "md"])
     report.add_argument("--out", help="write report.md and report.json to this folder")
+    ask = commands.add_parser("ask", help="an A/B comparison of real replies for the owner")
+    ask.add_argument("run", type=int)
+    ask.add_argument("--attempt", type=int, action="append", required=True,
+                     help="2 to 4 attempts answering the same situation (repeat)")
+    ask.add_argument("--turn", type=int, default=1)
+    comparison = commands.add_parser("comparison", help="show or list comparisons")
+    comparison_actions = comparison.add_subparsers(dest="action", required=True)
+    comparison_show = comparison_actions.add_parser("show")
+    comparison_show.add_argument("comparison", type=int)
+    comparison_show.add_argument("--reveal", action="store_true",
+                                 help="which configuration gave which reply (logged if before "
+                                      "the owner answers)")
+    comparison_list = comparison_actions.add_parser("list")
+    comparison_list.add_argument("run", type=int)
+    for name, helptext in (("answer", "record the owner's choice (only what they said)"),
+                           ("correct", "the owner changes an earlier choice")):
+        sub = commands.add_parser(name, help=helptext)
+        sub.add_argument("comparison", type=int)
+        sub.add_argument("--choice", required=True,
+                         choices=["A", "B", "C", "D", "both_good", "both_bad", "no_preference",
+                                  "skip", "combination"])
+        sub.add_argument("--comment", help="the owner's words, e.g. \"A's humour, B's brevity\"")
+        sub.add_argument("--channel", help="how the choice came (default: owner via this agent)")
+    withdraw = commands.add_parser("withdraw", help="withdraw a waiting comparison")
+    withdraw.add_argument("comparison", type=int)
+    withdraw.add_argument("--reason", required=True)
+    prefs = commands.add_parser("prefs", help="the owner's preference summary")
+    prefs_actions = prefs.add_subparsers(dest="action", required=True)
+    prefs_show = prefs_actions.add_parser("show")
+    prefs_show.add_argument("run", type=int)
+    prefs_set = prefs_actions.add_parser("set")
+    prefs_set.add_argument("run", type=int)
+    prefs_set.add_argument("--file", required=True,
+                           help="JSON: owner_statements, interpretations, context")
     export = commands.add_parser("export", help="write a run as a folder of readable files")
     export.add_argument("run", type=int)
     export.add_argument("--out", help=f"where (default {DEFAULT_EXPORT_DIR})")

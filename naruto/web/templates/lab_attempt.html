@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Attempt #{{ attempt.id }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/lab">Lab</a> / <a href="/lab/runs/{{ run.id }}">Run #{{ run.id }}</a> /</p>
+<h1>Attempt #{{ attempt.id }} <span class="badge {{ 'done' if attempt.outcome == 'pass' else ('error' if attempt.outcome in ('fail', 'error', 'action_failed') else attempt.status) }}">{{ attempt.outcome or attempt.status }}</span></h1>
+<p>{{ summary.scenario }} v{{ summary.scenario_version }} · <strong>{{ summary.candidate }}</strong> · try {{ attempt.repeat }}{% if attempt.continue_from %} · continues <a href="/lab/attempts/{{ attempt.continue_from }}">#{{ attempt.continue_from }}</a>{% endif %}</p>
+{% if attempt.reason %}<p class="notice warn">{{ attempt.reason }}</p>{% endif %}
+{% if scenario and scenario.body.description %}<p class="muted">{{ scenario.body.description }}</p>{% endif %}
+
+{% if hidden %}
+  <p class="notice info">This attempt is in an A/B comparison waiting for your choice. Its replies are hidden so they don't sway you: <a href="/lab/runs/{{ run.id }}#comparisons">answer it</a>, or <a href="?show=1">show them anyway</a>.</p>
+{% else %}
+  {% for turn in attempt.turns %}
+  <section class="card">
+    <h2>Turn {{ turn.index }} <span class="badge {{ 'done' if turn.outcome == 'pass' else ('error' if turn.outcome in ('fail', 'error', 'action_failed') else turn.outcome) }}">{{ turn.outcome }}</span>
+      <span class="muted small">{{ turn.kind }}{% if turn.final_skill %} · {{ turn.skill }}{% if turn.final_skill != turn.skill %} → {{ turn.final_skill }}{% endif %}{% endif %}</span></h2>
+    <p><strong>{{ turn.trigger.from }}</strong>: <span class="msg-text">{{ turn.trigger.text }}</span></p>
+    {% if turn.note %}<p class="small muted">({{ turn.note }})</p>{% endif %}
+    <h3>Answer <span class="muted small">{{ turn.delivery }}{% if turn.threaded %}, threaded{% endif %}</span></h3>
+    {% if turn.answer %}<p class="msg-text">{{ turn.answer }}</p>{% else %}<p class="muted">Sent nothing.</p>{% endif %}
+    {% if turn.error or turn.reason %}<p class="notice warn">{{ turn.error or turn.reason }}</p>{% endif %}
+    {% if turn.checks %}
+      <h3>Checks</h3>
+      <ul class="plain">{% for c in turn.checks %}<li>{{ "✅" if c.passed else ("⚠️" if c.kind == "action" else "❌") }} <code>{{ c.name }}</code> <span class="small muted">{{ c.detail }}</span></li>{% endfor %}</ul>
+    {% endif %}
+    {% if turn.telegram %}
+      <h3>Telegram (simulated)</h3>
+      <ul class="plain small">{% for call in turn.telegram %}<li><code>{{ call.method }}</code>{% if call.get("failed") %} <span class="badge error">{{ call.failed }}</span>{% endif %} {{ (call.get("text") or call.get("question") or "")|truncate(120) }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if turn.state_changes %}
+      <h3>State changes</h3>
+      <pre class="prompt">{{ turn.state_changes|tojson(indent=2) }}</pre>
+    {% endif %}
+    {% if turn.run %}
+      <details><summary>Steps ({{ turn.model_requests }} model requests)</summary>{% set steps = turn.run.steps %}{% include "_steps.html" %}</details>
+      <details><summary>Prompt</summary>{% if turn.run.prompt %}{% set prompt = turn.run.prompt %}{% include "_prompt.html" %}{% endif %}</details>
+    {% endif %}
+  </section>
+  {% endfor %}
+{% endif %}
+{% if attempt.conditions %}
+<section class="card">
+  <h2>Conditions</h2>
+  <pre class="prompt">{{ attempt.conditions|tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+{% endblock %}

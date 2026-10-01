@@ -21,7 +21,7 @@ can be read without spoiling the choice.
 from datetime import datetime, timezone
 import json
 
-from naruto.lab import config, report
+from naruto.lab import config, preferences, report
 
 FOLDER_PREFIX = "run"
 
@@ -38,14 +38,6 @@ def _quote(text: str) -> str:
 
 def folder_name(run) -> str:
     return f"{FOLDER_PREFIX}-{run.id}-{run.slug}"
-
-
-def hidden_attempts(lab, run) -> set[int]:
-    """Attempts in comparisons waiting for the owner."""
-    hidden = set()
-    for comparison in lab.repo.comparisons(run.id, status="pending"):
-        hidden.update(int(a) for a in comparison.mapping.values())
-    return hidden
 
 
 def configuration_files(lab, run, candidate) -> dict[str, str]:
@@ -183,7 +175,7 @@ def export_files(lab, run) -> dict[str, str]:
     for candidate in lab.repo.candidates(run.id):
         for name, text in configuration_files(lab, run, candidate).items():
             files[f"candidates/{candidate.label}/{name}"] = text
-    hidden = hidden_attempts(lab, run)
+    hidden = report.hidden_attempts(lab, run)
     by_slug: dict[str, list] = {}
     for attempt in lab.repo.attempts(run_id=run.id):
         record = lab.repo.scenario(attempt.scenario_id)
@@ -193,4 +185,8 @@ def export_files(lab, run) -> dict[str, str]:
         files[f"replies/{slug}.md"] = replies_md(lab, run, slug, attempts, hidden)
     if by_slug:
         files["report.md"] = report.render_markdown(report.build_report(lab, run))
+    for name, text in (("comparisons.md", preferences.comparisons_md(lab, run)),
+                       ("preferences.md", preferences.summary_md(lab, run))):
+        if text:
+            files[name] = text
     return files

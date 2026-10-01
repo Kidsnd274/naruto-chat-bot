@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from naruto.db.lab import LabRun, LabToken
-from naruto.lab import config
+from naruto.lab import config, preferences
 from naruto.lab.capabilities import capabilities
 from naruto.lab.export import export_files, folder_name
 from naruto.lab.report import render_markdown
@@ -383,3 +383,72 @@ async def run_report(request: Request, run_id: int, format: str = "json"):
     if format == "md":
         return PlainTextResponse(render_markdown(data), media_type="text/markdown")
     return data
+
+
+# ----------------------------------------------------------- preferences
+
+@router.post("/runs/{run_id}/comparisons")
+async def create_comparison(request: Request, run_id: int):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    comparison = preferences.create(lab, run_id, list(data.get("attempts") or []),
+                                    turn=int(data.get("turn", 1)), actor=_actor(token))
+    return JSONResponse(preferences.view(lab, comparison), status_code=201)
+
+
+@router.get("/runs/{run_id}/comparisons")
+async def list_comparisons(request: Request, run_id: int):
+    lab = _lab(request)
+    lab.get_run(run_id)
+    return {"comparisons": [preferences.view(lab, c) for c in lab.repo.comparisons(run_id)]}
+
+
+@router.get("/comparisons/{comparison_id}")
+async def get_comparison(request: Request, comparison_id: int, reveal: bool = False):
+    lab = _lab(request)
+    return preferences.view(lab, preferences.get(lab, comparison_id), reveal=reveal,
+                            actor=_actor(request.state.lab_token))
+
+
+@router.post("/comparisons/{comparison_id}/answer")
+async def answer_comparison(request: Request, comparison_id: int):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    comparison = preferences.answer(lab, comparison_id, str(data.get("choice", "")),
+                                    comment=data.get("comment"),
+                                    channel=str(data.get("channel") or
+                                                f"owner via {_actor(token)}"))
+    return preferences.view(lab, comparison)
+
+
+@router.post("/comparisons/{comparison_id}/correct")
+async def correct_comparison(request: Request, comparison_id: int):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    comparison = preferences.correct(lab, comparison_id, str(data.get("choice", "")),
+                                     comment=data.get("comment"),
+                                     channel=str(data.get("channel") or
+                                                 f"owner via {_actor(token)}"))
+    return preferences.view(lab, comparison)
+
+
+@router.post("/comparisons/{comparison_id}/withdraw")
+async def withdraw_comparison(request: Request, comparison_id: int):
+    lab, data = _lab(request), await _body(request)
+    comparison = preferences.withdraw(lab, comparison_id, reason=str(data.get("reason", "")),
+                                      actor=_actor(request.state.lab_token))
+    return preferences.view(lab, comparison)
+
+
+@router.get("/runs/{run_id}/preferences")
+async def get_preferences(request: Request, run_id: int):
+    lab = _lab(request)
+    lab.get_run(run_id)
+    prefs = lab.repo.preferences(run_id)
+    return {"preferences": None if prefs is None else {
+        "version": prefs.version, "edited_by": prefs.edited_by, **prefs.body}}
+
+
+@router.put("/runs/{run_id}/preferences")
+async def put_preferences(request: Request, run_id: int):
+    lab, data = _lab(request), await _body(request)
+    prefs = preferences.set_summary(lab, run_id, data,
+                                    edited_by=_actor(request.state.lab_token))
+    return {"version": prefs.version, **prefs.body}

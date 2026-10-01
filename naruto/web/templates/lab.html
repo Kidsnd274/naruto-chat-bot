@@ -22,7 +22,7 @@
     <tbody>
     {% for run, state in runs %}
       <tr>
-        <td class="num">{{ run.id }}</td>
+        <td class="num"><a href="/lab/runs/{{ run.id }}">{{ run.id }}</a></td>
         <td class="text">{{ run.objective|truncate(140) }}</td>
         <td>
           {% if state.state == "waiting_for_owner" %}<span class="badge warn-badge">waiting for your choice</span>

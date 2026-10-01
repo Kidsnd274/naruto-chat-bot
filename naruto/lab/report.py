@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import json
 from statistics import median
 
-from naruto.lab import checks, config
+from naruto.lab import checks, config, preferences
 from naruto.lab.sandbox import NOT_SIMULATED
 
 CHECKED = (checks.PASS, checks.FAIL, checks.ACTION_FAILED)
@@ -80,8 +80,16 @@ def _judgment_summary(judgments, current_version: int | None) -> tuple[dict, int
     return summary, stale
 
 
+def hidden_attempts(lab, run) -> set[int]:
+    """Attempts in comparisons waiting for the owner: their replies stay out
+    of reports and exports until the owner answers."""
+    return {int(a) for c in lab.repo.comparisons(run.id, status="pending")
+            for a in c.mapping.values()}
+
+
 def compare(lab, run, *, configs=None, set_ref=None, scenarios=None) -> dict:
     selected = _select(lab, run, configs=configs, set_ref=set_ref, scenarios=scenarios)
+    hidden = hidden_attempts(lab, run)
     rubric = lab.repo.rubric(run.id)
     version = rubric.version if rubric else None
     judgments_by_attempt: dict[int, list] = {}
@@ -150,10 +158,14 @@ def compare(lab, run, *, configs=None, set_ref=None, scenarios=None) -> dict:
             total["passed"] += passed
             judged, stale = _judgment_summary(
                 [j for a in attempts for j in judgments_by_attempt.get(a.id, [])], version)
-            first = min(attempts, key=lambda a: (a.repeat, a.id))
+            shown = [a for a in attempts if a.id not in hidden]
+            first = min(shown, key=lambda a: (a.repeat, a.id)) if shown else None
+            example = ({"attempt": first.id, "outcome": first.outcome or first.status,
+                        "answers": [t.get("answer") or "" for t in first.turns]} if first else
+                       {"attempt": None, "outcome": "hidden",
+                        "answers": ["(in an A/B comparison waiting for the owner)"]})
             row["results"][label] = {
-                "example": {"attempt": first.id, "outcome": first.outcome or first.status,
-                            "answers": [t.get("answer") or "" for t in first.turns]},
+                "example": example,
                 "attempts": [a.id for a in attempts], "outcomes": outcomes,
                 "checked": checked, "passed": passed, "pass": _rate(passed, checked),
                 "flaky": 0 < passed < checked, "failed_checks": failed,
@@ -299,6 +311,7 @@ def build_report(lab, run) -> dict:
                               "measured"},
         "recommendation": run.recommendation, "summary": run.summary,
     }
+    report.update(preferences.report_section(lab, run))
     report["activations"] = [
         {"id": a.id, "candidate": lab.label(run, a.candidate_id), "mode": a.mode,
          "at": _when(a.created_at), "authorized_by": a.authorized_by,

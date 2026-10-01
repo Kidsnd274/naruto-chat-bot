@@ -1,0 +1,14 @@
+{# The messages of a model request (expects `prompt`). #}
+{% for message in prompt %}
+  <details {{ 'open' if not loop.first else '' }}>
+    <summary><strong>{{ message.role }}</strong> <span class="muted small">message {{ loop.index }} of {{ prompt|length }}</span></summary>
+    {% if message.content is string %}
+      <pre class="prompt">{{ message.content }}</pre>
+    {% else %}
+      {% for part in message.content %}
+        {% if part.type == "text" %}<pre class="prompt">{{ part.text }}</pre>
+        {% else %}<p class="muted small">[image {{ part.image_url.url }}]</p>{% endif %}
+      {% endfor %}
+    {% endif %}
+  </details>
+{% endfor %}

@@ -1,6 +1,6 @@
 # Memory and history simplification plan
 
-Written: 2026-10-01. Revised: 2026-10-02 after owner review.
+Written: 2026-10-01. Revised: 2026-10-02 after owner review, and again on 2026-10-02 after a code review that trimmed the mechanisms (section 10 lists what changed and why).
 
 Status: implementation plan; this document does not change code, runtime settings or stored data. The application is not live. The owner accepts resetting its development database if migration would add substantial complexity. No reset is performed by this planning change.
 
@@ -63,8 +63,7 @@ A retry needs its source:
 
 - Live monthly jobs use stored live messages, retained unless manually deleted.
 - An unfinished export job keeps its upload under the existing bounded paused-file lifetime. Pause/failure shows the expiry date. Global queue pause alone does not start that expiry.
-- A summaries-only import, or a combined import whose raw range does not cover the summary range, cannot promise permanent regeneration after upload cleanup. Clearly say when re-upload is required.
-- Use stored imported messages as a retry/regeneration source only when exact required coverage and canonical input can be verified. Do not silently substitute an incomplete raw range for a missing export; a clear re-upload outcome is acceptable and simpler.
+- Export summaries are always generated from the upload. Once the upload is gone, retrying or regenerating them requires re-uploading the export; say so clearly. Rebuilding export summaries from stored imported messages is out of scope for this pass.
 
 Keep temporary-upload cleanup distinct from permanent message storage. Source-file expiry may end unfinished export work but must not remove committed messages or old active summaries.
 
@@ -96,7 +95,9 @@ Do not retain a generic “Retention” page that implies chat messages still ex
 
 ### 3.3 Database growth and reads
 
-Keep existing message/search indexes and bounded queries. Verify that context building fetches only a bounded window with a large stored history. The current `recent_window()` counts all earlier messages and uses a large offset; check its cost on synthetic history and use indexed cursor/recent-window queries if needed while preserving the intended stable window behavior. Do not solve read performance by deleting history or adding a second search platform.
+Keep existing message/search indexes and bounded queries. Do not solve read performance by deleting history or adding a second search platform.
+
+Measured on 2026-10-02 against the real schema with one chat: `recent_window()` took 5.6 ms with 100k stored messages and 55 ms with 1M, growing linearly. About half of that is the `OFFSET` scan; selecting the same rows with `ORDER BY date DESC, id DESC LIMIT n` and reversing them takes 0.2 ms. The remaining `COUNT(*)` (about 30 ms at 1M) is what keeps the window's start moving in whole steps for prompt caching; it is negligible next to inference and stays. Change the select to the descending form; no counter tables or cursors.
 
 **Acceptance:** messages older than months/years survive repeated maintenance regardless of summary success; old exports are accepted within selected ranges; removed settings have no runtime references; logs/uploads/completed reminders still clean up; recent-window size and model input do not grow with total stored history.
 
@@ -105,6 +106,8 @@ Keep existing message/search indexes and bounded queries. Verify that context bu
 Remove `Distiller`, its import stage and recovery path, import-only prompt, `import.distill_memory`, `import.distill_chunk_tokens`, `memory.distill_instructions`, and distillation options, estimates and new queue submissions. New imports have only raw/archive progress. Update shared reasoning/output setting descriptions for their remaining uses.
 
 Make the keeper's automatic unread query and unread counts **live-only**, including timer scheduling, explicit keeper catch-up and admin progress displays. Filter before batching so imported rows do not advance its cursor or suppress unrelated live work. Defensively reject/filter imported rows supplied directly to keeper update helpers. Preserve owner-edit protection and never rewind the current live cursor merely because an import completed.
+
+In practice this is `source = 'live'` in `DigestRepository._unread_where()` (both branches) plus a filter in `MemoryKeeper._batch()` for explicitly supplied messages. Imported rows always predate the live-recording boundary, and the cursor is stored by value (date, row ID), so no cursor migration is needed.
 
 Remove `import.digest_window_days`, `MemoryKeeper.imported_since()` and the import initialization hook once no consumers remain. `naruto/web/memory.py` and `naruto/db/digests.py` need inspection alongside `naruto/memory/keeper.py`. Do not replace them with a new “import digest-only” mode.
 
@@ -122,15 +125,15 @@ Replace separate `history.add()` and period completion writes with one repositor
 
 Completed staged results are durable work. When a monthly summary is being replaced by several weekly summaries, pausing after two weeks must retain those two results. Before publishing, verify **every** required member has its expected digest row, correct state and matching generation. A `done` flag or non-null dangling `digest_id` is not enough. Missing results cause a visible incomplete/retry outcome; never publish a subset and retire the whole old summary.
 
-Check target revision/content tokens and overlap assumptions again in the publication transaction. If the owner edited/deleted a target meanwhile, pause for renewed replacement approval. Keep publication atomic per connected overlap group. Cancel/expiry removes unpublished replacements and clears their work-item references consistently; already published unrelated groups survive.
+Check the replaced targets again in the publication transaction. If the owner edited a target meanwhile and the import was not allowed to replace edited summaries, leave that group's targets alone: drop its staged results and mark its periods cancelled with the same reason the planner uses for an edited summary ("an existing summary covers this period and replacing it wasn't chosen"). A target the owner deleted meanwhile needs no approval; publish the group. This gives the same outcome as if the edit had happened before Start, without a renewed-approval flow. Keep publication atomic per connected overlap group. Cancel/expiry removes unpublished replacements and clears their work-item references consistently; already published unrelated groups survive.
 
 **Acceptance:** fault injection before/between/after completion writes; repeated retry after commit; pause with two of four replacements ready; delete a staged result before publication; cancel after one independent group publishes. No duplicate result, missing coverage, overwritten owner edit or dangling successful result remains.
 
 ### 5.2 Stop controls and restart
 
-Connect parent pause/cancel to a stop event with a reason and the owning queued request. Check it while waiting for a job lock, queue slot, retry delay, source loading, raw import batches and final publication. Stop a queued waiter even when background dispatch is paused or its cap is zero.
+Implement owner pause/cancel by **cancelling the job's asyncio task** after setting the pause/cancel flag, rather than threading a stop event through every wait. `ModelQueue.acquire()` already withdraws a cancelled waiter's ticket, and `asyncio.sleep()`/lock waits are cancellation points, so one mechanism covers the job lock, queue slot (even with background dispatch paused or a zero cap), retry delays and source loading. The job catches `CancelledError`, records the paused/cancelled outcome and re-raises only for shutdown. Only the raw import worker thread needs its existing cooperative flag, because a thread cannot be cancelled: the job waits for it to finish its rollback before recording the outcome or deleting the source.
 
-A raw worker thread must stop cooperatively and finish rollback/finalization before source deletion or acknowledged completion. Active inference may finish, but a late result is applied only if its parent, source and target revisions still permit it. No follow-up call starts after stop acknowledgement. Shutdown preserves resumable work; it is not owner cancellation.
+A raw worker thread must stop cooperatively and finish rollback/finalization before source deletion or acknowledged completion. An in-flight model call is aborted by the cancellation; its chunk is simply redone on resume from the last checkpoint. No follow-up call starts after stop acknowledgement. Shutdown preserves resumable work; it is not owner cancellation.
 
 Pause and retryable failure preserve source, valid checkpoints and staged results. Repeated pause does not extend the paused-upload deadline. Cancellation/expiry stops workers, removes unpublished work, and cleans the upload safely. Display global queue pause as a waiting reason, not a new persistent stage or a source-expiry trigger.
 
@@ -138,13 +141,16 @@ Derive overall completion from requested stages and actual publication. Recover 
 
 **Acceptance:** stop during each wait and during the final call; repeated controls; process restart after each transition; interrupted source unlink. No orphan queue ticket, extra call, lost staged result, prematurely deleted source or held job lock remains.
 
-### 5.3 Freeze controllable generation inputs
+### 5.3 Detect changed inputs and restart, instead of freezing them
 
-Persist a versioned snapshot of the resolved prompt, summary/output limits, reasoning, chunk/truncation limits, concrete timezone, names actually used, selected model ID and application-controlled sampling/template parameters. Use it throughout the attempt and resume; queue capacity and pause remain live controls. Never persist credentials.
+Do not persist a full snapshot of the generation settings and thread it through the job. Instead, each period's work item stores two short hashes when it is created or checkpointed:
 
-Hash the canonical ordered input and this snapshot, including stable equal-time ordering, normalized content, sender identities/names and message count. Do not use database row IDs that change on re-import as the sole semantic source identity. Legacy commutative day hashes ignore order/names and are insufficient for safe reuse.
+- **Settings hash:** the settings that shape a summary (instructions, summary size, output limit, reasoning, chunk size, per-message character limit) plus the period's timezone.
+- **Source hash:** an ordered hash over the messages already consumed (date, sender ID and normalized body, in the stable date/position order). Do not use database row IDs as the identity; they change on re-import.
 
-Limit scope to what this application can know/control. Do not build model-weight attestation or a generic backend compatibility service. If the saved model/configuration cannot be used, fail/pause clearly and offer an explicit restart with current inputs. Raw-only imports must not depend on model discovery. Do not mix old partial text with new generation settings silently. Preview reuse is an estimate until execution verifies it.
+On resume, recompute both. If either differs, discard the partial summary and restart that period from its first message with the current settings, and say so in the period's status. A restart costs a few model calls for one period; it is the same "never mix old partial text with new settings or changed sources" guarantee at a fraction of the code. Completed summaries are never rewritten because inputs changed later.
+
+The export preview's reuse fingerprint (whether an identical summary already exists) stays an estimate; execution recomputes it. Raw-only imports must not depend on model discovery. Do not build model-weight attestation or a backend compatibility service.
 
 ### 5.4 Atomic raw replacement and visibility
 
@@ -157,7 +163,8 @@ Keep explicit date ranges and unrelated imports intact. Repair reply links and d
 Keeping all messages is safe for AI context only if every request remains bounded. The current code trims the initial recent window but can exceed the budget with oversized fixed context, and the agent appends tool results without reapplying the total budget.
 
 - Apply a shared full-request budget check immediately before **every** model call, including agent follow-ups and rolling/historical summaries.
-- Count system text, roster/names, digest/notes, current request, images using the configured estimate, tool schemas, assistant/tool-call history and tool results. Reserve output/reasoning headroom against the configured context capacity. State that estimates are not exact server-token counts.
+- There is no "model context capacity" setting, and this pass does not add one. `context.input_token_budget` becomes the cap on the **estimated input of every agent request**, including follow-up rounds with tool results, not only the first request. Output headroom is the owner's server configuration: the server's context must hold the input budget plus the output limit; say so in the setting's description. Summary jobs keep their own input settings (`memory.digest_input_tokens`, `history.chunk_tokens`), now counted as the whole request rather than only the messages.
+- Count system text, roster/names, digest/notes, current request, images using the configured estimate, tool schemas, assistant/tool-call history and tool results. State that estimates are not exact server-token counts.
 - Remove oldest optional recent context first, then use deterministic limits for optional background and retrieved content. Preserve the current request, required instructions and valid tool-call/result relationships. If required input alone cannot fit, return an actionable error instead of silently exceeding the limit.
 - Keep bounded search result counts and tool-result lengths. Do not stuff all stored history into the prompt. Avoid an additional model call merely to compress context in this stabilization pass.
 - For summary chunks, include carried-summary/prompt overhead and shorten an oversized single message with a recorded limitation. Reject a fixed prompt that cannot fit.
@@ -167,11 +174,13 @@ Keeping all messages is safe for AI context only if every request remains bounde
 
 ### 5.6 Dates, coverage and operational metadata
 
-Use each summary's stored concrete timezone for labels. Calendar-date filters use calendar-day arithmetic rather than `until + 86400` across daylight-saving transitions. Do not interpret earliest/latest dates as continuous coverage or a quiet beginning of a month as proof of deletion. Record known manual-deletion/unreadable/truncation limitations and expose them in lookup results.
+Do not interpret earliest/latest dates as continuous coverage or a quiet beginning of a month as proof of deletion: drop the "messages had already expired" limitation, which no longer applies. Record known manual-deletion/unreadable/truncation limitations and expose them in lookup results.
 
-Keep the conservative export/live boundary for now. Say “excluded by the live-recording boundary,” not “already recorded,” where coverage is unverified. Exports cannot yet fill post-boundary gaps; that is separate work. Show global person-name changes before import Start and retain stable account IDs.
+Keep the conservative export/live boundary for now. Say “excluded by the live-recording boundary,” not “already recorded,” where coverage is unverified. Exports cannot yet fill post-boundary gaps; that is separate work.
 
-Keep queue foreground priority, live capacity controls and race tests. Only prune terminal request metadata. Retry timings must be labelled as latest-attempt timings unless cumulative accounting is actually implemented. The queue controls requests from this bot process, not external clients or model-server capacity.
+Keep queue foreground priority, live capacity controls and race tests. Only prune terminal request metadata.
+
+**Moved out of this pass** (unrelated to memory simplification; track separately): calendar-day arithmetic instead of `until + 86400` across daylight-saving changes, using each summary's stored timezone for labels, showing global person-name changes before import Start, and labelling retry timings as latest-attempt timings.
 
 ## 6. Monthly history without retention coupling
 
@@ -211,16 +220,18 @@ Accept a positive whole number of days. Reject zero, negatives, fractions, malfo
 
 ### 7.2 Preview and execution
 
-1. Preview the selected chat, source scope, N, frozen cutoff, matching count, and any affected unfinished jobs that must stop. Clearly say this removes stored message copies from the bot, not messages from Telegram.
-2. Preserve the exact cutoff and validated scope between preview and confirmation, using server-validated preview state/token. Do not recompute “now minus N days” at confirmation. If matching membership changed materially (for example an import or message edit), refresh the preview rather than silently broadening the confirmed deletion.
-3. On confirmation, coordinate producers, delete the scoped rows and related bookkeeping atomically, and report the actual count. A zero-match operation is valid. Replaying the same confirmed operation is harmless and cannot delete newly imported/restored rows that were not part of that confirmation; an expired preview requests a fresh preview.
-4. Record a concise non-content audit entry: actor, chat, source, cutoff, outcome/count and affected job IDs. Do not copy deleted message bodies into a new deletion log.
+1. Preview the selected chat, source scope, N, the computed cutoff and the matching count. Clearly say this removes stored message copies from the bot, not messages from Telegram.
+2. Carry the computed cutoff timestamp to the confirmation as a hidden form field, exactly like the existing before-date mode carries its date. Do not recompute “now minus N days” at confirmation. No server-side preview token or replay protection: the owner is authenticated, the form is CSRF-protected, and the same owner can already delete everything in the chat, so a tampered cutoff grants nothing new. Validate the hidden cutoff as an integer timestamp in the past.
+3. On confirmation, delete the scoped rows and related bookkeeping in one transaction (section 7.4 covers running work) and report the actual count. A zero-match operation is valid.
+4. Log a concise non-content entry: chat, source, cutoff and count, as the existing deletion already does. Do not copy deleted message bodies into a new deletion log.
 
-Use existing auth and form protections; a browser-supplied chat ID, count, cutoff or hidden field alone is not authorization. Keep preview validation and deletion sufficiently coordinated to close the check/use race. No general-purpose approval framework is needed.
+Use the existing auth and CSRF protections. No general-purpose approval framework is needed.
 
 ### 7.3 What deletion does and does not remove
 
 Delete matching raw rows and their dependent descriptions/media metadata, FTS entries and dangling reply/source references as appropriate. Do not leave original text retrievable through a stale search index or dependent message cache. Preserve newer rows, other chats and unselected sources. Do not require immediate physical file shrinkage or add automatic VACUUM to the request path.
+
+Most of this already holds and needs no new code: the `messages_fts_delete` trigger removes search entries, `media_descriptions` cascades on delete (foreign keys are on), `delete_for_chat()` already clears dangling reply links, and a reply's `reply_to_snippet` copy is only stored when its target was *not* stored, so deleting a stored target leaves no copy behind. Add a test asserting these rather than new deletion code.
 
 By default, **retain historical summaries, rolling digest text, memory notes and their edit history**. The preview must state this explicitly: “Summaries and memory notes may still contain information from these messages. Delete them separately if needed.” Retained diagnostic traces follow their separate cleanup policy. This action is raw-history deletion, not a promise to erase every derived fact or backup.
 
@@ -228,13 +239,15 @@ Preserve existing separate summary/note/digest deletion controls and their prote
 
 ### 7.4 Interaction with running work
 
-Before acknowledging deletion, stop or invalidate affected keeper updates, live-history work and imports that could consume or reinsert the selected source. Include affected jobs in the preview; cancelling an affected import may abandon unfinished work outside the cutoff, and that consequence must be shown. Preserve its committed data outside the selected scope and already published unrelated results.
+Do not coordinate with running producers; avoid them instead:
 
-Use existing job stop controls plus source/operation revision validation to prevent late model responses from saving checkpoints, notes or summaries based on now-deleted rows. Workers must stop before their sources are cleaned. Delete pending affected replacements and clear stale work-item references; mark the affected work cancelled by source deletion, requiring explicit retry/re-upload. Checkpoint text based on deleted rows must not be reused. Keep the rolling cursor's ordering boundary stable even if its anchor row is removed; deletion must not reset it and replay all surviving history.
+- **Imports:** refuse every message deletion (all modes) while an import of that chat is running or paused, using the same `busy_import()` check that already stops a second import from starting: “Import #N of this group is paused. Let it finish, or cancel the rest of it, before deleting messages.” This rules out recovery reinserting deleted rows from a retained upload, and raw replacement racing the deletion.
+- **Monthly live summaries:** hold the chat's history lock (`history_locks[chat_id]`) for the deletion; if it is taken, say a summary is being written and ask the owner to retry shortly. A month whose unfinished partial summary read now-deleted rows fails the source-hash check from section 5.3 on its next run and restarts from the remaining messages.
+- **Rolling digest:** an update already in flight may still save text based on rows deleted meanwhile. That is derived data, which section 7.3 already retains by design. The cursor is stored by value (date, row ID), so deleting its anchor row does not reset it or replay surviving history.
 
-Prevent unfinished import recovery from silently reinserting deleted raw rows from its retained upload. The simplest route is to cancel the affected import and clean its temporary source after its worker stops, as disclosed by the preview. Explicit future re-import is a new owner action, not blocked forever by a global deletion watermark.
+Explicit future re-import is a new owner action, not blocked by a deletion watermark.
 
-**Acceptance:** test N validation, exact cutoff, old messages uploaded today, each source filter, delayed confirmation, stale preview after import, repeated POST, zero matches, foreign-chat attempts, running final inference, raw import during deletion and process restart. Newer/unselected rows and existing summaries/notes remain; deleted rows cannot be searched or resurrected by late work. Concurrent deletion/replacement leaves consistent FTS, reply references and job state.
+**Acceptance:** test N validation, exact cutoff, old messages uploaded today, each source filter, zero matches, a foreign-chat attempt, refusal while an import is running or paused, refusal while the history lock is held, and a partially summarized month whose consumed messages were deleted (it restarts). Newer/unselected rows and existing summaries/notes remain; deleted rows cannot be searched; FTS, media descriptions and reply references stay consistent.
 
 ## 8. Schema strategy for a pre-live application
 
@@ -250,6 +263,15 @@ For a fresh-database path:
 If a small forward migration is straightforward, it is also acceptable. In that case, disable obsolete expiry/extraction before recovery, preserve existing notes/summaries/owner edits, handle duplicates before unique constraints and restart incompatible unfinished periods honestly. Do not silently discard conflicting owner-edited summaries. Conditional migration checks apply only if that path is implemented; legacy compatibility is not a release requirement for the reset path.
 
 **Rationale:** correctness on the new lifecycle is required; compatibility with disposable pre-live jobs is not. Spend the effort on clear invariants and tests, not on preserving complexity the owner explicitly wants removed.
+
+**Chosen path: one small forward migration (V13).** The reset path would still need code to detect an old database and refuse to start with a reset message, which is about as much work as migrating, and it throws away the owner's test history for no gain. Migrations are already sequential (`PRAGMA user_version`), so V13 is a short SQL script:
+
+- De-duplicate history digests per `period_id`: keep the one its period references; delete unreferenced unedited duplicates; detach (set `period_id` to NULL) any unreferenced **edited** duplicate so no owner edit is lost. Then add a unique index on `history_digests (period_id) WHERE period_id IS NOT NULL`.
+- Add `settings_hash` and `source_hash` to `history_periods`. Existing unfinished periods have neither, so they fail the check on resume and restart honestly.
+- Drop the distillation and retention-skip columns from `imports`. An unfinished import whose only remaining stage was distillation then has nothing left to do and completes when resumed or recovered.
+- Leave stored values of removed settings in the `settings` table: `SettingsService.reload()` already ignores keys that are no longer registered, and they remain as history.
+
+Fresh initialization runs every migration, so the fresh path is covered by the same code.
 
 ## 9. Evidence, implementation order and release checks
 
@@ -278,9 +300,9 @@ Additional deletion/replacement/coverage requirements above come from code inspe
 | --- | --- | --- |
 | 1 — Establish the new storage policy | Choose schema/reset path; remove message expiry, import age cutoffs and archive holds/deadlines; decouple operational cleanup. | Fresh database works; maintenance cannot age-delete messages; old selected exports can be stored. |
 | 2 — Remove automatic import memory work | Remove distillation and initialization; make keeper queries/counts live-only; simplify two-stage import UI. | No import-driven keeper/note extraction; live upkeep and explicit remember still work. |
-| 3 — Make writes and controls safe | Atomic raw/completion/publication; preserve staged results; owner revision checks; queue/job stop and restart handling. | Crash, pause, failure, retry and cancellation satisfy the invariants. |
-| 4 — Finish history jobs and context limits | Frozen source/configuration; full-request budgets; bounded monthly failures and Retry; truthful coverage. | Later months proceed after failures; every request fits or fails clearly; no mismatched-source resume. |
-| 5 — Add age-based manual deletion | Extend existing admin flow, preview scope, coordinate producers, atomically delete and verify. | All section 7 cases pass without late resurrection or unrelated data loss. |
+| 3 — Make writes and controls safe | Atomic raw/completion/publication; preserve staged results; edited-target check at publication; pause/cancel by task cancellation; restart handling. | Crash, pause, failure, retry and cancellation satisfy the invariants. |
+| 4 — Finish history jobs and context limits | Settings/source hashes with restart on mismatch; full-request budgets; bounded monthly failures and Retry; truthful coverage. | Later months proceed after failures; every request fits or fails clearly; no mismatched-source resume. |
+| 5 — Add age-based manual deletion | Extend existing admin flow with the age mode; refuse while an import is busy or the history lock is held; verify. | All section 7 cases pass without unrelated data loss. |
 | 6 — Integrate and document | Remove obsolete copy/tests/settings; exercise the complete user flows and full suite. | Documentation and UI describe the actual new behavior. |
 
 Prefer small reviewable commits by behavior. Preserve unrelated staged changes already present in the repository. Do not replace the scheduler or expand into semantic search, fact provenance, recording-interval gap repair, a generic workflow framework or an extra summary hierarchy.
@@ -304,3 +326,22 @@ Manual verification in a temporary database/test chat:
 Run a small real-model quality sample early enough to inform implementation, then repeat after relevant generation changes. Seed early/late topics, dated decisions, cancelled plans and multiple speakers in a dense period. Verify useful attribution and early-fact survival, and that a summary is distinguished from an exact quote. If the quality is inadequate, adjust grouping/prompt/limits within this design; do not silently add another summary pipeline. Fake-model tests establish mechanics, not summary quality. Keep real exports outside the repository.
 
 Release is complete when originals remain until explicit owner action, import extraction and expiry machinery are absent, all model inputs are bounded, history jobs fail/retry honestly and idempotently, manual deletion cannot be undone by background recovery, and the chosen fresh-schema or migration path is documented and tested. No database reset or runtime change is performed merely by editing this plan.
+
+## 10. Revision of 2026-10-02: what was trimmed and why
+
+A code review against the implementation kept the owner decisions in section 1 and the invariants in section 2, and replaced several mechanisms with simpler ones that give the same guarantees for a single-owner, pre-live bot:
+
+| Area | Before | Now | Why |
+| --- | --- | --- | --- |
+| Deletion during running work (7.4) | Coordinate and cancel affected producers, show affected jobs in the preview | Refuse while an import of the chat is running/paused; take the history lock; source hash catches stale partial summaries | Same rule `start()` already uses for a second import; no cross-job cancellation states. |
+| Deletion confirmation (7.2) | Server-side preview token, replay protection, change detection | Hidden cutoff field like the date mode | The authenticated owner can already delete everything; CSRF protects the form. |
+| Generation inputs (5.3) | Persist a versioned settings snapshot and use it across resume | Store a settings hash and a consumed-source hash; restart the period on mismatch | Same "never mix" guarantee; costs a few model calls instead of plumbing a snapshot. |
+| Stop controls (5.2) | Stop event checked at every wait point | Cancel the job's asyncio task; keep the cooperative flag only for the raw worker thread | `ModelQueue.acquire()` already withdraws a cancelled waiter. |
+| Edited target at publication (5.1) | Pause for renewed replacement approval | Leave the edited group alone, as the planner does for edited summaries | No new approval flow. |
+| Context capacity (5.5) | Reserve headroom against "configured context capacity" | `context.input_token_budget` caps every agent request including tool rounds | There is no capacity setting; the owner sizes the server for budget + output. |
+| Recent window (3.3) | Investigate and possibly add cursors | Measured; descending `LIMIT` select, keep the count | 55 ms at 1M messages, half of it removable with a one-line query change. |
+| Export regeneration from stored messages (2.3) | Allowed when coverage can be verified | Out of scope; re-upload | It is a new feature, not a simplification. |
+| Grab-bag items (5.6) | DST arithmetic, stored-timezone labels, name-change preview, retry timing labels | Moved out of this pass | Unrelated to memory simplification. |
+| Schema (8) | Prefer reset | Small forward migration V13 | Reset still needs legacy detection; migrating is about the same work and keeps test history. |
+
+Already in place and needing only tests, not code: FTS cleanup on delete (trigger), media descriptions (cascade), dangling reply links (`delete_for_chat()`), reply snippets (not stored when the target is stored), the digest cursor stored by value, and suppression of deleted live summaries (their period stays `done`).

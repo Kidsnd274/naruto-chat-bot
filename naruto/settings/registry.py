@@ -405,11 +405,11 @@ SETTINGS: tuple[Setting, ...] = (
             "in. Changing it means re-uploading an export makes new summaries instead of "
             "reusing the old ones.",
             "text", load_prompt("history"), max=20000),
-    Setting("history.chunk_tokens", "history", "Messages per request (tokens)",
-            "One request reads at most this many tokens of messages; a busy month takes several "
-            "requests, each carrying the summary so far. Keep it plus about 3,000 tokens within "
-            "the context of one server slot.",
-            "int", 6000, min=1000, max=100_000),
+    Setting("history.chunk_tokens", "history", "Tokens per request",
+            "Estimated input of one summary request: the instructions, the summary so far and "
+            "as many messages as fit. A busy month takes several requests. Keep it plus Max "
+            "output tokens within the context of one server slot.",
+            "int", 8000, min=2000, max=100_000),
     Setting("history.digest_max_chars", "history", "Summary size (characters)",
             "Each period's summary is kept under about this length.",
             "int", 2500, min=300, max=10000),

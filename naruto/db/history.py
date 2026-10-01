@@ -4,8 +4,11 @@
 A digest is ``active`` (used by the bot and shown in the web admin),
 ``staged`` (built to replace older digests, published once every summary of
 that overlap is done) or ``replaced``. Digests keep their own provenance
-(dates, message count, import), because the raw messages and the upload
-they came from are deleted later.
+(dates, message count, import), because the upload they came from is
+deleted, and the owner may delete the messages.
+
+A period (work item) has at most one digest: complete_period() saves it and
+finishes the period in one step, so a retry after a crash can't add another.
 """
 
 from dataclasses import dataclass
@@ -33,6 +36,16 @@ REUSED = "reused"  # an identical digest already existed
 FAILED = "failed"
 CANCELLED = "cancelled"
 FINISHED_PERIODS = (DONE, REUSED)
+
+# What publish_group() did.
+PUBLISHED = "published"
+ALREADY_PUBLISHED = "already published"
+NOT_READY = "not ready"  # members still being summarized
+INCOMPLETE = "incomplete"  # a finished member's summary is gone: make it again
+KEPT_EDITED = "kept edited"  # an old summary was edited meanwhile: left alone
+
+KEPT_EDITED_REASON = ("An existing summary covers this period and replacing it wasn't chosen "
+                      "(it was edited while this import ran).")
 
 
 @dataclass
@@ -100,6 +113,8 @@ class HistoryPeriod:
     error: str | None
     created_at: int
     updated_at: int
+    settings_hash: str | None = None  # what the partial summary was made with
+    source_hash: str | None = None  # the messages read so far, in order
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "HistoryPeriod":
@@ -268,18 +283,43 @@ class HistoryRepository:
             "DELETE FROM history_digests WHERE import_id = ? AND status = 'staged'",
             (import_id,)).rowcount
 
-    def publish(self, staged_ids: list[int], replaced_ids: list[int], *, actor: str) -> None:
-        """Swap staged digests in for the ones they replace, in one step."""
+    def publish_group(self, period_ids: list[int], replaced_ids: list[int], *,
+                      replace_edited: bool, actor: str) -> tuple[str, list[int]]:
+        """Swap a group's staged digests in for the old ones they replace, in
+        one step, once every member's own summary is there. Returns (what
+        happened, the members to summarize again)."""
         ts = self.db.now()
         with self.db.transaction():
-            for digest_id in replaced_ids:
+            members = [self.get_period(period_id) for period_id in period_ids]
+            if any(p is None or p.status != DONE for p in members):
+                return NOT_READY, []
+            digests = {p.id: self.get(p.digest_id) if p.digest_id else None for p in members}
+            if all(d is not None and d.status == ACTIVE and d.period_id == p.id
+                   for p in members for d in [digests[p.id]]):
+                return ALREADY_PUBLISHED, []
+            missing = [p.id for p in members
+                       if (d := digests[p.id]) is None or d.period_id != p.id
+                       or d.status != STAGED]
+            if missing:
+                return INCOMPLETE, missing
+            olds = [d for d in (self.get(digest_id) for digest_id in replaced_ids)
+                    if d is not None and d.status == ACTIVE]
+            if not replace_edited and any(d.edited for d in olds):
+                for period in members:
+                    self.db.execute("DELETE FROM history_digests WHERE id = ? AND status = ?",
+                                    (period.digest_id, STAGED))
+                    self.update_period(period.id, status=CANCELLED, digest_id=None,
+                                       error=KEPT_EDITED_REASON)
+                return KEPT_EDITED, []
+            for digest in olds:
                 self.db.execute(
                     "UPDATE history_digests SET status = 'replaced', updated_at = ?, "
-                    "updated_by = ? WHERE id = ? AND status = 'active'", (ts, actor, digest_id))
-            for digest_id in staged_ids:
+                    "updated_by = ? WHERE id = ?", (ts, actor, digest.id))
+            for period in members:
                 self.db.execute(
                     "UPDATE history_digests SET status = 'active', updated_at = ? "
-                    "WHERE id = ? AND status = 'staged'", (ts, digest_id))
+                    "WHERE id = ?", (ts, period.digest_id))
+        return PUBLISHED, []
 
     # -------------------------------------------------------------- periods
 
@@ -321,11 +361,41 @@ class HistoryRepository:
         self.db.execute(f"UPDATE history_periods SET {assignments} WHERE id = ?",
                         (*fields.values(), period_id))
 
-    def checkpoint(self, period_id: int, *, partial: str, consumed: int,
-                   chunks_done: int) -> None:
-        """One more part of the period was read: keep the summary so far."""
+    def checkpoint(self, period_id: int, *, partial: str, consumed: int, chunks_done: int,
+                   settings_hash: str, source_hash: str) -> None:
+        """One more part of the period was read: keep the summary so far, and
+        what it was made from."""
         self.update_period(period_id, partial=partial, consumed=consumed,
-                           chunks_done=chunks_done, attempts=0, error=None)
+                           chunks_done=chunks_done, attempts=0, error=None,
+                           settings_hash=settings_hash, source_hash=source_hash)
+
+    def restart_period(self, period_id: int, reason: str) -> None:
+        """Throw away a partial summary (its settings or messages changed)."""
+        self.update_period(period_id, partial=None, consumed=0, chunks_done=0, attempts=0,
+                           settings_hash=None, source_hash=None, error=reason)
+
+    def complete_period(self, period: HistoryPeriod, *, status: str,
+                        first_message_at: int | None, last_message_at: int | None,
+                        message_count: int, text: str, limitations: list[str],
+                        actor: str) -> HistoryDigest:
+        """Save the period's summary and finish the period, in one step. A
+        period has one summary: if it was saved before (a retry after a
+        crash), that one is kept and returned."""
+        with self.db.transaction():
+            existing = self.db.scalar("SELECT id FROM history_digests WHERE period_id = ?",
+                                      (period.id,))
+            if existing is None:
+                existing = self.add(
+                    chat_id=period.chat_id, status=status, source=period.source,
+                    grouping=period.grouping, timezone=period.timezone,
+                    period_start=period.period_start, period_end=period.period_end,
+                    first_message_at=first_message_at, last_message_at=last_message_at,
+                    message_count=message_count, import_id=period.import_id,
+                    period_id=period.id, fingerprint=period.fingerprint or "", text=text,
+                    limitations=limitations, actor=actor).id
+            self.update_period(period.id, status=DONE, digest_id=existing, partial=None,
+                               error=None)
+        return self.get(existing)
 
     def cancel_unfinished(self, import_id: int, reason: str) -> int:
         return self.db.execute(

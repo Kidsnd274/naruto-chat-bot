@@ -19,7 +19,7 @@ import math
 
 from naruto.db.chats import Chat
 from naruto.db.history import GROUPINGS, MONTH, RANGE, HistoryDigest
-from naruto.memory.history import fingerprint, settings_hash
+from naruto.memory.history import fingerprint, request_overhead, settings_hash
 from naruto.periods import (
     calendar_period,
     day_start,
@@ -288,7 +288,7 @@ def _plan_periods(plan: ImportPlan, counts: Dates, days: list, preview: dict,
     options = plan.options
     settings = services.settings
     key = settings_hash(settings)
-    chunk_tokens = settings["history.chunk_tokens"]
+    chunk_tokens = max(settings["history.chunk_tokens"] - request_overhead(settings), 500)
     export_first, export_last = preview.get("first_date"), preview.get("last_date")
     for start, end in plan_periods(plan.archive_start, plan.archive_end, options.grouping, tz):
         count = counts.count(start, end)

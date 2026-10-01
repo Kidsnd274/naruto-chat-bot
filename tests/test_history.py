@@ -75,7 +75,11 @@ class SummaryLLM:
 @pytest.fixture
 def importer(services, tmp_path, monkeypatch):
     monkeypatch.setattr(history_module, "RETRY_DELAYS_SECONDS", (0, 0))
-    services.settings.set("history.chunk_tokens", 1000, actor="t")
+    services.settings.set("history.chunk_tokens", 2000, actor="t")
+    # 1,000 tokens of messages per request, whatever the prompt around them
+    # takes (test_a_request_fits_its_tokens checks that part).
+    monkeypatch.setattr(history_module.HistoryWriter, "message_budget",
+                        lambda self, chat, period, opts: 1000)
     return ImportService(services, tmp_path / "imports")
 
 
@@ -349,6 +353,156 @@ async def test_cancelling_keeps_finished_summaries_and_drops_staged_ones(service
     assert services.history.for_chat(GROUP_ID, status="staged")[1] == 0
 
 
+async def replace_weekly(services, importer, llm, **changes):
+    """Summarize monthly, then start replacing it weekly with ``llm``."""
+    services.llm = SummaryLLM()
+    first = await upload(importer)
+    await run(importer, first, summaries_only(importer, first))
+    old = {d.id for d in active(services)}
+    services.settings.set("history.digest_max_chars", 2000, actor="t")  # new summaries
+    record = await upload(importer)
+    services.llm = llm
+    options = summaries_only(importer, record, replace=True, grouping=WEEK, **changes)
+    return old, await run(importer, record, options)
+
+
+async def test_pausing_a_replacement_keeps_its_finished_parts(services, importer):
+    holder = {}
+
+    class PauseAfterTwoWeeks(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            result = await super().chat(messages, **kwargs)
+            if len(self.calls) == 2:
+                importer.pause(holder["id"])
+            return result
+
+    real_start = importer.start
+
+    async def start(import_id, *args, **kwargs):
+        holder["id"] = import_id
+        return await real_start(import_id, *args, **kwargs)
+
+    importer.start = start
+    old, record = await replace_weekly(services, importer, PauseAfterTwoWeeks())
+    assert record.status == "paused" and record.archive_status == "paused"
+    first, second = services.history.periods_for_import(record.id)[:2]
+    # The first week is kept as a staged summary; the second, paused during
+    # its last request, keeps that request's result as its checkpoint.
+    assert first.status == "done" and services.history.get(first.digest_id).status == "staged"
+    assert second.status == "waiting" and second.partial and second.chunks_done == 1
+    assert {d.id for d in active(services)} == old  # the old summaries stay in use
+
+    calls = len(services.llm.calls)
+    importer.resume(record.id)
+    await asyncio.gather(*importer._tasks.values())
+    record = importer.repo.get(record.id)
+    assert record.status == "done" and {d.grouping for d in active(services)} == {"week"}
+    redone = [c for c in services.llm.calls[calls:]
+              if any(c["user"] == done["user"] for done in services.llm.calls[:2])]
+    assert redone == []
+    assert services.history.for_chat(GROUP_ID, status="staged")[1] == 0
+
+
+async def test_a_summary_deleted_before_publishing_is_made_again(services, importer):
+    class DeleteTheFirstWeek(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            if len(self.calls) == 3:
+                first_week = services.history.for_chat(GROUP_ID, status="staged")[0][0]
+                services.history.delete(first_week.id)
+            return await super().chat(messages, **kwargs)
+
+    old, record = await replace_weekly(services, importer, DeleteTheFirstWeek())
+    assert record.status == "paused" and "went missing" in record.archive_error
+    # January and February are replaced together (a week spans both), so
+    # neither is replaced in part; April to June were replaced meanwhile.
+    january, february = sorted(old)[:2]
+    assert services.history.get(january).status == "active"
+    assert services.history.get(february).status == "active"
+    early = [d for d in active(services) if d.period_start < ts(2024, 3, 1)]
+    assert {d.id for d in early} == {january, february}
+
+    importer.resume(record.id)
+    await asyncio.gather(*importer._tasks.values())
+    record = importer.repo.get(record.id)
+    assert record.status == "done" and {d.grouping for d in active(services)} == {"week"}
+    periods = services.history.periods_for_import(record.id)
+    assert all(p.status == "done" and p.digest_id for p in periods)
+    digest_ids = [p.digest_id for p in periods]
+    assert len(digest_ids) == len(set(digest_ids))
+
+
+async def test_an_owner_edit_during_a_replacement_wins(services, importer):
+    class OwnerEditsJanuary(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            if len(self.calls) == 1:
+                january = active(services)[0]
+                services.history.edit(january.id, "- January, as the owner remembers it",
+                                      actor="owner")
+            return await super().chat(messages, **kwargs)
+
+    old, record = await replace_weekly(services, importer, OwnerEditsJanuary())
+    assert record.status == "done"
+    assert any("edited while this ran" in note for note in record.limitations)
+    january = services.history.get(min(old))
+    assert january.status == "active" and january.text.startswith("- January, as the owner")
+    assert services.history.for_chat(GROUP_ID, status="staged")[1] == 0
+    assert all(d.grouping == "month" for d in active(services)
+               if d.overlaps(january.period_start, january.period_end))
+
+
+async def test_pause_stops_a_job_waiting_for_the_model(services, importer):
+    waiting = asyncio.Event()
+    stopped = []
+
+    class Waits(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            self.calls.append(messages)
+            waiting.set()
+            try:
+                await asyncio.Event().wait()  # no slot: background work is paused
+            except asyncio.CancelledError:
+                stopped.append(True)
+                raise
+
+    services.llm = Waits()
+    record = await upload(importer)
+    await importer.start(record.id, GROUP_ID, options=summaries_only(importer, record))
+    await asyncio.wait_for(waiting.wait(), 5)
+    importer.pause(record.id)
+    await asyncio.wait_for(asyncio.gather(*importer._tasks.values()), 5)
+    record = importer.repo.get(record.id)
+    assert record.status == "paused" and record.archive_error == "Paused by you."
+    assert stopped == [True]
+    assert [p.status for p in services.history.periods_for_import(record.id)][0] == "waiting"
+    assert not services.history_locks[GROUP_ID].locked()
+
+    waiting.clear()
+    importer.resume(record.id)
+    await asyncio.wait_for(waiting.wait(), 5)
+    assert importer.cancel_unfinished(record.id) == "Stopping."
+    await asyncio.wait_for(asyncio.gather(*importer._tasks.values()), 5)
+    record = importer.repo.get(record.id)
+    assert record.archive_status == "cancelled" and record.file_path is None
+
+
+async def test_cancel_while_waiting_for_the_chat(services, importer):
+    services.llm = SummaryLLM()
+    record = await upload(importer)
+    lock = services.history_locks[GROUP_ID]
+    await lock.acquire()  # the live archiver is busy with this chat
+    try:
+        await importer.start(record.id, GROUP_ID, options=summaries_only(importer, record))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        importer.cancel_unfinished(record.id)
+        await asyncio.wait_for(asyncio.gather(*importer._tasks.values()), 5)
+    finally:
+        lock.release()
+    record = importer.repo.get(record.id)
+    assert record.archive_status == "cancelled" and record.file_path is None
+    assert services.llm.calls == []
+
+
 def test_history_moves_with_a_group_upgrade(services):
     services.chats.upsert_seen(GROUP_ID)
     digest = services.history.add(
@@ -508,17 +662,178 @@ async def test_live_messages_are_kept_whether_summarized_or_not(services, record
     assert services.messages.count(GROUP_ID) == 6  # summarized messages stay too
 
 
-async def test_a_failing_live_summary_backs_off_and_retries(services, recorded):
-    now = recorded
-    services.llm = SummaryLLM(fail=lambda call: True)
+async def test_a_failing_month_is_marked_failed_and_later_months_go_ahead(services, recorded):
+    now = ts(2026, 10, 3)  # August and September are both over
+    services.llm = SummaryLLM(fail=lambda call: "Aug" in call["user"])
     archiver = history_module.LiveArchiver(services)
     assert await archiver.run_due(now=now) == 0
-    (period,) = services.history.live_periods(GROUP_ID)
-    assert period.status == "waiting" and "kept failing" in period.error
+    (august,) = services.history.live_periods(GROUP_ID)
+    assert august.status == "failed" and "kept failing" in august.error
+    assert august.attempts == 3 and len(services.llm.calls) == 3
+    assert await archiver.run_due(now=now + 60) == 0  # backing off between failures
+    assert await archiver.run_due(now=now + 16 * 60) == 1  # September, not August again
+    assert [d.period_start for d in active(services)] == [ts(2026, 9, 1)]
+    assert len([c for c in services.llm.calls if "Aug" in c["user"]]) == 3
+
+    # Only the owner's Retry tries August again, with three new attempts.
+    restarted = history_module.LiveArchiver(services)
+    assert await restarted.run_due(now=now + 60 * 60) == 0
+    assert restarted.retry(august.id) and not restarted.retry(august.id)
     services.llm = SummaryLLM()
-    assert await archiver.run_due(now=now + 60) == 0  # backing off
-    assert await archiver.run_due(now=now + 16 * 60) == 1
-    assert len(active(services)) == 1
+    assert await restarted.run_due(now=now + 61 * 60) == 1
+    assert len(active(services)) == 2
+
+
+async def test_failed_attempts_count_across_a_restart(services, recorded):
+    services.llm = SummaryLLM(fail=lambda call: True)
+    archiver = history_module.LiveArchiver(services)
+    (start, end) = archiver.due_month(services.chats.get(GROUP_ID), recorded)
+    period = services.history.add_period(
+        chat_id=GROUP_ID, source="live", import_id=None, grouping=MONTH, timezone="UTC",
+        period_start=start, period_end=end, message_count=5, fingerprint=None)
+    services.history.update_period(period.id, attempts=2, error="server down")  # then a restart
+    assert await history_module.LiveArchiver(services).run_due(now=recorded) == 0
+    assert len(services.llm.calls) == 1  # one attempt was left
+    assert services.history.get_period(period.id).status == "failed"
+
+
+async def test_a_cut_short_or_empty_answer_is_not_a_summary(services, recorded):
+    answers = iter([ChatResult(text="- August: the BBQ was", reasoning=None, model="m",
+                               latency_ms=1, usage=None, finish_reason="length"),
+                    ChatResult(text="   ", reasoning=None, model="m", latency_ms=1,
+                               usage=None, finish_reason="stop"),
+                    ChatResult(text="- August: BBQ at Alice's", reasoning=None, model="m",
+                               latency_ms=1, usage=None, finish_reason="stop")])
+
+    class Answers(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            self.calls.append({"user": messages[1]["content"]})
+            return next(answers)
+
+    services.llm = Answers()
+    assert await history_module.LiveArchiver(services).run_due(now=recorded) == 1
+    (digest,) = active(services)
+    assert digest.text == "- August: BBQ at Alice's" and len(services.llm.calls) == 3
+
+
+async def test_a_month_starts_over_when_read_messages_change(services, recorded):
+    stop = {"after": 1}
+    archiver = history_module.LiveArchiver(services)
+    services.settings.set("history.chunk_tokens", 2000, actor="t")
+
+    class StopAfterOnePart(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            result = await super().chat(messages, **kwargs)
+            stop["after"] -= 1
+            if stop["after"] == 0:
+                archiver.stop()  # shutting down after this part
+            return result
+
+    services.llm = StopAfterOnePart()
+    monkey_budget = history_module.HistoryWriter.message_budget
+    history_module.HistoryWriter.message_budget = lambda self, chat, period, opts: 30
+    try:
+        assert await archiver.run_due(now=recorded) == 0
+        (period,) = services.history.live_periods(GROUP_ID)
+        assert period.status == "waiting" and period.consumed == 1 and period.partial
+        # The message already read is edited (same number of messages).
+        services.messages.apply_edit(GROUP_ID, 10, text="August 10: no BBQ after all",
+                                     edit_date=ts(2026, 9, 2))
+        services.llm = SummaryLLM()
+        assert await history_module.LiveArchiver(services).run_due(now=recorded) == 1
+    finally:
+        history_module.HistoryWriter.message_budget = monkey_budget
+    first = services.llm.calls[0]["user"]
+    assert "## Summary so far" not in first and "no BBQ after all" in first
+    assert "part 1 of" in first
+
+
+async def test_turning_monthly_summaries_off_stops_before_publishing(services, recorded):
+    class TurnedOffMeanwhile(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            result = await super().chat(messages, **kwargs)
+            services.settings.set_for_chat(GROUP_ID, "history.live_archive", False, actor="o")
+            return result
+
+    services.llm = TurnedOffMeanwhile()
+    assert await history_module.LiveArchiver(services).run_due(now=recorded) == 0
+    assert active(services) == []
+    (period,) = services.history.live_periods(GROUP_ID)
+    assert period.status == "waiting"  # its work is kept for when it's turned on again
+
+
+async def test_a_month_keeps_its_dates_when_the_time_zone_changes(services, recorded):
+    archiver = history_module.LiveArchiver(services)
+    services.llm = SummaryLLM(fail=lambda call: True)
+    services.history.add_period(
+        chat_id=GROUP_ID, source="live", import_id=None, grouping=MONTH, timezone="UTC",
+        period_start=ts(2026, 8, 10), period_end=ts(2026, 9, 1), message_count=5,
+        fingerprint=None)
+    services.settings.set("general.timezone", "Asia/Singapore", actor="t")
+    assert archiver.due_month(services.chats.get(GROUP_ID), recorded) == \
+        (ts(2026, 8, 10), ts(2026, 9, 1))
+
+
+def test_completing_a_period_twice_keeps_one_summary(services):
+    period = services.history.add_period(
+        chat_id=GROUP_ID, source="export", import_id=None, grouping=MONTH, timezone="UTC",
+        period_start=ts(2024, 1, 1), period_end=ts(2024, 2, 1), message_count=3,
+        fingerprint="f")
+    common = dict(status="active", first_message_at=None, last_message_at=None,
+                  message_count=3, limitations=[], actor="t")
+    first = services.history.complete_period(period, text="- January", **common)
+    again = services.history.complete_period(period, text="- January, retried", **common)
+    assert again.id == first.id and again.text == "- January"
+    assert services.history.get_period(period.id).digest_id == first.id
+    with pytest.raises(Exception, match="UNIQUE"):
+        services.history.add(chat_id=GROUP_ID, status="staged", source="export",
+                             grouping=MONTH, timezone="UTC", period_start=0, period_end=1,
+                             first_message_at=None, last_message_at=None, message_count=0,
+                             import_id=None, period_id=period.id, fingerprint="", text="x",
+                             limitations=[], actor="t")
+
+
+def test_a_crash_while_completing_leaves_no_summary_behind(services, monkeypatch):
+    period = services.history.add_period(
+        chat_id=GROUP_ID, source="export", import_id=None, grouping=MONTH, timezone="UTC",
+        period_start=ts(2024, 1, 1), period_end=ts(2024, 2, 1), message_count=3,
+        fingerprint="f")
+    real = services.history.update_period
+
+    def crash(period_id, **fields):
+        if fields.get("status") == "done":
+            raise RuntimeError("power cut")
+        return real(period_id, **fields)
+
+    monkeypatch.setattr(services.history, "update_period", crash)
+    with pytest.raises(RuntimeError):
+        services.history.complete_period(period, status="active", first_message_at=None,
+                                         last_message_at=None, message_count=3, text="- Jan",
+                                         limitations=[], actor="t")
+    assert services.history.for_chat(GROUP_ID, status=None)[1] == 0
+    assert services.history.get_period(period.id).status == "waiting"
+
+
+async def test_a_request_fits_its_tokens(services, recorded):
+    from naruto.agent.text import estimate_text_tokens
+
+    services.settings.set("history.chunk_tokens", 2500, actor="t")
+    for i in range(60):
+        live(services, 200 + i, ts(2026, 8, 12, 10, i), f"message {i} " + "plans " * 40)
+    services.llm = SummaryLLM()
+    assert await history_module.LiveArchiver(services).run_due(now=recorded) == 1
+    sizes = [sum(estimate_text_tokens(m["content"]) for m in c["messages"])
+             for c in services.llm.calls]
+    assert len(sizes) > 1 and max(sizes) <= 2500
+
+    services.settings.set("history.chunk_tokens", 2000, actor="t")
+    services.settings.set("history.digest_max_chars", 6000, actor="t")
+    writer = history_module.HistoryWriter(services)
+    period = services.history.live_periods(GROUP_ID)[0]
+    opts = history_module.WriteOptions(chunk_tokens=2000, max_chars=1500, timezone=UTC,
+                                       tz_name="UTC", actor="t")
+    with pytest.raises(history_module.HistoryFailed, match="no room for messages"):
+        writer.message_budget(services.chats.get(GROUP_ID), period, opts)
 
 
 async def test_live_summaries_can_be_turned_off_per_chat(services, recorded):

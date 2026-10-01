@@ -14,9 +14,16 @@ An import never adds memory notes or touches the rolling digest: those come
 from live chat only (plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md).
 
 A stage that keeps failing, or that the owner pauses, pauses the import: its
-uploaded file is kept for history.source_keep_days so it can resume. A
-restart resumes running imports from their checkpoints. The file is deleted
-once every stage has finished, or when the owner cancels the rest.
+uploaded file is kept for history.source_keep_days from the first pause, so
+it can resume. A restart resumes running imports from their checkpoints. The
+file is deleted once every stage has finished, or when the owner cancels the
+rest.
+
+Pausing or cancelling stops the job at once, wherever it waits (the chat's
+history lock, a queue slot, a retry delay, a model request), by cancelling
+its task; the request in progress is redone on resume. A worker thread (the
+raw stage, reading the export) can't be interrupted: it checks the flag
+between messages, and the job records the outcome once it has stopped.
 
 The heavy reading runs in worker threads so the bot keeps answering; model
 requests run at background priority.
@@ -38,9 +45,13 @@ from naruto.agent.text import estimate_text_tokens
 from naruto.db.chats import Chat
 from naruto.db.database import now_ts
 from naruto.db.history import (
+    ALREADY_PUBLISHED,
     CANCELLED as PERIOD_CANCELLED,
     DONE as PERIOD_DONE,
     FAILED as PERIOD_FAILED,
+    INCOMPLETE,
+    KEPT_EDITED,
+    PUBLISHED,
     REUSED,
     RUNNING as PERIOD_RUNNING,
     STAGED,
@@ -144,6 +155,8 @@ class ImportService:
         self._stopping = threading.Event()
         self._pause: set[int] = set()
         self._cancel: set[int] = set()
+        self._in_thread: set[int] = set()  # jobs waiting for a worker thread
+        self._started: set[int] = set()  # jobs past their first step
         self._dates: dict[str, list[int]] = {}
 
     # --------------------------------------------------------------- upload
@@ -424,17 +437,46 @@ class ImportService:
         return self.services.timezone() if name == "server" else ZoneInfo(name)
 
     async def _job(self, import_id: int) -> None:
+        self._started.add(import_id)
         record = self.repo.get(import_id)
-        async with self.services.history_locks[record.chat_id]:
-            try:
+        try:
+            async with self.services.history_locks[record.chat_id]:
                 await self._run_stages(import_id)
-            except asyncio.CancelledError:
+        except asyncio.CancelledError:
+            if import_id not in self._pause and import_id not in self._cancel:
                 raise  # shutting down: resumed at the next start
-            except Exception as exc:
-                logger.exception("Import %s failed", import_id,
-                                 extra={"chat_id": record.chat_id})
-                stage = self._current_stage(self.repo.get(import_id))
-                self._pause_stage(import_id, stage or "raw", f"{type(exc).__name__}: {exc}")
+            # The owner paused or cancelled it while it waited.
+            self._after_stop(import_id, self._current_stage(self.repo.get(import_id)) or "raw")
+        except Exception as exc:
+            logger.exception("Import %s failed", import_id, extra={"chat_id": record.chat_id})
+            stage = self._current_stage(self.repo.get(import_id))
+            self._pause_stage(import_id, stage or "raw", f"{type(exc).__name__}: {exc}")
+        finally:
+            self._started.discard(import_id)
+            if not self._stopping.is_set():
+                # The owner's pause or cancel was handled (here, or by the
+                # job noticing the flag first): the task doesn't end cancelled.
+                task = asyncio.current_task()
+                while task.cancelling():
+                    task.uncancel()
+
+    async def _in_worker(self, import_id: int, function, *args):
+        """Run ``function`` in a worker thread; the job isn't cancelled
+        meanwhile (the thread checks the stop flag itself)."""
+        self._in_thread.add(import_id)
+        try:
+            return await asyncio.to_thread(function, *args)
+        finally:
+            self._in_thread.discard(import_id)
+
+    def _interrupt(self, import_id: int) -> None:
+        """Cancel the job where it waits. Not before its first step (it
+        couldn't catch it; it checks the flag soon enough) and not while a
+        worker thread runs (which checks the flag itself)."""
+        task = self._tasks.get(import_id)
+        if task is not None and import_id in self._started \
+                and import_id not in self._in_thread:
+            task.cancel()
 
     @staticmethod
     def _current_stage(record: ImportRecord) -> str | None:
@@ -464,11 +506,17 @@ class ImportService:
         # Otherwise the bot is shutting down: the import resumes at the next start.
 
     def _pause_stage(self, import_id: int, stage: str, error: str) -> None:
+        """Pause the import. Its file is kept until source_expires_at, set at
+        the first pause: pausing again doesn't extend it."""
         ts = now_ts()
         keep_days = self.services.settings["history.source_keep_days"]
         error_field = {"raw": "error", "archive": "archive_error"}[stage]
+        expires = self.repo.get(import_id).source_expires_at or ts + keep_days * 86400
         self.repo.update(import_id, **{f"{stage}_status": STAGE_PAUSED, error_field: error[:500]},
-                         status=PAUSED, paused_at=ts, source_expires_at=ts + keep_days * 86400)
+                         status=PAUSED, paused_at=ts, source_expires_at=expires)
+        for period in self.services.history.periods_for_import(import_id):
+            if period.status == PERIOD_RUNNING:
+                self.services.history.update_period(period.id, status=PERIOD_WAITING)
         self._pause.discard(import_id)
         logger.warning("Import %s paused (%s): %s", import_id, stage, error)
 
@@ -492,7 +540,7 @@ class ImportService:
 
     async def _raw_stage(self, import_id: int) -> str:
         self.repo.update(import_id, raw_status=STAGE_RUNNING)
-        return await asyncio.to_thread(self.run, import_id)
+        return await self._in_worker(import_id, self.run, import_id)
 
     def run(self, import_id: int) -> str:
         """Store the chosen messages (runs in a worker thread)."""
@@ -564,18 +612,24 @@ class ImportService:
             messages.resolve_import_replies(import_id)
             for user_id, (name, first_seen) in roster.items():
                 self.services.members.upsert_imported(chat_id, user_id, name, first_seen)
-            if raw["start"] is not None and counts["imported"]:
-                removed = messages.delete_imported_range(chat_id, raw["start"], raw["end"],
-                                                         keep_import_id=import_id)
-                if removed:
-                    logger.info("Import %s replaced %s earlier imported messages", import_id,
-                                removed, extra={"chat_id": chat_id})
-                for old in self.repo.for_chat(chat_id):
-                    if old.id != import_id and old.status in (DONE, PARTIAL) \
-                            and old.raw_status == STAGE_DONE and not messages.count_import(old.id):
-                        self.repo.update(old.id, status=REPLACED)
-            self.repo.update(import_id, raw_status=STAGE_DONE, error=None,
-                             first_date=first_kept, last_date=last_kept)
+            # One step: the new messages become visible as the earlier
+            # imports' messages of those dates go, and the stage is done. A
+            # crash before it leaves the old ones (recover() drops the new).
+            removed = 0
+            with self.services.db.transaction():
+                if raw["start"] is not None and counts["imported"]:
+                    removed = messages.delete_imported_range(chat_id, raw["start"], raw["end"],
+                                                             keep_import_id=import_id)
+                    for old in self.repo.for_chat(chat_id):
+                        if old.id != import_id and old.status in (DONE, PARTIAL) \
+                                and old.raw_status == STAGE_DONE \
+                                and not messages.count_import(old.id):
+                            self.repo.update(old.id, status=REPLACED)
+                self.repo.update(import_id, raw_status=STAGE_DONE, error=None,
+                                 first_date=first_kept, last_date=last_kept)
+            if removed:
+                logger.info("Import %s replaced %s earlier imported messages", import_id,
+                            removed, extra={"chat_id": chat_id})
             logger.info("Import %s stored %s messages (%s outside the chosen dates, %s excluded "
                         "by the live-recording boundary)", import_id, counts["imported"],
                         counts["range"], counts["overlap"], extra={"chat_id": chat_id})
@@ -605,7 +659,7 @@ class ImportService:
         source = ExportSource(record.file_path, start=archive["start"], end=archive["end"],
                               stopping=lambda: self._should_stop(import_id))
         try:
-            await asyncio.to_thread(source.load)
+            await self._in_worker(import_id, source.load)
         except SourceStopped:
             return STAGE_STOP
         if source.unreadable:
@@ -617,7 +671,7 @@ class ImportService:
         self._count_periods(import_id)
         writer = HistoryWriter(self.services)
         opts = WriteOptions(chunk_tokens=options["chunk_tokens"], max_chars=options["max_chars"],
-                            timezone=tz, actor=f"import {import_id}")
+                            timezone=tz, tz_name=options["tz"], actor=f"import {import_id}")
         for period in periods:
             period = history.get_period(period.id)
             if period.status not in (PERIOD_WAITING, PERIOD_RUNNING):
@@ -643,7 +697,14 @@ class ImportService:
                 return STAGE_STOP
             self._count_periods(import_id)
             self._publish_ready(import_id)
-        self._publish_ready(import_id)
+        waiting = self._publish_ready(import_id)
+        if waiting:
+            self._count_periods(import_id)
+            self._pause_stage(import_id, "archive",
+                              f"{waiting} summar{'ies' if waiting != 1 else 'y'} waiting to "
+                              "replace older ones went missing before they could. Resume to "
+                              "make them again; the older ones stay in use until then.")
+            return STAGE_PAUSE
         conflicts = [p for p in history.periods_for_import(import_id)
                      if p.status == PERIOD_CANCELLED and p.error]
         if conflicts:
@@ -695,11 +756,17 @@ class ImportService:
         self.repo.update(import_id, archive_total=len(counted),
                          archive_done=sum(1 for p in counted if p.status in (PERIOD_DONE, REUSED)))
 
-    def _publish_ready(self, import_id: int) -> None:
+    def _publish_ready(self, import_id: int) -> int:
         """Publish staged digests whose whole overlap is done: every new
-        period replacing any of the same old digests has finished."""
+        period replacing any of the same old digests has its summary. A
+        group with a summary gone missing (deleted before it was published)
+        is never published in part: its periods are made again. Returns how
+        many groups are still waiting."""
         history = self.services.history
-        periods = [p for p in history.periods_for_import(import_id) if p.replaces]
+        record = self.repo.get(import_id)
+        replace_edited = bool(record.options["archive"].get("replace_edited"))
+        periods = [p for p in history.periods_for_import(import_id)
+                   if p.replaces and p.status != PERIOD_CANCELLED]
         groups: list[tuple[set[int], list[HistoryPeriod]]] = []
         for period in periods:
             olds = set(period.replaces)
@@ -709,15 +776,28 @@ class ImportService:
                 olds |= group[0]
             members = [period] + [p for g in merged for p in g[1]]
             groups.append((olds, members))
+        waiting = 0
         for olds, members in groups:
-            if not all(p.status == PERIOD_DONE and p.digest_id for p in members):
-                continue
-            staged = [p.digest_id for p in members
-                      if (d := history.get(p.digest_id)) is not None and d.status == STAGED]
-            if staged:
-                history.publish(staged, sorted(olds), actor=f"import {import_id}")
+            outcome, missing = history.publish_group(
+                [p.id for p in members], sorted(olds), replace_edited=replace_edited,
+                actor=f"import {import_id}")
+            if outcome == PUBLISHED:
                 logger.info("Import %s replaced %s history digests with %s", import_id,
-                            len(olds), len(staged))
+                            len(olds), len(members))
+                continue
+            if outcome == ALREADY_PUBLISHED:
+                continue
+            if outcome == KEPT_EDITED:
+                self._add_limitation(import_id, "Some periods were left out: an existing "
+                                                "summary of them was edited while this ran.")
+                continue
+            if outcome == INCOMPLETE:
+                for period_id in missing:
+                    history.restart_period(period_id, "Its summary was deleted before it "
+                                                      "replaced the older ones: made again.")
+                    history.update_period(period_id, status=PERIOD_WAITING, digest_id=None)
+            waiting += 1
+        return waiting
 
     def _period_limitations(self, record: ImportRecord, source: ExportSource,
                             period: HistoryPeriod, tz) -> list[str]:
@@ -749,14 +829,27 @@ class ImportService:
         if record is None or record.status != RUNNING or import_id not in self._tasks:
             raise ImportProblem("Only a running import can be paused.")
         self._pause.add(import_id)
+        self._interrupt(import_id)
+
+    def _source_problem(self, record: ImportRecord) -> str | None:
+        """Why the upload can't be used any more, if it can't."""
+        path = Path(record.file_path) if record.file_path else None
+        if path is None or not path.exists():
+            return "The uploaded file is gone. Upload the export again."
+        if path.stat().st_size != record.file_size:
+            return "The uploaded file changed. Upload the export again."
+        return None
 
     def resume(self, import_id: int) -> None:
         record = self.repo.get(import_id)
         if record is None or record.status != PAUSED:
             raise ImportProblem("Only a paused import can be resumed.")
-        if not record.file_path or not Path(record.file_path).exists():
-            raise ImportProblem("The uploaded file is gone. Upload the export again.")
-        fields: dict = {"status": RUNNING, "paused_at": None, "source_expires_at": None}
+        if import_id in self._tasks:
+            raise ImportProblem("This import is still stopping. Try again in a moment.")
+        problem = self._source_problem(record)
+        if problem:
+            raise ImportProblem(problem)
+        fields: dict = {"status": RUNNING, "paused_at": None}
         for stage, status in record.stages:
             if status == STAGE_PAUSED:
                 fields[f"{stage}_status"] = STAGE_WAITING
@@ -775,7 +868,8 @@ class ImportService:
             raise ImportProblem("Only a running or paused import can be cancelled.")
         if import_id in self._tasks:
             self._cancel.add(import_id)
-            return "Stopping after the current request."
+            self._interrupt(import_id)
+            return "Stopping."
         self._abandon(import_id, "Cancelled by you.", STAGE_CANCELLED)
         return "Cancelled the rest of the import."
 
@@ -838,12 +932,17 @@ class ImportService:
             for period in self.services.history.periods_for_import(record.id):
                 if period.status == PERIOD_RUNNING:
                     self.services.history.update_period(period.id, status=PERIOD_WAITING)
-            if not record.file_path or not Path(record.file_path).exists():
-                self._abandon(record.id, "The uploaded file was gone after a restart.",
-                              STAGE_EXPIRED)
+            problem = self._source_problem(record)
+            if problem:
+                self._abandon(record.id, f"After a restart: {problem}", STAGE_EXPIRED)
             else:
                 logger.info("Import %s was interrupted by a restart; it will continue",
                             record.id)
+        # A finished import whose file outlived it (stopped between marking it
+        # finished and deleting the file).
+        for record in self.repo.with_status(DONE, PARTIAL, FAILED, REPLACED, DISCARDED):
+            if record.file_path:
+                self._delete_file(record.id)
 
     def resume_interrupted(self) -> int:
         """Start the jobs recover() left running."""

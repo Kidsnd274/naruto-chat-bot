@@ -251,6 +251,20 @@ class MessageRepository:
 
     # ----------------------------------------------------------------- reads
 
+    def _incoming(self, chat_id: int, column: str = "import_id") -> tuple[str, list]:
+        """The one visibility rule for messages an import is still storing:
+        they are hidden from replies, searches and the message browser until
+        its raw stage finishes, when they appear all at once (replacing the
+        earlier import's messages of those dates), or are rolled back.
+        Returns an extra WHERE condition and its parameters (none while no
+        import of the chat is storing messages)."""
+        ids = [row[0] for row in self.db.query(
+            "SELECT id FROM imports WHERE chat_id = ? AND raw_status = 'running'", (chat_id,))]
+        if not ids:
+            return "", []
+        placeholders = ", ".join("?" for _ in ids)
+        return f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", ids
+
     def get(self, row_id: int) -> StoredMessage | None:
         row = self.db.query_one("SELECT * FROM messages WHERE id = ?", (row_id,))
         return StoredMessage.from_row(row) if row else None
@@ -305,8 +319,9 @@ class MessageRepository:
         """
         window = max(window, 1)
         step = max(step, 1)
-        earlier = "chat_id = ? AND (date < ? OR (date = ? AND id < ?))"
-        params = (chat_id, before.date, before.date, before.id)
+        hidden, hidden_params = self._incoming(chat_id)
+        earlier = "chat_id = ? AND (date < ? OR (date = ? AND id < ?))" + hidden
+        params = (chat_id, before.date, before.date, before.id, *hidden_params)
         total = int(self.db.scalar(f"SELECT COUNT(*) FROM messages WHERE {earlier}", params) or 0)
         if total <= window:
             start = 0
@@ -319,10 +334,11 @@ class MessageRepository:
         return [StoredMessage.from_row(row) for row in reversed(rows)]
 
     def latest(self, chat_id: int, limit: int) -> list[StoredMessage]:
+        hidden, hidden_params = self._incoming(chat_id)
         rows = self.db.query(
-            "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? "
+            f"SELECT * FROM (SELECT * FROM messages WHERE chat_id = ?{hidden} "
             "ORDER BY date DESC, id DESC LIMIT ?) ORDER BY date, id",
-            (chat_id, limit),
+            (chat_id, *hidden_params, limit),
         )
         return [StoredMessage.from_row(row) for row in rows]
 
@@ -339,8 +355,9 @@ class MessageRepository:
         limit: int = 50,
     ) -> MessagePage:
         """Newest-first page for the web admin's message browser."""
-        where = ["m.chat_id = ?"]
-        params: list = [chat_id]
+        hidden, hidden_params = self._incoming(chat_id, "m.import_id")
+        where = ["m.chat_id = ?" + hidden]
+        params: list = [chat_id, *hidden_params]
         join = ""
         match = fts_query(query) if query else None
         if query and match is None:
@@ -389,13 +406,14 @@ class MessageRepository:
         match = fts_query(query) if query else None
         if query and match is None:
             return []
+        hidden, hidden_params = self._incoming(chat_id, "m.import_id")
         if match:
             sql = ("SELECT m.* FROM messages m JOIN messages_fts ON messages_fts.rowid = m.id "
-                   "WHERE m.chat_id = ? AND messages_fts MATCH ?")
-            params: list = [chat_id, match]
+                   f"WHERE m.chat_id = ?{hidden} AND messages_fts MATCH ?")
+            params: list = [chat_id, *hidden_params, match]
         else:
-            sql = "SELECT m.* FROM messages m WHERE m.chat_id = ?"
-            params = [chat_id]
+            sql = f"SELECT m.* FROM messages m WHERE m.chat_id = ?{hidden}"
+            params = [chat_id, *hidden_params]
         if sender_ids:
             sql += f" AND m.sender_id IN ({', '.join('?' for _ in sender_ids)})"
             params.extend(sender_ids)
@@ -417,30 +435,33 @@ class MessageRepository:
         if target is None or target.chat_id != chat_id:
             return []
         earlier = self.before(chat_id, target, limit=before)
+        hidden, hidden_params = self._incoming(chat_id)
         later = self.db.query(
-            "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?)) "
-            "ORDER BY date, id LIMIT ?",
-            (chat_id, target.date, target.date, target.id, after))
+            "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?))"
+            f"{hidden} ORDER BY date, id LIMIT ?",
+            (chat_id, target.date, target.date, target.id, *hidden_params, after))
         return earlier + [target] + [StoredMessage.from_row(row) for row in later]
 
     def before(self, chat_id: int, message: StoredMessage, *, limit: int) -> list[StoredMessage]:
         """The ``limit`` messages just before ``message``, oldest first."""
+        hidden, hidden_params = self._incoming(chat_id)
         rows = self.db.query(
             "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? "
-            "AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT ?) "
-            "ORDER BY date, id",
-            (chat_id, message.date, message.date, message.id, limit))
+            f"AND (date < ? OR (date = ? AND id < ?)){hidden} ORDER BY date DESC, id DESC "
+            "LIMIT ?) ORDER BY date, id",
+            (chat_id, message.date, message.date, message.id, *hidden_params, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
     def between(self, chat_id: int, *, since: int, before: StoredMessage,
                 limit: int) -> list[StoredMessage]:
         """Messages from ``since`` up to ``before`` (exclusive), oldest first,
         keeping the newest ``limit`` if there are more."""
+        hidden, hidden_params = self._incoming(chat_id)
         rows = self.db.query(
             "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? AND date >= ? "
-            "AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT ?) "
-            "ORDER BY date, id",
-            (chat_id, since, before.date, before.date, before.id, limit))
+            f"AND (date < ? OR (date = ? AND id < ?)){hidden} ORDER BY date DESC, id DESC "
+            "LIMIT ?) ORDER BY date, id",
+            (chat_id, since, before.date, before.date, before.id, *hidden_params, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
     # ------------------------------------------------------ image descriptions

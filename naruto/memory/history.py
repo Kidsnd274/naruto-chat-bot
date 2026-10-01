@@ -26,6 +26,7 @@ import json
 import logging
 import time
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from naruto.agent.text import estimate_text_tokens, strip_internal_json
 from naruto.db.chats import ENABLED, Chat
@@ -59,6 +60,7 @@ from naruto.services import BotIdentity, Services
 logger = logging.getLogger(__name__)
 
 LINE_OVERHEAD_TOKENS = 12  # name and time on each message line
+MIN_MESSAGE_TOKENS = 500  # what a request must leave for messages
 ATTEMPTS_PER_PART = 3
 RETRY_DELAYS_SECONDS = (30, 120)  # between the attempts of one part
 TRACE_CHARS = 20_000
@@ -219,11 +221,33 @@ def chunk_lines(lines: list[ArchiveLine], chunk_tokens: int,
 
 # ------------------------------------------------------------------ writer
 
+def generation_hash(settings, *, chunk_tokens: int, max_chars: int, tz_name: str) -> str:
+    """Everything that shapes a summary as it is written. A partial summary
+    made with other values isn't continued: the period starts over."""
+    raw = json.dumps([settings["history.instructions"], settings["history.digest_max_chars"],
+                      settings["history.max_output_tokens"], settings["history.reasoning"],
+                      chunk_tokens, max_chars, tz_name])
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def _hash_lines(hasher, lines: list[ArchiveLine]) -> None:
+    """In order: when, who and what (not row IDs, which change on re-import)."""
+    for line in lines:
+        hasher.update(f"{line.date}|{line.sender_id}|{line.body}\n".encode())
+
+
+def source_hash(lines: list[ArchiveLine]) -> str:
+    hasher = hashlib.sha1()
+    _hash_lines(hasher, lines)
+    return hasher.hexdigest()
+
+
 @dataclass
 class WriteOptions:
-    chunk_tokens: int
+    chunk_tokens: int  # the whole request, instructions and summary so far included
     max_chars: int  # per message line
     timezone: tzinfo
+    tz_name: str
     actor: str
 
 
@@ -273,22 +297,61 @@ class HistoryWriter:
         return [{"role": "system", "content": system},
                 {"role": "user", "content": "\n".join(parts_text)}]
 
+    def message_budget(self, chat: Chat, period: HistoryPeriod, opts: WriteOptions) -> int:
+        """Tokens left for messages in one request: the instructions, the
+        chat's details and the longest summary so far come out of
+        ``chunk_tokens``."""
+        limit = self.services.settings.for_chat(chat.chat_id)["history.digest_max_chars"]
+        fixed = self.build_prompt(chat, period, [], partial="x" * (limit * 3 // 2), part=2,
+                                  parts=2, opts=opts)
+        overhead = sum(estimate_text_tokens(m["content"]) for m in fixed)
+        budget = opts.chunk_tokens - overhead
+        if budget < MIN_MESSAGE_TOKENS:
+            raise HistoryFailed(
+                f"The summary instructions and the summary so far take about {overhead} of the "
+                f"{opts.chunk_tokens} tokens per request, leaving no room for messages. Raise "
+                "History → Messages per request, or shorten the instructions.")
+        return budget
+
     async def process(self, chat: Chat, period: HistoryPeriod, lines: list[ArchiveLine], *,
                       opts: WriteOptions, limitations: list[str],
                       should_stop: Callable[[], bool]) -> str:
         """Summarize the rest of ``period`` from ``lines`` (all its messages,
         oldest first). Returns FINISHED, STOPPED or PAUSED_BY_QUEUE; raises
-        HistoryFailed when a part keeps failing."""
-        history = self.services.history
+        HistoryFailed when a part keeps failing.
+
+        A partial summary is continued only if it was made with the same
+        settings from the same messages; otherwise the period starts over."""
+        services = self.services
+        history = services.history
+        settings = services.settings.for_chat(chat.chat_id)
         readable = [line for line in lines if line.body]
-        history.update_period(period.id, status=RUNNING, error=None)
+        settings_key = generation_hash(settings, chunk_tokens=opts.chunk_tokens,
+                                       max_chars=opts.max_chars, tz_name=opts.tz_name)
+        hasher = hashlib.sha1()
+        if period.consumed or period.partial:
+            _hash_lines(hasher, readable[:period.consumed])
+            reason = None
+            if period.settings_hash != settings_key:
+                reason = "Started over: the summary settings changed since it was paused."
+            elif period.consumed > len(readable) or period.source_hash != hasher.hexdigest():
+                reason = "Started over: messages already read were edited or deleted."
+            if reason:
+                logger.info("History period %s: %s", period.id, reason,
+                            extra={"chat_id": chat.chat_id})
+                history.restart_period(period.id, reason)
+                period = history.get_period(period.id)
+                hasher = hashlib.sha1()
+        history.update_period(period.id, status=RUNNING)
         if not readable:
             history.update_period(period.id, status=DONE, error="No readable messages.")
             return FINISHED
         shortened = sum(1 for line in readable if len(line.body) > opts.max_chars)
-        chunks = chunk_lines(readable[period.consumed:], opts.chunk_tokens, opts.max_chars)
+        budget = self.message_budget(chat, period, opts)
+        chunks = chunk_lines(readable[period.consumed:], budget, opts.max_chars)
         parts = period.chunks_done + len(chunks)
         partial, consumed, done = period.partial, period.consumed, period.chunks_done
+        failures = period.attempts  # of the next part, kept across restarts
         for chunk in chunks:
             if should_stop():
                 history.update_period(period.id, status=WAITING)
@@ -297,7 +360,7 @@ class HistoryWriter:
             prompt = self.build_prompt(chat, period, chunk, partial=partial, part=part,
                                        parts=parts, opts=opts)
             try:
-                partial = await self._summarize(chat, period, prompt, part)
+                partial = await self._summarize(chat, period, prompt, part, failures)
             except RequestNotRun as exc:
                 if exc.reason != REFUSED_CANCELLED:
                     raise HistoryFailed(str(exc)) from None
@@ -306,31 +369,32 @@ class HistoryWriter:
                 return PAUSED_BY_QUEUE
             consumed += len(chunk)
             done = part
-            history.checkpoint(period.id, partial=partial, consumed=consumed, chunks_done=done)
+            failures = 0
+            _hash_lines(hasher, chunk)
+            history.checkpoint(period.id, partial=partial, consumed=consumed, chunks_done=done,
+                               settings_hash=settings_key, source_hash=hasher.hexdigest())
+        if should_stop():  # turned off during the last request: don't publish it
+            history.update_period(period.id, status=WAITING)
+            return STOPPED
         notes = list(limitations)
         if shortened:
             notes.append(f"{shortened} long message{'s were' if shortened != 1 else ' was'} "
                          "shortened before summarizing.")
-        digest = history.add(
-            chat_id=chat.chat_id, status=STAGED if period.replaces else ACTIVE,
-            source=period.source, grouping=period.grouping, timezone=period.timezone,
-            period_start=period.period_start, period_end=period.period_end,
+        history.complete_period(
+            history.get_period(period.id), status=STAGED if period.replaces else ACTIVE,
             first_message_at=lines[0].date, last_message_at=lines[-1].date,
-            message_count=len(lines), import_id=period.import_id, period_id=period.id,
-            fingerprint=period.fingerprint or "", text=partial or "", limitations=notes,
-            actor=opts.actor)
-        history.update_period(period.id, status=DONE, digest_id=digest.id, partial=None,
-                              error=None)
+            message_count=len(lines), text=partial or "", limitations=notes, actor=opts.actor)
         return FINISHED
 
     async def _summarize(self, chat: Chat, period: HistoryPeriod, prompt: list[dict],
-                         part: int) -> str:
-        """One part, tried up to ATTEMPTS_PER_PART times."""
+                         part: int, failures: int) -> str:
+        """One part, tried until it has failed ATTEMPTS_PER_PART times in all
+        (``failures`` happened before, perhaps before a restart)."""
         services = self.services
         settings = services.settings.for_chat(chat.chat_id)
         limit = settings["history.digest_max_chars"]
-        last_error = "unknown error"
-        for attempt in range(1, ATTEMPTS_PER_PART + 1):
+        last_error = period.error or "unknown error"
+        for attempt in range(failures + 1, ATTEMPTS_PER_PART + 1):
             if attempt > 1:
                 await asyncio.sleep(RETRY_DELAYS_SECONDS[min(attempt - 2,
                                                              len(RETRY_DELAYS_SECONDS) - 1)])
@@ -345,6 +409,9 @@ class HistoryWriter:
                     prompt, reasoning=settings["history.reasoning"],
                     max_tokens=settings["history.max_output_tokens"], background=True,
                     info=info)
+            except asyncio.CancelledError:
+                services.runs.update(run_id, status="error", error="Stopped.")
+                raise
             except RequestNotRun as exc:
                 services.runs.update(run_id, status="error", error=str(exc))
                 raise
@@ -361,26 +428,47 @@ class HistoryWriter:
                            model_requests=1)
             text, _ = strip_internal_json(result.text or "")
             text = text.strip()
-            if not text:
-                last_error = "The answer had no summary."
-                services.runs.update(run_id, status="error", error=last_error, **outcome)
-                services.history.update_period(period.id, attempts=attempt, error=last_error)
-                continue
             if len(text) > limit * 3 // 2:
                 text = text[: limit * 3 // 2].rsplit("\n", 1)[0].rstrip()
-            services.runs.update(run_id, status="ok", **outcome)
-            return text
+            if result.finish_reason == "length":
+                last_error = ("The answer was cut short by the output limit (History → Max "
+                              "output tokens).")
+            elif not text:
+                last_error = "The answer had no summary."
+            else:
+                services.runs.update(run_id, status="ok", **outcome)
+                return text
+            services.runs.update(run_id, status="error", error=last_error, **outcome)
+            services.history.update_period(period.id, attempts=attempt, error=last_error)
         raise HistoryFailed(f"Part {part} kept failing: {last_error}")
+
+
+def request_overhead(settings) -> int:
+    """About how many tokens of a summary request aren't messages: the
+    instructions and the longest summary so far (for estimates; the writer
+    measures the real prompt)."""
+    longest = settings["history.digest_max_chars"] * 3 // 2
+    return estimate_text_tokens(settings["history.instructions"]) + \
+        estimate_text_tokens("x" * longest) + 200
+
+
+def zone(tz_name: str, services: Services) -> tzinfo:
+    return services.timezone() if tz_name == "server" else ZoneInfo(tz_name)
 
 
 # ----------------------------------------------------------- live archive
 
 class LiveArchiver:
     """Once a month is over, summarize its live messages into a history
-    digest (Settings → History → Summarize live chat monthly)."""
+    digest (Settings → History → Summarize live chat monthly).
+
+    A month whose part keeps failing (ATTEMPTS_PER_PART in all, counted
+    across restarts) is marked failed and left until the owner retries it on
+    the History page; later months go ahead. A month's dates and time zone
+    are fixed once its work starts."""
 
     CHECK_INTERVAL_SECONDS = 600
-    RETRY_AFTER_SECONDS = 15 * 60
+    RETRY_AFTER_SECONDS = 15 * 60  # after a failure, before the chat's next month
 
     def __init__(self, services: Services):
         self.services = services
@@ -392,9 +480,14 @@ class LiveArchiver:
         self._stopping = True
 
     def due_month(self, chat: Chat, now: float | None = None) -> tuple[int, int] | None:
-        """The oldest finished month with live messages and no live
-        summary yet (or its unfinished work), if any."""
+        """Unfinished work first (with the dates it started with), else the
+        oldest finished month with live messages that no live summary
+        covers yet."""
         services = self.services
+        periods = services.history.live_periods(chat.chat_id)
+        for period in periods:
+            if period.status in (WAITING, RUNNING):
+                return period.period_start, period.period_end
         tz = services.timezone()
         now = now or time.time()
         this_month = day_start(local_date(int(now), tz).replace(day=1), tz)
@@ -406,22 +499,36 @@ class LiveArchiver:
             return None
         if start_from is not None:
             oldest = max(oldest, start_from)
-        periods = {(p.period_start, p.period_end): p
-                   for p in services.history.live_periods(chat.chat_id)}
         for start, end in plan_periods(day_start(local_date(oldest, tz).replace(day=1), tz),
                                        this_month, MONTH, tz):
             if start_from is not None and end <= start_from:
                 continue
             period_start = max(start, start_from) if start_from is not None else start
-            existing = periods.get((period_start, end))
-            if existing is not None and existing.status not in (WAITING, RUNNING):
-                continue  # done, or failed until the owner retries it
+            if any(p.period_start < end and period_start < p.period_end for p in periods):
+                continue  # done, failed until retried, or dated differently before
             has_messages = services.db.scalar(
                 "SELECT 1 FROM messages WHERE chat_id = ? AND source = 'live' AND date >= ? "
                 "AND date < ? LIMIT 1", (chat.chat_id, period_start, end))
             if has_messages:
                 return period_start, end
         return None
+
+    def retry(self, period_id: int) -> bool:
+        """The owner's Retry on a failed month: a fresh allowance of
+        attempts. The next round picks it up (it checks its messages
+        before continuing)."""
+        services = self.services
+        period = services.history.get_period(period_id)
+        if period is None or period.source != LIVE or period.status != FAILED:
+            return False
+        services.history.update_period(period_id, status=WAITING, attempts=0, error=None)
+        self._failed_at.pop(period.chat_id, None)
+        return True
+
+    def _enabled(self, chat_id: int) -> bool:
+        chat = self.services.chats.get(chat_id)
+        return (chat is not None and chat.enabled
+                and self.services.settings.for_chat(chat_id)["history.live_archive"])
 
     async def run_due(self, now: float | None = None) -> int:
         """Archive at most one month per chat. Returns months finished."""
@@ -431,15 +538,14 @@ class LiveArchiver:
         for chat in services.chats.list_by_status(ENABLED):
             if self._stopping:
                 break
-            settings = services.settings.for_chat(chat.chat_id)
-            if not settings["history.live_archive"]:
+            if not self._enabled(chat.chat_id):
                 continue
             failed = self._failed_at.get(chat.chat_id)
             if failed and now - failed < self.RETRY_AFTER_SECONDS:
                 continue
             lock = services.history_locks[chat.chat_id]
             if lock.locked():
-                continue  # an import is working on this chat's history: next round
+                continue  # an import or a deletion is working on this chat: next round
             due = self.due_month(chat, now)
             if due is None:
                 continue
@@ -451,35 +557,31 @@ class LiveArchiver:
     async def archive(self, chat: Chat, start: int, end: int, *, now: float) -> bool:
         services = self.services
         history = services.history
-        tz = services.timezone()
-        tz_name = services.settings["general.timezone"] or "server"
         source = StoredSource(services, chat.chat_id)
         lines = source.between(start, end)
         period = next((p for p in history.live_periods(chat.chat_id)
                        if (p.period_start, p.period_end) == (start, end)), None)
         settings = services.settings.for_chat(chat.chat_id)
         if period is None:
+            tz_name = settings["general.timezone"] or "server"
             period = history.add_period(
                 chat_id=chat.chat_id, source=LIVE, import_id=None, grouping=MONTH,
                 timezone=tz_name, period_start=start, period_end=end,
                 message_count=len(lines),
                 fingerprint=fingerprint(MONTH, tz_name, start, end, settings_hash(settings),
-                                        day_hashes(lines, tz)))
-        elif period.consumed and len([line for line in lines if line.body]) < period.consumed:
-            # Messages were deleted since the last attempt: start the month over.
-            history.update_period(period.id, consumed=0, chunks_done=0, partial=None)
-            period = history.get_period(period.id)
+                                        day_hashes(lines, zone(tz_name, services))))
+        tz = zone(period.timezone, services)
         limitations = live_limitations(chat, start, end, lines, tz)
         opts = WriteOptions(chunk_tokens=settings["history.chunk_tokens"],
                             max_chars=settings["context.max_message_chars"], timezone=tz,
-                            actor="live archive")
+                            tz_name=period.timezone, actor="live archive")
         try:
-            outcome = await self.writer.process(chat, period, lines, opts=opts,
-                                                limitations=limitations,
-                                                should_stop=lambda: self._stopping)
+            outcome = await self.writer.process(
+                chat, period, lines, opts=opts, limitations=limitations,
+                should_stop=lambda: self._stopping or not self._enabled(chat.chat_id))
         except HistoryFailed as exc:
             self._failed_at[chat.chat_id] = now
-            history.update_period(period.id, status=WAITING, error=str(exc))
+            history.update_period(period.id, status=FAILED, error=str(exc))
             logger.warning("Live history summary of %s failed: %s",
                            describe_span(start, end, tz), exc, extra={"chat_id": chat.chat_id})
             return False

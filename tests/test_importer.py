@@ -363,3 +363,78 @@ async def test_names_equal_to_telegram_names_are_not_pinned(importer, services):
     record = await upload(importer)
     importer.apply_identities(record, {8: {"name": "Bob", "merge_into": None}})
     assert services.people.for_user(8).name is None  # still follows Telegram renames
+
+
+# ------------------------------------------------------- raw stage safety
+
+async def test_a_crash_while_replacing_keeps_the_earlier_import(importer, services, monkeypatch):
+    services.chats.upsert_seen(CHAT)
+    first = await run_import(importer, await upload(importer))
+    real_update = importer.repo.update
+
+    def crash(import_id, **fields):
+        if fields.get("raw_status") == "done":
+            raise RuntimeError("power cut")
+        return real_update(import_id, **fields)
+
+    monkeypatch.setattr(importer.repo, "update", crash)
+    second = await run_import(importer, await upload(importer))
+    assert second.status == PAUSED and "power cut" in second.error
+    rows = services.messages.browse(CHAT, limit=100).messages
+    assert len(rows) == 12 and {m.import_id for m in rows} == {first.id}
+    assert importer.repo.get(first.id).status == DONE  # not marked replaced
+
+
+async def test_messages_an_import_is_storing_stay_hidden(importer, services):
+    services.chats.upsert_seen(CHAT)
+    record = await upload(importer)
+    importer.repo.update(record.id, status=RUNNING, chat_id=CHAT, raw_status="running")
+    live = services.messages.insert_live(NewMessage(
+        chat_id=CHAT, origin_chat_id=CHAT, source=LIVE, message_id=1, sender_name="A",
+        date=SEP_2 + 86400, text="live bbq"))
+    services.messages.insert_imported([NewMessage(
+        chat_id=CHAT, origin_chat_id=CHAT, source=IMPORT, message_id=5, sender_name="B",
+        date=SEP_1, text="incoming bbq", import_id=record.id)])
+    messages = services.messages
+    assert [m.text for m in messages.latest(CHAT, 10)] == ["live bbq"]
+    assert [m.text for m in messages.search(CHAT, "bbq")] == ["live bbq"]
+    assert messages.browse(CHAT).total == 1
+    assert messages.recent_window(CHAT, live, window=10, step=5) == []
+    assert messages.before(CHAT, live, limit=5) == []
+    importer.repo.update(record.id, raw_status="done")
+    assert [m.text for m in messages.latest(CHAT, 10)] == ["incoming bbq", "live bbq"]
+    assert len(messages.search(CHAT, "bbq")) == 2
+
+
+async def test_recover_deletes_the_file_of_a_finished_import(importer, services):
+    record = await upload(importer)
+    importer.repo.update(record.id, status=DONE)  # stopped before the file was deleted
+    importer.recover()
+    assert importer.repo.get(record.id).file_path is None
+    assert list(importer.upload_dir.iterdir()) == []
+
+
+async def test_pausing_again_keeps_the_first_deadline(importer, services, monkeypatch):
+    services.chats.upsert_seen(CHAT)
+
+    def explode(import_id):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(services.messages, "resolve_import_replies", explode)
+    record = await run_import(importer, await upload(importer))
+    deadline = record.source_expires_at
+    monkeypatch.setattr(service_module, "now_ts", lambda: record.paused_at + 3 * 86400)
+    importer.resume(record.id)
+    await asyncio.gather(*importer._tasks.values())
+    again = importer.repo.get(record.id)
+    assert again.status == PAUSED and again.source_expires_at == deadline
+
+
+async def test_a_changed_upload_is_not_resumed(importer, services, monkeypatch):
+    services.chats.upsert_seen(CHAT)
+    monkeypatch.setattr(services.messages, "resolve_import_replies",
+                        lambda import_id: (_ for _ in ()).throw(RuntimeError("boom")))
+    record = await run_import(importer, await upload(importer))
+    Path(record.file_path).write_bytes(b"{}")
+    with pytest.raises(ImportProblem, match="changed"):
+        importer.resume(record.id)

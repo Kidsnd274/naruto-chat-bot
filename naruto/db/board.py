@@ -19,6 +19,14 @@ SECTIONS: tuple[tuple[str, str], ...] = (
 SECTION_KEYS = tuple(key for key, _ in SECTIONS)
 MAX_ITEMS_PER_SECTION = 25
 MAX_ITEM_CHARS = 300
+# The board is one Telegram message (at most 4,096 characters). Items may use
+# this much in total, which leaves room for headings, marks and escaping.
+MAX_BOARD_CHARS = 3000
+ITEM_OVERHEAD_CHARS = 4  # "- ☐ " and the line break
+
+
+class BoardFull(ValueError):
+    """A change would make the board too big; the message says what to do."""
 
 
 @dataclass
@@ -93,7 +101,25 @@ def normalize_items(items) -> list[BoardItem]:
             continue
         seen.add(text.lower())
         result.append(BoardItem(text, done))
-    return result[:MAX_ITEMS_PER_SECTION]
+    return result
+
+
+def board_chars(sections: dict[str, list[BoardItem]]) -> int:
+    """What the items take up on the board, for MAX_BOARD_CHARS."""
+    return sum(len(item.text) + ITEM_OVERHEAD_CHARS
+               for key in SECTION_KEYS for item in sections.get(key, []))
+
+
+def check_size(sections: dict[str, list[BoardItem]]) -> None:
+    for key, heading in SECTIONS:
+        count = len(sections.get(key, []))
+        if count > MAX_ITEMS_PER_SECTION:
+            raise BoardFull(f"{heading} can hold {MAX_ITEMS_PER_SECTION} items ({count} given). "
+                            "Remove or combine some first.")
+    used = board_chars(sections)
+    if used > MAX_BOARD_CHARS:
+        raise BoardFull(f"The board would be too long for one Telegram message ({used} of "
+                        f"{MAX_BOARD_CHARS} characters). Shorten or remove items first.")
 
 
 def parse_lines(text: str) -> list[BoardItem]:
@@ -130,16 +156,26 @@ class BoardRepository:
         return self.db.scalar("SELECT 1 FROM boards WHERE chat_id = ?", (chat_id,)) is not None
 
     def set_section(self, chat_id: int, section: str, items, *, actor: str) -> Board:
-        if section not in SECTION_KEYS:
-            raise ValueError(f"unknown board section {section!r}")
+        """Replace one section. Raises BoardFull (and changes nothing) if
+        the board would no longer fit in one message."""
+        return self.set_sections(chat_id, {section: items}, actor=actor)
+
+    def set_sections(self, chat_id: int, changes: dict[str, list], *, actor: str) -> Board:
+        """Replace several sections at once, checking the size of the result."""
         board = self.get(chat_id)
-        board.sections[section] = normalize_items(
-            [item.as_dict() if isinstance(item, BoardItem) else item for item in items])
+        for section, items in changes.items():
+            if section not in SECTION_KEYS:
+                raise ValueError(f"unknown board section {section!r}")
+            board.sections[section] = normalize_items(
+                [item.as_dict() if isinstance(item, BoardItem) else item for item in items])
+        check_size(board.sections)
         self._save_sections(board, actor)
         return self.get(chat_id)
 
     def add_item(self, chat_id: int, section: str, text: str, *, done: bool = False,
                  actor: str) -> Board:
+        """Add (or move to the end) one item. Raises BoardFull rather than
+        dropping it when the section or the board is full."""
         board = self.get(chat_id)
         items = [item.as_dict() for item in board.items(section)]
         items = [item for item in items if item["text"].lower() != text.strip().lower()]

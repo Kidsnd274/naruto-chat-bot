@@ -6,7 +6,7 @@ from telegram.error import ChatMigrated, TelegramError
 
 from naruto.agent.tools.base import Tool, ToolContext, ToolError, params
 from naruto.agent.tools.lookup import message_in_chat
-from naruto.db.board import SECTION_KEYS, SECTIONS
+from naruto.db.board import MAX_BOARD_CHARS, SECTION_KEYS, SECTIONS, BoardFull
 from naruto.db.plans import CANCELLED, PROPOSED
 from naruto.tg.access import note_pin
 from naruto.tg.board import BoardPublisher
@@ -23,7 +23,10 @@ async def update_board(ctx: ToolContext, args: dict) -> str:
     section = args["section"]
     items = args.get("items") or []
     actor = f"bot (run {ctx.state.run_id})"
-    board = ctx.services.boards.set_section(ctx.chat.chat_id, section, items, actor=actor)
+    try:
+        board = ctx.services.boards.set_section(ctx.chat.chat_id, section, items, actor=actor)
+    except BoardFull as exc:
+        raise ToolError(f"Not changed: {exc}") from None
     heading = dict(SECTIONS)[section]
     ctx.state.actions.append(f"updated the board ({section})")
     published = await BoardPublisher(ctx.services).publish(ctx.telegram, ctx.chat)
@@ -137,7 +140,8 @@ TOOLS = [
         "Sections: plans (things to do or happening, done=true when confirmed or "
         "finished), decided (decisions), questions (open questions). Only change the "
         "board when someone asks, or to record something the group clearly agreed on. "
-        "Pass the full new list: items you leave out are removed.",
+        "Pass the full new list: items you leave out are removed. The whole board must fit "
+        f"in one message (about {MAX_BOARD_CHARS} characters), so keep items short.",
         params({
             "section": {"type": "string", "enum": list(SECTION_KEYS)},
             "items": {"type": "array", "maxItems": 25, "items": {

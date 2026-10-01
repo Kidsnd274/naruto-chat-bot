@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from telegram.error import TelegramError
 
-from naruto.db.board import SECTIONS, format_lines, parse_lines
+from naruto.db.board import SECTIONS, BoardFull, format_lines, parse_lines
 from naruto.db.chats import Chat
 from naruto.services import Services
 from naruto.tg.board import BoardPublisher
@@ -61,9 +61,13 @@ async def save_board(request: Request, chat_id: int):
     services: Services = request.app.state.services
     chat = _chat(services, chat_id)
     form = await request.form()
-    for key, _ in SECTIONS:
-        items = parse_lines(str(form.get(key) or ""))
-        services.boards.set_section(chat.chat_id, key, items, actor=ACTOR)
+    try:
+        services.boards.set_sections(
+            chat.chat_id, {key: parse_lines(str(form.get(key) or "")) for key, _ in SECTIONS},
+            actor=ACTOR)
+    except BoardFull as exc:
+        flash(request, f"Not saved: {exc}", "error")
+        return _back(chat)
     logger.info("Board edited in the web admin", extra={"chat_id": chat.chat_id})
     if form.get("publish"):
         await _publish(request, services, chat, fresh=False)

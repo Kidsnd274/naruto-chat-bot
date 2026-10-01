@@ -8,6 +8,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import ChatMigrated, TelegramError
 from telegram.ext import ContextTypes
 
+from naruto.db.board import BoardFull
 from naruto.db.chats import Chat
 from naruto.db.plans import CONFIRMED, Plan
 from naruto.services import Services
@@ -85,11 +86,21 @@ class PlanButtons:
         if not self.services.plans.decide(plan.id, CONFIRMED, user_id=user.id, name=name):
             await query.answer("This plan was already confirmed or replaced.")
             return
-        self.services.boards.add_item(chat.chat_id, "plans", plan.one_line(), done=True,
-                                      actor=f"plan {plan.id} confirmed by {name}")
+        try:
+            self.services.boards.add_item(chat.chat_id, "plans", plan.one_line(), done=True,
+                                          actor=f"plan {plan.id} confirmed by {name}")
+            on_board = True
+        except BoardFull as exc:
+            logger.warning("Plan %s confirmed but not added to the board: %s", plan.id, exc,
+                           extra={"chat_id": chat.chat_id})
+            on_board = False
         logger.info("Plan %s confirmed by user %s", plan.id, user.id,
                     extra={"chat_id": chat.chat_id})
-        await query.answer("Confirmed! It's on the board.")
+        if on_board:
+            await query.answer("Confirmed! It's on the board.")
+        else:
+            await query.answer("Confirmed! But the board is full, so it isn't on it. Ask me to "
+                               "clear finished plans, then I can add it.", show_alert=True)
         status = f"✅ Confirmed by {name}"
         try:
             await query.edit_message_text(render_plan(plan, escape(status)), parse_mode="HTML")
@@ -98,4 +109,5 @@ class PlanButtons:
         if plan.message_id and plan.message_chat_id:
             self.services.messages.apply_edit(plan.message_chat_id, plan.message_id,
                                               text=plain_plan(plan, status), edit_date=None)
-        await self.board.publish(context.bot, chat)
+        if on_board:
+            await self.board.publish(context.bot, chat)

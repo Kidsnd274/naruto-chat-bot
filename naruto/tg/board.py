@@ -5,6 +5,7 @@ do_api_request because python-telegram-bot 22.8 predates it). If Telegram
 refuses rich messages, it falls back to an HTML message and remembers that.
 """
 
+from dataclasses import replace
 from datetime import datetime
 from html import escape
 import logging
@@ -12,7 +13,7 @@ import re
 
 from telegram.error import BadRequest, ChatMigrated, Forbidden, TelegramError
 
-from naruto.db.board import SECTIONS, Board
+from naruto.db.board import SECTION_KEYS, SECTIONS, Board
 from naruto.db.chats import Chat
 from naruto.services import Services
 from naruto.tg.access import note_pin
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 RICH = "rich"
 HTML = "html"
+TELEGRAM_LIMIT = 4096  # characters in one message
 EMPTY_TEXT = "Nothing on it yet. Ask me to add plans, decisions or open questions."
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>|~#])")
 
@@ -56,6 +58,22 @@ def render_html(board: Board, updated: str) -> str:
         lines += ["", f"<b>{heading}</b>"]
         lines += [f"{_mark(key, item.done)} {escape(item.text)}" for item in items]
     return "\n".join(lines)
+
+
+def fit_message(board: Board, render, updated: str, limit: int = TELEGRAM_LIMIT) -> str:
+    """The rendered board, cut to fit one Telegram message. Saving already
+    keeps the board small enough (MAX_BOARD_CHARS); this covers boards saved
+    before that check and heavy escaping. The last items are left out."""
+    text = render(board, updated)
+    sections = {key: list(board.items(key)) for key in SECTION_KEYS}
+    hidden = 0
+    while len(text) > limit and any(sections.values()):
+        last = next(key for key in reversed(SECTION_KEYS) if sections[key])
+        sections[last].pop()
+        hidden += 1
+        text = (render(replace(board, sections=sections), updated)
+                + f"\n\n… and {hidden} more (too long to show; see the web admin)")
+    return text
 
 
 def _not_modified(exc: TelegramError) -> bool:
@@ -148,14 +166,15 @@ class BoardPublisher:
             try:
                 result = await telegram.do_api_request("sendRichMessage", api_kwargs={
                     "chat_id": chat_id, "disable_notification": True,
-                    "rich_message": {"markdown": render_markdown(board, updated)}})
+                    "rich_message": {"markdown": fit_message(board, render_markdown, updated)}})
                 return _message_id(result), RICH
             except (ChatMigrated, Forbidden):
                 raise
             except TelegramError as exc:
                 logger.warning("Rich message refused (%s); sending the board as HTML.", exc,
                                extra={"chat_id": chat_id})
-        sent = await telegram.send_message(chat_id=chat_id, text=render_html(board, updated),
+        sent = await telegram.send_message(chat_id=chat_id,
+                                           text=fit_message(board, render_html, updated),
                                            parse_mode="HTML", disable_notification=True)
         return sent.message_id, HTML
 
@@ -165,7 +184,8 @@ class BoardPublisher:
         if format == RICH:
             await telegram.do_api_request("editMessageText", api_kwargs={
                 "chat_id": chat_id, "message_id": message_id,
-                "rich_message": {"markdown": render_markdown(board, updated)}})
+                "rich_message": {"markdown": fit_message(board, render_markdown, updated)}})
         else:
             await telegram.edit_message_text(chat_id=chat_id, message_id=message_id,
-                                             text=render_html(board, updated), parse_mode="HTML")
+                                             text=fit_message(board, render_html, updated),
+                                             parse_mode="HTML")

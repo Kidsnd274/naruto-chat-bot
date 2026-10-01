@@ -278,6 +278,25 @@ class HistoryRepository:
             return self.db.execute("DELETE FROM history_digests WHERE chat_id = ?",
                                    (chat_id,)).rowcount
 
+    def note_deleted_messages(self, chat_id: int, *, before: int | None,
+                              source: str | None) -> int:
+        """The owner deleted stored messages (``source``: live, import or
+        both) before ``before`` (None: all). Summaries of those dates say so,
+        so a lookup doesn't suggest the originals are still there."""
+        note = ("The stored messages of these dates were deleted later; this summary can't "
+                "be checked against them.")
+        sources = {"live": ("live",), "import": ("export",), None: ("live", "export")}[source]
+        changed = 0
+        with self.db.transaction():
+            for digest in self.for_chat(chat_id, status=ACTIVE, until=before)[0]:
+                if digest.source in sources and note not in digest.limitations:
+                    self.db.execute(
+                        "UPDATE history_digests SET limitations = ? WHERE id = ?",
+                        (json.dumps(digest.limitations + [note], ensure_ascii=False),
+                         digest.id))
+                    changed += 1
+        return changed
+
     def delete_staged(self, import_id: int) -> int:
         return self.db.execute(
             "DELETE FROM history_digests WHERE import_id = ? AND status = 'staged'",

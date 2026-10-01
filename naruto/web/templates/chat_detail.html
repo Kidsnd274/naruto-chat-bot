@@ -116,14 +116,16 @@
 
 <section class="card danger-zone">
   <h2>Delete data</h2>
-  <p class="muted">Deletion is permanent. You'll see what is affected before anything is deleted. Deleting messages leaves the digest, memory notes and history summaries made from them; delete those separately.</p>
+  <p class="muted">Deletion is permanent. You'll see what is affected before anything is deleted. Messages are kept until you delete them here; nothing deletes them automatically. Deleting messages leaves the digest, memory notes and history summaries made from them; delete those separately. Messages can't be deleted while an import of this group is running or paused.</p>
   <form method="post" action="/chats/{{ chat.chat_id }}/delete-messages" class="filters">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <select name="scope">
+      <option value="age">Messages older than N days</option>
+      <option value="older">Messages from before a date</option>
       <option value="all">All messages</option>
-      <option value="older">Messages older than…</option>
     </select>
-    <input type="date" name="before" aria-label="Older than">
+    <label class="small">N days <input type="number" name="days" min="1" max="36500" step="1" inputmode="numeric" style="width: 6em"></label>
+    <label class="small">Date <input type="date" name="before"></label>
     <select name="source">
       <option value="">Live and imported</option>
       <option value="live">Live only</option>

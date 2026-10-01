@@ -748,6 +748,31 @@ async def test_a_month_starts_over_when_read_messages_change(services, recorded)
     assert "part 1 of" in first
 
 
+async def test_deleting_read_messages_restarts_the_month_and_says_so(services, recorded,
+                                                                     monkeypatch):
+    archiver = history_module.LiveArchiver(services)
+    monkeypatch.setattr(history_module.HistoryWriter, "message_budget",
+                        lambda self, chat, period, opts: 30)  # one message per part
+
+    class StopAfterOnePart(SummaryLLM):
+        async def chat(self, messages, **kwargs):
+            archiver.stop()
+            return await super().chat(messages, **kwargs)
+
+    services.llm = StopAfterOnePart()
+    assert await archiver.run_due(now=recorded) == 0
+    (period,) = services.history.live_periods(GROUP_ID)
+    assert period.consumed == 1
+    services.messages.delete_for_chat(GROUP_ID, before=ts(2026, 8, 12), source="live")
+    services.llm = SummaryLLM()
+    assert await history_module.LiveArchiver(services).run_due(now=recorded) == 1
+    assert "## Summary so far" not in services.llm.calls[0]["user"]
+    (digest,) = active(services)
+    assert digest.message_count == 4
+    assert "1 of this month's messages were deleted before it was summarized." in \
+        digest.limitations
+
+
 async def test_turning_monthly_summaries_off_stops_before_publishing(services, recorded):
     class TurnedOffMeanwhile(SummaryLLM):
         async def chat(self, messages, **kwargs):

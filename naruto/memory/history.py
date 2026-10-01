@@ -577,7 +577,8 @@ class LiveArchiver:
                 fingerprint=fingerprint(MONTH, tz_name, start, end, settings_hash(settings),
                                         day_hashes(lines, zone(tz_name, services))))
         tz = zone(period.timezone, services)
-        limitations = live_limitations(chat, start, end, lines, tz)
+        limitations = live_limitations(chat, start, end, lines, tz,
+                                       recorded=period.message_count)
         opts = WriteOptions(chunk_tokens=settings["history.chunk_tokens"],
                             max_chars=settings["context.max_message_chars"], timezone=tz,
                             tz_name=period.timezone, actor="live archive")
@@ -613,10 +614,14 @@ class LiveArchiver:
 
 
 def live_limitations(chat: Chat, start: int, end: int, lines: list[ArchiveLine],
-                     tz: tzinfo) -> list[str]:
+                     tz: tzinfo, *, recorded: int = 0) -> list[str]:
+    """``recorded``: how many messages the month had when its work began."""
     notes = []
     month_start = day_start(local_date(start, tz).replace(day=1), tz)
     if start > month_start:
         notes.append(f"Live recording began on {day_text(local_date(start, tz))}; "
                      "earlier messages of this month aren't included.")
+    if len(lines) < recorded:
+        gone = recorded - len(lines)
+        notes.append(f"{gone} of this month's messages were deleted before it was summarized.")
     return notes

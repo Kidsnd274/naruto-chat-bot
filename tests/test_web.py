@@ -225,6 +225,111 @@ def test_deleting_messages_takes_two_steps(admin, chat, services):
     assert services.messages.count(CHAT) == 0
 
 
+T1 = 1_780_000_000 + 86400  # the chat fixture's first message; one a day after it
+
+
+def hidden(page: str, name: str) -> str:
+    return re.search(rf'name="{name}" value="([^"]*)"', page).group(1)
+
+
+def test_deleting_messages_older_than_n_days(admin, chat, services, monkeypatch):
+    from naruto.db.messages import IMPORT
+
+    now = {"value": T1 + 3 * 86400}  # two days after the second message
+    monkeypatch.setattr(services, "time", lambda: now["value"])
+    services.messages.insert_imported([NewMessage(
+        chat_id=CHAT, origin_chat_id=CHAT, source=IMPORT, message_id=9, sender_id=7,
+        sender_name="Alice", date=T1 - 400 * 86400, text="ancient bbq", import_id=5)])
+    services.history.add(
+        chat_id=CHAT, status="active", source="live", grouping="month", timezone="UTC",
+        period_start=T1 - 30 * 86400, period_end=T1 + 86400, first_message_at=T1,
+        last_message_at=T1, message_count=1, import_id=None, period_id=None, fingerprint="",
+        text="- May", limitations=[], actor="t")
+
+    preview = admin.post(f"/chats/{CHAT}/delete-messages",
+                         {"scope": "age", "days": "2", "source": ""})
+    assert preview.status_code == 200
+    # Message 2 is exactly at the cutoff (now - 2 × 24 h), so it stays.
+    assert "Delete 2 messages older than 2 days (sent before 30 May 2026, 20:26" in preview.text
+    assert "the messages in Telegram aren&#39;t touched" in preview.text
+    assert "Summaries and memory notes may still contain information" in preview.text
+    cutoff = int(hidden(preview.text, "cutoff"))
+    assert cutoff == T1 + 86400
+
+    now["value"] += 5 * 86400  # confirmed days later: still the reviewed cutoff
+    done = admin.post(f"/chats/{CHAT}/delete-messages", {
+        "scope": "age", "days": "2", "cutoff": str(cutoff), "source": "", "confirm": "yes"})
+    assert done.status_code == 303
+    left = services.messages.browse(CHAT).messages
+    assert sorted(m.text for m in left) == ["bring the grill", "saturday at east coast"]
+    assert services.messages.search(CHAT, "bbq") == []  # gone from the search index too
+    (summary,) = services.history.for_chat(CHAT)[0]
+    assert any("deleted later" in note for note in summary.limitations)
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert "Deleted 2 messages." in page
+
+
+def test_deleting_by_age_picks_the_source_and_validates_input(admin, chat, services,
+                                                              monkeypatch):
+    from naruto.db.messages import IMPORT
+
+    monkeypatch.setattr(services, "time", lambda: T1 + 10 * 86400)
+    services.messages.insert_imported([NewMessage(
+        chat_id=CHAT, origin_chat_id=CHAT, source=IMPORT, message_id=9, sender_id=7,
+        sender_name="Alice", date=T1 - 400 * 86400, text="uploaded today, sent long ago",
+        import_id=5)])
+    for days in ("0", "-1", "1.5", "abc", "", "nan", "1e3", "99999999", "١٢"):
+        response = admin.post(f"/chats/{CHAT}/delete-messages",
+                              {"scope": "age", "days": days, "confirm": "yes", "cutoff": "1"})
+        assert response.status_code == 400, days
+    for form in ({"days": "2"}, {"scope": "everything", "days": "2"},
+                 {"scope": "age", "days": "2", "source": "both"},
+                 {"scope": "age", "days": "2", "confirm": "yes", "cutoff": str(T1 * 2)},
+                 {"scope": "age", "days": "2", "confirm": "yes"}):
+        assert admin.post(f"/chats/{CHAT}/delete-messages", form).status_code == 400, form
+    assert services.messages.count(CHAT) == 4  # nothing was deleted
+
+    preview = admin.post(f"/chats/{CHAT}/delete-messages",
+                         {"scope": "age", "days": "30", "source": "import"})
+    assert "Delete 1 imported messages older than 30 days" in preview.text
+    admin.post(f"/chats/{CHAT}/delete-messages", {
+        "scope": "age", "days": "30", "source": "import", "confirm": "yes",
+        "cutoff": hidden(preview.text, "cutoff")})
+    assert services.messages.count(CHAT, IMPORT) == 0 and services.messages.count(CHAT) == 3
+    preview = admin.post(f"/chats/{CHAT}/delete-messages",
+                         {"scope": "age", "days": "365", "source": "live"})
+    assert "Delete 0 live messages" in preview.text  # nothing that old: fine
+    assert admin.post("/chats/-999/delete-messages",
+                      {"scope": "age", "days": "2"}).status_code == 404
+
+
+async def test_messages_cant_be_deleted_while_an_import_or_summary_runs(admin, chat, services,
+                                                                        tmp_path):
+    from naruto.importer.service import ImportService
+
+    services.imports = ImportService(services, tmp_path / "imports")
+    record = services.imports.repo.create(file_name="r.json", file_path="/x", file_size=1)
+    services.imports.repo.update(record.id, status="paused", chat_id=CHAT)
+    form = {"scope": "all", "confirm": "yes"}
+    admin.post(f"/chats/{CHAT}/delete-messages", form)
+    assert services.messages.count(CHAT) == 3
+    assert f"Import #{record.id} of this group is paused" in admin.client.get(
+        f"/chats/{CHAT}").text
+
+    services.imports.repo.update(record.id, status="done")
+    lock = services.history_locks[CHAT]
+    await lock.acquire()
+    try:
+        admin.post(f"/chats/{CHAT}/delete-messages", form)
+    finally:
+        lock.release()
+    assert services.messages.count(CHAT) == 3
+    assert "A history summary of this group is being written" in admin.client.get(
+        f"/chats/{CHAT}").text
+    admin.post(f"/chats/{CHAT}/delete-messages", form)
+    assert services.messages.count(CHAT) == 0
+
+
 # ---------------------------------------------------------------- settings
 
 def test_settings_page_lists_sections_and_drift(admin, services):

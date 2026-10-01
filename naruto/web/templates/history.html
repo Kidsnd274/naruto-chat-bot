@@ -4,7 +4,7 @@
 <p class="crumbs"><a href="/chats">Chats</a> / <a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a> /</p>
 <h1>History summaries</h1>
 {% set start, end, count = coverage %}
-<p class="muted">Dated summaries of {{ chat.display_title }}'s past, kept after the messages themselves are deleted. The bot looks them up when someone asks about an earlier time; they are summaries, so they can miss details or be wrong — correct them here.{% if count %} {{ count }} active, covering {{ start|ts("%d %b %Y") }} – {{ (end - 1)|ts("%d %b %Y") }}.{% endif %}</p>
+<p class="muted">Dated summaries of {{ chat.display_title }}'s past. The original messages stay searchable until you delete them; a summary answers “what happened then?” without reading them all. The bot looks them up when someone asks about an earlier time; they are summaries, so they can miss details or be wrong — correct them here.{% if count %} {{ count }} active, covering {{ start|ts("%d %b %Y") }} – {{ (end - 1)|ts("%d %b %Y") }}.{% endif %}</p>
 
 <div class="grid two">
   <section class="card">
@@ -21,7 +21,7 @@
     {% if live_periods %}
       <ul class="plain small">
         {% for p in live_periods %}
-          <li>{{ p.period_start|ts("%d %b %Y") }} – {{ (p.period_end - 1)|ts("%d %b %Y") }}: <span class="badge {{ 'failed' if p.status == 'failed' else 'pending' }}">{{ 'missed' if p.status == 'failed' else p.status }}</span>{% if p.chunks_done %} <span class="muted">{{ p.chunks_done }} parts read</span>{% endif %}{% if p.error %} <span class="muted">{{ p.error }}</span>{% endif %}</li>
+          <li>{{ p.period_start|ts("%d %b %Y") }} – {{ (p.period_end - 1)|ts("%d %b %Y") }}: <span class="badge {{ 'failed' if p.status == 'failed' else 'pending' }}">{{ p.status }}</span>{% if p.chunks_done %} <span class="muted">{{ p.chunks_done }} parts read</span>{% endif %}{% if p.error %} <span class="muted">{{ p.error }}</span>{% endif %}</li>
         {% endfor %}
       </ul>
     {% else %}

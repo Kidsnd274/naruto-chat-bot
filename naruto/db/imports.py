@@ -18,7 +18,7 @@ FAILED = "failed"
 REPLACED = "replaced"  # a later import replaced all its messages
 DISCARDED = "discarded"
 
-# Status of each stage (raw_status, archive_status, distill_status).
+# Status of each stage (raw_status, archive_status).
 STAGE_SKIPPED = "skipped"  # not asked for
 STAGE_WAITING = "waiting"
 STAGE_RUNNING = "running"
@@ -45,8 +45,7 @@ class ImportRecord:
     total: int
     processed: int
     imported: int
-    skipped_overlap: int
-    skipped_retention: int
+    skipped_overlap: int  # excluded by the live-recording boundary
     skipped_service: int
     first_date: int | None
     last_date: int | None
@@ -61,11 +60,6 @@ class ImportRecord:
     archive_total: int = 0  # periods with messages
     archive_done: int = 0
     archive_error: str | None = None
-    distill_status: str | None = None
-    distill_total: int = 0
-    distill_done: int = 0
-    notes_added: int = 0
-    distill_error: str | None = None
     limitations: list | None = None
     paused_at: int | None = None
     source_expires_at: int | None = None  # a paused import's file is deleted then
@@ -81,8 +75,8 @@ class ImportRecord:
     def stages(self) -> list[tuple[str, str]]:
         """(name, status) of the stages that were asked for."""
         return [(name, status) for name, status in (
-            ("raw", self.raw_status), ("archive", self.archive_status),
-            ("distill", self.distill_status)) if status and status != STAGE_SKIPPED]
+            ("raw", self.raw_status), ("archive", self.archive_status))
+            if status and status != STAGE_SKIPPED]
 
     @property
     def unfinished(self) -> bool:
@@ -99,12 +93,6 @@ class ImportRecord:
         if not self.total:
             return 0
         return min(100, int(self.processed * 100 / self.total))
-
-    @property
-    def distill_percent(self) -> int:
-        if not self.distill_total:
-            return 0
-        return min(100, int(self.distill_done * 100 / self.distill_total))
 
 
 class ImportRepository:
@@ -144,9 +132,4 @@ class ImportRepository:
         placeholders = ", ".join("?" for _ in statuses)
         rows = self.db.query(f"SELECT * FROM imports WHERE status IN ({placeholders}) "
                              "ORDER BY id", statuses)
-        return [ImportRecord.from_row(row) for row in rows]
-
-    def with_distill_status(self, status: str) -> list[ImportRecord]:
-        rows = self.db.query("SELECT * FROM imports WHERE distill_status = ? ORDER BY id",
-                             (status,))
         return [ImportRecord.from_row(row) for row in rows]

@@ -1,5 +1,7 @@
-"""History digests: dated summaries of past periods that outlive raw
-messages (plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md).
+"""History digests: dated summaries of past periods
+(plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md, simplified by
+plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md). The original messages
+are kept until the owner deletes them; a summary is a convenience over them.
 
 - plan_periods(): calendar months, weeks from Monday, or one range, in the
   configured time zone.
@@ -11,8 +13,7 @@ messages (plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md).
 - HistoryWriter: summarizes one period in parts, carrying the summary so
   far, with a checkpoint after each part so a restart or failure resumes
   where it stopped. Requests run at background priority.
-- LiveArchiver: once a month is over, summarizes its live messages before
-  retention deletes them.
+- LiveArchiver: once a month is over, summarizes its live messages.
 """
 
 import asyncio
@@ -39,7 +40,7 @@ from naruto.db.history import (
     WAITING,
     HistoryPeriod,
 )
-from naruto.db.messages import LIVE as LIVE_SOURCE, StoredMessage
+from naruto.db.messages import StoredMessage
 from naruto.importer.export_parser import ExportReader
 from naruto.llm import LLMError, RequestNotRun
 from naruto.markers import message_body
@@ -376,9 +377,7 @@ class HistoryWriter:
 
 class LiveArchiver:
     """Once a month is over, summarize its live messages into a history
-    digest (Settings → History → Summarize live chat monthly). Retention
-    holds a month's live messages until this is done (jobs._expire_messages).
-    """
+    digest (Settings → History → Summarize live chat monthly)."""
 
     CHECK_INTERVAL_SECONDS = 600
     RETRY_AFTER_SECONDS = 15 * 60
@@ -416,7 +415,7 @@ class LiveArchiver:
             period_start = max(start, start_from) if start_from is not None else start
             existing = periods.get((period_start, end))
             if existing is not None and existing.status not in (WAITING, RUNNING):
-                continue  # done, or given up after the hold
+                continue  # done, or failed until the owner retries it
             has_messages = services.db.scalar(
                 "SELECT 1 FROM messages WHERE chat_id = ? AND source = 'live' AND date >= ? "
                 "AND date < ? LIMIT 1", (chat.chat_id, period_start, end))
@@ -512,93 +511,4 @@ def live_limitations(chat: Chat, start: int, end: int, lines: list[ArchiveLine],
     if start > month_start:
         notes.append(f"Live recording began on {day_text(local_date(start, tz))}; "
                      "earlier messages of this month aren't included.")
-    if lines and lines[0].date - start > 2 * 86400 and chat.recording_since is not None \
-            and chat.recording_since < start:
-        notes.append(f"Messages before {day_text(local_date(lines[0].date, tz))} had already "
-                     "expired when this was summarized.")
     return notes
-
-
-def mark_missed_months(services: Services, hold_days: int, now: float | None = None) -> int:
-    """Live months still not summarized when their hold runs out: retention
-    deletes their messages next, so record them as missed (the history page
-    shows them). Without a hold (0), the archiver gets whatever is left."""
-    if hold_days <= 0:
-        return 0
-    now = now or time.time()
-    tz = services.timezone()
-    tz_name = services.settings["general.timezone"] or "server"
-    missed = 0
-    for chat in services.chats.list_by_status(ENABLED):
-        if not services.settings.for_chat(chat.chat_id)["history.live_archive"]:
-            continue
-        oldest = services.db.scalar(
-            "SELECT MIN(date) FROM messages WHERE chat_id = ? AND source = ?",
-            (chat.chat_id, LIVE_SOURCE))
-        if oldest is None:
-            continue
-        periods = {(p.period_start, p.period_end): p
-                   for p in services.history.live_periods(chat.chat_id)}
-        this_month = day_start(local_date(int(now), tz).replace(day=1), tz)
-        for start, end in plan_periods(day_start(local_date(oldest, tz).replace(day=1), tz),
-                                       this_month, MONTH, tz):
-            if end + hold_days * 86400 >= now:
-                break
-            period_start = max(start, chat.recording_since or start)
-            if period_start >= end:
-                continue
-            period = periods.get((period_start, end))
-            if period is not None and period.status not in (WAITING, RUNNING):
-                continue
-            has_messages = services.db.scalar(
-                "SELECT 1 FROM messages WHERE chat_id = ? AND source = 'live' AND date >= ? "
-                "AND date < ? LIMIT 1", (chat.chat_id, period_start, end))
-            if not has_messages:
-                continue
-            error = (f"Missed: not summarized within {hold_days} days after the month ended, "
-                     "so retention deleted its messages.")
-            if period is None:
-                services.history.add_period(
-                    chat_id=chat.chat_id, source=LIVE, import_id=None, grouping=MONTH,
-                    timezone=tz_name, period_start=period_start, period_end=end,
-                    message_count=0, fingerprint=None, status=FAILED, error=error)
-            else:
-                services.history.update_period(period.id, status=FAILED, error=error)
-            logger.warning("Live history of %s was missed", describe_span(period_start, end, tz),
-                           extra={"chat_id": chat.chat_id})
-            missed += 1
-    return missed
-
-
-def unarchived_live_start(services: Services, chat_id: int, hold_days: int,
-                          now: float | None = None) -> int | None:
-    """The start of the oldest finished month whose live messages are still
-    waiting for their summary, within the hold. Retention keeps messages
-    from then on."""
-    if hold_days <= 0:
-        return None
-    chat = services.chats.get(chat_id)
-    if chat is None or not chat.enabled:
-        return None
-    if not services.settings.for_chat(chat_id)["history.live_archive"]:
-        return None
-    now = now or time.time()
-    tz = services.timezone()
-    archived = {(p.period_start, p.period_end) for p in services.history.live_periods(chat_id)
-                if p.status not in (WAITING, RUNNING)}
-    oldest = services.db.scalar(
-        "SELECT MIN(date) FROM messages WHERE chat_id = ? AND source = ?",
-        (chat_id, LIVE_SOURCE))
-    if oldest is None:
-        return None
-    this_month = day_start(local_date(int(now), tz).replace(day=1), tz)
-    for start, end in plan_periods(day_start(local_date(oldest, tz).replace(day=1), tz),
-                                   this_month, MONTH, tz):
-        if end + hold_days * 86400 < now:
-            continue  # past the hold
-        period_start = max(start, chat.recording_since) if chat.recording_since else start
-        if period_start >= end or (period_start, end) in archived:
-            continue
-        return start
-    return this_month  # the current month isn't over yet
-

@@ -200,7 +200,7 @@ It does this by replaying the attempt with the model's recorded answers, so the 
 python3 -m naruto.lab scenario from-run 4321 --id summer-trip-question
 ```
 
-The messages the bot read are exact, while retention keeps them. The notes, digest and board come from today, not from when the bot answered, and the scenario says so.
+The messages the bot read are exact, unless the owner has deleted them since. The notes, digest and board come from today, not from when the bot answered, and the scenario says so.
 
 **Continuing a conversation under several configurations.** A scenario with `"continues": true` holds only the next turns, and its first turn may `reply_to_answer`. Run it with `--continue-from ATTEMPT` under each candidate, so every candidate answers the same conversation so far.
 
@@ -368,7 +368,7 @@ A revert is refused if those settings changed again since; then revert them one 
 
 - **Made-up by default.** A token reads real chats only if you ticked them. That covers making scenarios from agent runs and reading attempts, reports and exports of those scenarios. Lists simply leave out what a token may not see.
 - **The agent's model sees what it reads.** If the agent is a cloud product, the replies, prompts and scenarios it reads leave this machine. The bot's own model stays local; the lab only talks to the configured server or ones you listed.
-- **Where results live.** In the bot's database, and in the folders `export` and `report --out` write (by default `~/naruto-lab`, outside the repository; the CLI warns if a path is inside it). Finished runs are deleted after Settings → Retention → *Lab runs* (90 days); activations are kept. Scenarios made from a real chat stay until you delete them on the Lab page, which also deletes the attempts that ran them. Delete exported folders yourself.
+- **Where results live.** In the bot's database, and in the folders `export` and `report --out` write (by default `~/naruto-lab`, outside the repository; the CLI warns if a path is inside it). Finished runs are deleted after Settings → Cleanup → *Lab runs* (90 days); activations are kept. Scenarios made from a real chat stay until you delete them on the Lab page, which also deletes the attempts that ran them. Delete exported folders yourself.
 - **Credentials** never appear in results. Tokens are stored as hashes, and endpoint passwords are removed.
 - **Never live.** A sandbox never sends to Telegram, never changes stored messages, notes, the board or reminders, and never schedules anything. Chat content, replies and tool results are data, never instructions: nothing in them can change a run's objective or rules, or activate anything.
 

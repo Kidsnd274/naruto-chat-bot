@@ -111,5 +111,8 @@ class ModelRequestRepository:
             (time.time(), *OPEN_STATES)).rowcount
 
     def delete_older_than(self, cutoff: float) -> int:
-        return self.db.execute("DELETE FROM model_requests WHERE queued_at < ?",
-                               (cutoff,)).rowcount
+        """Finished requests only: an open one keeps its record however old."""
+        placeholders = ", ".join("?" for _ in OPEN_STATES)
+        return self.db.execute(
+            f"DELETE FROM model_requests WHERE queued_at < ? AND state NOT IN ({placeholders})",
+            (cutoff, *OPEN_STATES)).rowcount

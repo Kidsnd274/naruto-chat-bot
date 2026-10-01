@@ -3,7 +3,7 @@
 {% block content %}
 <p class="crumbs"><a href="/chats">Chats</a> / <a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a> /</p>
 <h1>Memory</h1>
-<p class="muted">Durable facts the bot keeps about this group ({{ total }} of at most {{ limit }} notes). Notes don't expire with the messages. The bot adds them when asked to remember something and, if automatic notes are on, while it updates the digest. Locked notes can't be changed or forgotten by the bot or members.</p>
+<p class="muted">Durable facts the bot keeps about this group ({{ total }} of at most {{ limit }} notes). Notes stay when messages are deleted. The bot adds them when asked to remember something and, if automatic notes are on, while it updates the digest. Locked notes can't be changed or forgotten by the bot or members.</p>
 
 <form class="filters" method="get" action="/chats/{{ chat.chat_id }}/memory">
   <input type="search" name="q" value="{{ filters.q }}" placeholder="Search notes">

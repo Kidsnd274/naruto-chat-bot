@@ -10,7 +10,7 @@
     <li>Choose <strong>Machine-readable JSON</strong>. Untick photos, videos, voice messages, stickers and files: text only keeps the file small (media is stored as markers like <code>[photo]</code>).</li>
     <li>Upload the <code>result.json</code> it creates. You'll see a preview before anything is imported.</li>
   </ol>
-  <p class="muted small">Only messages from before the bot's first recorded message are imported, and only those from the last {{ retention_days if retention_days else "∞" }} days (Settings → Retention). Importing the same group again replaces the previous import. The uploaded file is deleted once the import finishes.</p>
+  <p class="muted small">Only messages from before the bot's first recorded message are imported, however old. Importing the same dates of a group again replaces the earlier import's messages in those dates. The uploaded file is deleted once the import finishes.</p>
   {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
   <form method="post" action="/import" enctype="multipart/form-data" class="filters"
         hx-post="/import" hx-encoding="multipart/form-data" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-indicator="#upload-indicator">

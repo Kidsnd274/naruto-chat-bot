@@ -6,7 +6,7 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 - **Approve once.** A group the bot is added to stays pending until the owner approves it. Pending and disabled groups get no replies and nothing is recorded.
 - **Remembers the chat.** Every message in an enabled group is stored (text, sender, replies, media as markers such as `[photo]`), with full-text search. Images are only downloaded when someone asks about one.
 - **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, post a plan with Confirm / Change buttons, start polls and pin messages. Each answer is a bounded agent run: a few model requests and tool calls at most.
-- **Remembers the group.** A rolling digest of what's going on and long-term memory notes (people's preferences, traditions, running jokes) survive after old messages are deleted by the retention setting. Members can ask it to remember or forget things, and the owner can edit everything in the web admin.
+- **Remembers the group.** Messages are kept until the owner deletes them, and stay searchable. A rolling digest of what's going on and long-term memory notes (people's preferences, traditions, running jokes) come from live chat; each reply reads only a bounded recent window plus the digest and notes, however long the history. Members can ask it to remember or forget things, and the owner can edit everything in the web admin.
 - **Web admin** on localhost: dashboard, chats, message browser, board, agent traces, settings, logs.
 
 ## Setup
@@ -84,7 +84,7 @@ python3 -m venv .venv
 What it can do when asked, besides chatting:
 
 - **Look things up** further back than the recent messages it sees, including imported history ("what time did Mei say her flight lands?").
-- **Remember older times** from history summaries, dated summaries of past months or weeks that outlive the messages ("what were we planning in summer 2021?"). It says when an answer comes from a summary rather than the messages themselves.
+- **Remember older times** from history summaries, dated summaries of past months or weeks ("what were we planning in summer 2021?"), and by searching the stored messages. It says when an answer comes from a summary rather than the messages themselves.
 - **The board:** one pinned message per group with 🗓 Plans, ✅ Decided and ❓ Open questions, edited in place ("put the BBQ on the board", "mark booking the pit done"). It is sent as a Telegram rich message, or as a plain formatted message if rich messages are refused (Settings → Board).
 - **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
@@ -117,7 +117,7 @@ Commands (each goes straight to a focused skill):
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
 | Lab | Tuning runs (budget, your A/B choices, configurations, attempts, the report), activating and reverting a tested configuration, and the API tokens agents use. See [docs/LAB.md](docs/LAB.md). |
-| Queue | Every model request running and waiting (replies first, then background work such as digests, history summaries and import memory), the capacity limits, pausing background work, cancelling a waiting request, and a history of recent requests with waiting and model time. |
+| Queue | Every model request running and waiting (replies first, then background work such as digests and history summaries), the capacity limits, pausing background work, cancelling a waiting request, and a history of recent requests with waiting and model time. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. Some (persona, digest frequency, automatic notes, board, images, recent window, progress message) can also be set for one chat on that chat's **Settings for this chat** page. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
 
@@ -128,9 +128,10 @@ The bot only sees messages from when it joined. To give it older history:
 1. In Telegram Desktop, open the group → ⋮ → **Export chat history**, choose **Machine-readable JSON**, and untick photos, videos, voice messages, stickers and files (media becomes markers such as `[photo]`).
 2. On the web admin's **Import** page, upload `result.json`. The preview pre-selects the group by chat ID (or name).
 3. Choose what to do, each with its own dates (whole days in the configured time zone):
-   - **Import chat messages:** kept as searchable chat. Only messages inside the imported-messages retention (Settings → Retention) can be kept, so this starts unticked for an old export.
-   - **Make history summaries:** dated summaries, monthly, weekly or one for the whole range, of any dates in the export, however old. They are kept after the messages are gone, and the bot looks them up when asked about earlier times.
-   - **Add memory notes:** durable facts from the summarized dates (or the imported ones).
+   - **Import chat messages:** kept as searchable chat, however old, until you delete them.
+   - **Make history summaries:** dated summaries, monthly, weekly or one for the whole range, of any dates in the export. The bot looks them up when asked about earlier times. They are made from the uploaded file, so redoing them later needs the file again.
+
+   An import never adds memory notes or starts the rolling digest: those come from live chat only. Imported messages are still in the bot's recent context and searches.
 
    The estimate below updates as you change things: how many messages are kept, summarized or skipped and why, how many model requests it takes, and which existing summaries would be reused or replaced.
 4. Under **People in this export**, check the names: each sender is matched to their Telegram account, and the name box starts with the name the export uses (your contact name for them). Pick "Same person as" if someone is really another entry.
@@ -138,11 +139,9 @@ The bot only sees messages from when it joined. To give it older history:
 
 Nothing from after live recording began (shown on the chat's History page; set when the bot was enabled) is imported or summarized from the export, so nothing is counted twice. Importing messages for some dates replaces earlier imported messages in those dates only. Uploading the same export again reuses the summaries that would come out the same; to rebuild summaries that overlap the chosen dates, tick **Replace them** (and **including edited ones** to replace summaries you corrected). Replaced summaries stay in use until all their replacements are done. You can also import into a group the bot hasn't joined yet; it is created as pending.
 
-Summaries and memory notes keep the model busy in the background (replies to people go first; see the Queue page). The Import page shows each stage's progress, and can **pause**, **resume** and **cancel the rest**. If a summary keeps failing, the import pauses; the uploaded file is kept for 7 days (Settings → History) so it can resume, and a restart continues where it stopped. The file is deleted when everything is done.
+Summaries keep the model busy in the background (replies to people go first; see the Queue page). The Import page shows each stage's progress, and can **pause**, **resume** and **cancel the rest**. If a summary keeps failing, the import pauses; the uploaded file is kept for 7 days (Settings → History) so it can resume, and a restart continues where it stopped. The file is deleted when everything is done.
 
-If the group has no digest yet, it starts from imported messages of the last two weeks only (Settings → Import), so an old export isn't taken as what's going on now.
-
-**Live chat** gets a history summary too: once a month is over, its live messages are summarized before retention deletes them (Settings → History → Summarize live chat monthly; it can be turned off per chat). Until then the month's messages are kept, at most 7 days after the month ends.
+**Live chat** gets a history summary too: once a month is over, its live messages are summarized (Settings → History → Summarize live chat monthly; it can be turned off per chat). The messages themselves stay either way.
 
 ### Model server notes
 
@@ -169,7 +168,7 @@ The manual, for you and for agents: **[docs/LAB.md](docs/LAB.md)**. It also cove
 .venv/bin/python -m pytest
 ```
 
-The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls, commands, reminders), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `memory/` (digest and notes upkeep, import distillation), `web/` (FastAPI admin), `lab/` (the prompt lab: scenarios run in sandboxes), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
+The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls, commands, reminders), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `memory/` (digest and notes upkeep, history summaries), `web/` (FastAPI admin), `lab/` (the prompt lab: scenarios run in sandboxes), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
 
 ### Upgrading from the Redis version
 

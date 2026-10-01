@@ -2,7 +2,6 @@
 reminders on the chat page, and deleting them."""
 
 import logging
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -28,8 +27,7 @@ def chat_memory(services: Services, chat: Chat) -> dict:
     return {
         "digest": services.digests.get(chat.chat_id),
         "unread": services.digests.unread_count(
-            chat.chat_id, services.digests.get(chat.chat_id),
-            int(time.time() - services.settings["import.digest_window_days"] * 86400))[0],
+            chat.chat_id, services.digests.get(chat.chat_id))[0],
         "note_count": services.notes.count(chat.chat_id),
         "notes": notes,
         "note_names": services.people.names_by_person(n.person_id for n in notes),

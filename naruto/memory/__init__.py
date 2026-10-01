@@ -1,1 +1,1 @@
-"""Group memory: the digest, memory notes and import distillation."""
+"""Group memory: the digest, memory notes and history summaries."""

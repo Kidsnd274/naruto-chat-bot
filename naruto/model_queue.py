@@ -1,7 +1,7 @@
 """One queue for every model request.
 
 Replies to people ("foreground") start before waiting background work
-(digest upkeep, history summaries, import distillation). Within a priority,
+(digest upkeep, history summaries). Within a priority,
 first come, first served. The limits are settings, read at every dispatch:
 
 - model.parallel_requests: requests running at once, in total;
@@ -64,7 +64,7 @@ class QueueRefused(Exception):
 @dataclass
 class RequestInfo:
     """What a request is for, shown on the queue page."""
-    task: str  # reply | image | digest | history | distill | live_archive | lab
+    task: str  # reply | image | digest | history | live_archive | lab
     chat_id: int | None = None
     run_id: int | None = None
     import_id: int | None = None

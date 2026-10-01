@@ -178,8 +178,9 @@ SECTIONS: tuple[Section, ...] = (
     Section("agent", "Agent limits",
             "Bounds for one bot response: model requests, tool calls and time."),
     Section("history", "History",
-            "Dated summaries of past months or weeks (history digests). They outlive raw "
-            "messages: made from imported exports, and from live chat once each month is over."),
+            "Dated summaries of past months or weeks (history digests): made from imported "
+            "exports, and from live chat once each month is over. The original messages stay "
+            "searchable; a summary answers “what happened then?” without reading them all."),
     Section("lab", "Lab",
             "The prompt lab: experiments with the bot's prompts and model parameters, run in "
             "sandboxes by you or an external agent (docs/LAB.md). Nothing changes the live bot "
@@ -187,8 +188,10 @@ SECTIONS: tuple[Section, ...] = (
     Section("board", "Board", "The pinned board of plans, decisions and open questions."),
     Section("import", "Import", "Telegram Desktop history import."),
     Section("media", "Media", "Photos, stickers and other visual media."),
-    Section("retention", "Retention",
-            "How long raw data is kept. 0 keeps it forever."),
+    Section("retention", "Cleanup",
+            "How long operational records are kept: logs, agent traces, lab runs and finished "
+            "reminders. 0 keeps them forever. Chat messages are kept until you delete them "
+            "(Chats → a group → Delete messages)."),
     Section("behaviour", "Behaviour"),
 )
 
@@ -344,8 +347,8 @@ SETTINGS: tuple[Setting, ...] = (
             "int", 1500, min=50, max=100_000),
     # -------------------------------------------------------------- memory
     Setting("memory.auto_notes", "memory", "Automatic notes",
-            "Let digest updates and imports add and correct group memory notes (durable "
-            "facts people mention). “Remember that…” works either way.",
+            "Let digest updates add and correct group memory notes (durable facts people "
+            "mention in live chat; imports never add notes). “Remember that…” works either way.",
             "bool", True),
     Setting("memory.max_notes_per_chat", "memory", "Max notes per chat",
             "The bot and members can't add notes beyond this (the owner can).",
@@ -369,19 +372,15 @@ SETTINGS: tuple[Setting, ...] = (
             "backlog is read over several updates.",
             "int", 8000, min=1000, max=100_000),
     Setting("memory.reasoning", "memory", "Reasoning",
-            "Let the model think during digest updates and import distillation (slower).",
+            "Let the model think during digest updates (slower).",
             "bool", False),
     Setting("memory.max_output_tokens", "memory", "Max output tokens",
-            "Output limit for digest updates and import distillation.",
+            "Output limit for digest updates.",
             "int", 2500, min=200, max=16000),
     Setting("memory.instructions", "memory", "Digest and notes: instructions",
             "System prompt for digest updates. {bot_name} and {digest_max_chars} are "
             "filled in. The answer must be the JSON object it describes.",
             "text", load_prompt("digest"), max=20000),
-    Setting("memory.distill_instructions", "memory", "Import distillation: instructions",
-            "System prompt for reading an imported history into notes. {bot_name} is "
-            "filled in. The answer must be the JSON object it describes.",
-            "text", load_prompt("distill"), max=20000),
     # --------------------------------------------------------------- agent
     Setting("agent.max_model_requests", "agent", "Model requests per run",
             "Upper limit on model requests for one response, including the final "
@@ -428,14 +427,10 @@ SETTINGS: tuple[Setting, ...] = (
             "it can resume. After that the file is deleted and unfinished work needs a new upload.",
             "int", 7, min=1, max=90),
     Setting("history.live_archive", "history", "Summarize live chat monthly",
-            "Once a month is over, summarize its live messages into a history digest before "
-            "retention deletes them.",
+            "Once a month is over, summarize its live messages into a history digest. A month "
+            "that keeps failing is marked failed (retry it on the History page); later months "
+            "still go ahead.",
             "bool", True),
-    Setting("history.live_hold_days", "history", "Hold live messages for the summary (days)",
-            "Live messages of a month that isn't summarized yet are kept until it is, at most "
-            "this many days after the month ends (so the start of a month can outlive the "
-            "retention period by up to about five weeks). 0 doesn't hold them.",
-            "int", 7, min=0, max=30),
     # ----------------------------------------------------------------- lab
     Setting("lab.parallel_attempts", "lab", "Parallel attempts",
             "How many lab attempts run at once. Their model requests wait behind replies to "
@@ -464,19 +459,6 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("import.max_upload_mb", "import", "Max upload size (MB)",
             "Largest result.json the Import page accepts.",
             "int", 200, min=1, max=4096),
-    Setting("import.distill_memory", "import", "Distill memory from imports",
-            "After an import, read the whole export in chunks (including messages outside "
-            "retention) and add group memory notes. Keeps the model busy in the background "
-            "for a while; replies to people still go first.",
-            "bool", True),
-    Setting("import.distill_chunk_tokens", "import", "Distillation chunk (tokens)",
-            "How much of the export one model request reads.",
-            "int", 6000, min=1000, max=100_000),
-    Setting("import.digest_window_days", "import", "Digest start for imports (days)",
-            "A chat with no digest yet starts it from imported messages of the last this many "
-            "days only (plus live ones), so an old export isn't taken as what's going on now. "
-            "Older history goes into history digests and memory notes instead.",
-            "int", 14, min=1, max=365),
     # --------------------------------------------------------------- media
     Setting("media.enabled", "media", "Media enabled",
             "Look at images when someone asks about one (the current message "
@@ -496,14 +478,9 @@ SETTINGS: tuple[Setting, ...] = (
             "Instructions for describing an image.",
             "text", load_prompt("describe_image"), max=5000),
     # ----------------------------------------------------------- retention
-    Setting("retention.live_messages_days", "retention", "Live messages (days)",
-            "How long live messages are kept (cleaned up hourly). The digest and group memory "
-            "keep what matters beyond this; messages the digest hasn't read yet get up to 7 "
-            "more days.",
-            "int", 30, min=0, max=36500),
-    Setting("retention.imported_messages_days", "retention", "Imported messages (days)",
-            "An import keeps only messages newer than this, and older imported messages are "
-            "cleaned up daily.",
+    Setting("retention.reminders_days", "retention", "Finished reminders (days)",
+            "Sent and cancelled reminders are deleted this long after they finish. Pending "
+            "reminders are never cleaned up.",
             "int", 30, min=0, max=36500),
     Setting("retention.agent_runs_days", "retention", "Agent runs (days)",
             "Agent traces contain full prompts, so they are cleaned up daily.",

@@ -4,31 +4,20 @@
     <h3>Chat messages</h3>
     <ul class="plain small">
       <li><strong>{{ plan.raw_eligible }}</strong> of {{ plan.raw_selected }} messages in the chosen dates will be imported{% if plan.raw_start %} ({{ plan.raw_start|ts("%d %b %Y") }} – {{ (plan.raw_end - 1)|ts("%d %b %Y") }}){% endif %}.</li>
-      {% if plan.raw_too_old %}<li>{{ plan.raw_too_old }} are older than the imported-messages retention (Settings → Retention), so they're not kept{% if options.archive %} (they can still be summarized){% endif %}.</li>{% endif %}
-      {% if plan.raw_live %}<li>{{ plan.raw_live }} were already recorded live and are skipped.</li>{% endif %}
+      {% if plan.raw_live %}<li>{{ plan.raw_live }} are excluded by the live-recording boundary.</li>{% endif %}
       {% if plan.raw_replaced %}<li>{{ plan.raw_replaced }} messages from earlier imports in these dates will be replaced; imported messages outside them stay.</li>{% endif %}
     </ul>
   {% endif %}
   {% if options.archive %}
     <h3>History summaries</h3>
     <ul class="plain small">
-      <li><strong>{{ plan.archive_count }}</strong> messages in <strong>{{ plan.active_periods|length }}</strong> {{ grouping_labels[options.grouping]|lower if options.grouping != "range" else "" }} period{{ 's' if plan.active_periods|length != 1 else '' }} with messages{% if plan.archive_start %} ({{ plan.archive_start|ts("%d %b %Y") }} – {{ (plan.archive_end - 1)|ts("%d %b %Y") }}){% endif %}{% if plan.archive_not_raw %}; {{ plan.archive_not_raw }} of them are summarized without being kept as messages{% endif %}.</li>
+      <li><strong>{{ plan.archive_count }}</strong> messages in <strong>{{ plan.active_periods|length }}</strong> {{ grouping_labels[options.grouping]|lower if options.grouping != "range" else "" }} period{{ 's' if plan.active_periods|length != 1 else '' }} with messages{% if plan.archive_start %} ({{ plan.archive_start|ts("%d %b %Y") }} – {{ (plan.archive_end - 1)|ts("%d %b %Y") }}){% endif %}{% if plan.archive_not_raw %}; {{ plan.archive_not_raw }} of them are summarized without being kept as messages, so redoing those summaries later needs this file again{% endif %}.</li>
       {% if plan.archive_after_boundary %}<li>{{ plan.archive_after_boundary }} chosen messages are from after live recording began; live chat gets its own monthly summaries.</li>{% endif %}
       {% set reused = plan.active_periods|length - plan.work_periods|length %}
       {% if reused %}<li>{{ reused }} period{{ 's' if reused != 1 else '' }} already {{ 'have' if reused != 1 else 'has' }} an identical summary and will be kept as {{ 'they are' if reused != 1 else 'it is' }}.</li>{% endif %}
       <li>About <strong>{{ plan.archive_requests }}</strong> model request{{ 's' if plan.archive_requests != 1 else '' }} ({{ "{:,}".format(plan.archive_tokens) }} tokens of messages), in the background; replies to people go first.</li>
       {% if plan.replaced_digests %}
         <li>Replaces {{ plan.replaced_digests|length }} existing summar{{ 'ies' if plan.replaced_digests|length != 1 else 'y' }}{% if plan.edited_replaced %}, {{ plan.edited_replaced|length }} edited by you{% endif %}: {% for d in plan.replaced_digests[:6] %}{{ d.period_start|ts("%d %b %Y") }} – {{ (d.period_end - 1)|ts("%d %b %Y") }}{% if not loop.last %}, {% endif %}{% endfor %}{% if plan.replaced_digests|length > 6 %}, …{% endif %}. The old ones stay until all their replacements are done.</li>
-      {% endif %}
-    </ul>
-  {% endif %}
-  {% if options.distill %}
-    <h3>Memory notes</h3>
-    <ul class="plain small">
-      {% if plan.distill_count %}
-        <li>Reads {{ plan.distill_count }} messages ({{ plan.distill_start|ts("%d %b %Y") }} – {{ (plan.distill_end - 1)|ts("%d %b %Y") }}) in about {{ plan.distill_requests }} request{{ 's' if plan.distill_requests != 1 else '' }}.</li>
-      {% else %}
-        <li>Nothing to read in these dates.</li>
       {% endif %}
     </ul>
   {% endif %}

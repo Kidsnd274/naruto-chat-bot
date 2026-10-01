@@ -896,6 +896,44 @@ CREATE TABLE lab_events (
 CREATE INDEX lab_events_run ON lab_events (run_id, id);
 """
 
+_V13_KEEP_MESSAGES = """
+-- plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md: messages are kept until
+-- the owner deletes them, imports no longer distill memory notes, and a
+-- history period has at most one summary.
+
+ALTER TABLE imports DROP COLUMN skipped_retention;
+ALTER TABLE imports DROP COLUMN distill_status;
+ALTER TABLE imports DROP COLUMN distill_total;
+ALTER TABLE imports DROP COLUMN distill_done;
+ALTER TABLE imports DROP COLUMN notes_added;
+ALTER TABLE imports DROP COLUMN distill_error;
+
+-- A crash between saving a summary and finishing its period could leave two
+-- summaries of one period. Keep the one the period points at; drop unedited
+-- extras and detach edited ones, so no owner edit is lost.
+DELETE FROM history_digests
+ WHERE period_id IS NOT NULL AND edited = 0
+   AND id NOT IN (SELECT digest_id FROM history_periods WHERE digest_id IS NOT NULL)
+   AND EXISTS (SELECT 1 FROM history_digests AS other
+                WHERE other.period_id = history_digests.period_id
+                  AND other.id != history_digests.id);
+UPDATE history_digests SET period_id = NULL
+ WHERE period_id IS NOT NULL
+   AND id NOT IN (SELECT digest_id FROM history_periods WHERE digest_id IS NOT NULL)
+   AND EXISTS (SELECT 1 FROM history_digests AS other
+                WHERE other.period_id = history_digests.period_id
+                  AND other.id != history_digests.id);
+CREATE UNIQUE INDEX history_digests_period ON history_digests (period_id)
+    WHERE period_id IS NOT NULL;
+
+-- What a period's partial summary was made with: the settings that shape it,
+-- and the messages read so far (in order). A resumed period whose hashes no
+-- longer match starts over. Unfinished periods from before have neither, so
+-- they start over too.
+ALTER TABLE history_periods ADD COLUMN settings_hash TEXT;
+ALTER TABLE history_periods ADD COLUMN source_hash TEXT;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -909,6 +947,7 @@ MIGRATIONS: list[str] = [
     _V10_MODEL_QUEUE,
     _V11_HISTORY,
     _V12_LAB,
+    _V13_KEEP_MESSAGES,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

@@ -1,18 +1,17 @@
 """Import flow: upload -> preview -> choose what to keep and summarize ->
 run the stages (plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md).
 
-An import has up to three stages, each with its own status:
+An import has up to two stages, each with its own status:
 
-1. raw: messages in the chosen dates are stored, if they come before live
-   recording began and fall within the imported-messages retention. Earlier
-   imports' messages in the same dates are replaced once the new ones are in.
+1. raw: messages in the chosen dates are stored (however old), if they come
+   before live recording began. Earlier imports' messages in the same dates
+   are replaced once the new ones are in. They are kept until the owner
+   deletes them.
 2. archive: the chosen dates are summarized into history digests, period by
-   period, straight from the uploaded file, so messages outside retention
-   are summarized too (naruto.memory.history).
-3. distill: memory notes from the summarized dates (or the raw dates when
-   no summaries were asked for).
+   period, straight from the uploaded file (naruto.memory.history).
 
-Then, if the chat has no digest yet, it is started from recent messages.
+An import never adds memory notes or touches the rolling digest: those come
+from live chat only (plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md).
 
 A stage that keeps failing, or that the owner pauses, pauses the import: its
 uploaded file is kept for history.source_keep_days so it can resume. A
@@ -60,7 +59,6 @@ from naruto.db.imports import (
     STAGE_CANCELLED,
     STAGE_DONE,
     STAGE_EXPIRED,
-    STAGE_FAILED,
     STAGE_PAUSED,
     STAGE_RUNNING,
     STAGE_SKIPPED,
@@ -72,7 +70,6 @@ from naruto.db.imports import (
 from naruto.db.messages import IMPORT, NewMessage
 from naruto.importer.export_parser import ExportError, ExportReader
 from naruto.importer.planning import ImportOptions, ImportPlan, make_plan
-from naruto.memory.distill import DISTILL_STOPPED, DistillFailed, Distiller
 from naruto.memory.history import (
     FINISHED,
     PAUSED_BY_QUEUE,
@@ -408,9 +405,7 @@ class ImportService:
                          options=frozen, processed=0, imported=0,
                          raw_status=status(frozen["raw"]),
                          archive_status=status(frozen["archive"]),
-                         distill_status=status(frozen["distill"]),
-                         archive_total=0, archive_done=0, distill_total=0, distill_done=0,
-                         notes_added=0)
+                         archive_total=0, archive_done=0)
         self._spawn(import_id)
         return plan
 
@@ -449,8 +444,7 @@ class ImportService:
         return None
 
     async def _run_stages(self, import_id: int) -> None:
-        for stage, run in (("raw", self._raw_stage), ("archive", self._archive_stage),
-                           ("distill", self._distill_stage)):
+        for stage, run in (("raw", self._raw_stage), ("archive", self._archive_stage)):
             record = self.repo.get(import_id)
             if getattr(record, f"{stage}_status") not in (STAGE_WAITING, STAGE_RUNNING):
                 continue
@@ -460,7 +454,6 @@ class ImportService:
                 return
             if outcome == STAGE_PAUSE:
                 return
-        await self._start_rolling_digest(import_id)
         self._complete(import_id)
 
     def _after_stop(self, import_id: int, stage: str) -> None:
@@ -473,8 +466,7 @@ class ImportService:
     def _pause_stage(self, import_id: int, stage: str, error: str) -> None:
         ts = now_ts()
         keep_days = self.services.settings["history.source_keep_days"]
-        error_field = {"raw": "error", "archive": "archive_error",
-                       "distill": "distill_error"}[stage]
+        error_field = {"raw": "error", "archive": "archive_error"}[stage]
         self.repo.update(import_id, **{f"{stage}_status": STAGE_PAUSED, error_field: error[:500]},
                          status=PAUSED, paused_at=ts, source_expires_at=ts + keep_days * 86400)
         self._pause.discard(import_id)
@@ -509,7 +501,6 @@ class ImportService:
         options = record.options
         raw = options["raw"]
         selected = raw.get("selected") or [raw["start"], raw["end"]]
-        cutoff = options.get("retention_cutoff")
         boundary = options.get("raw_boundary")
         messages = self.services.messages
         bot = self.services.status.bot
@@ -529,7 +520,6 @@ class ImportService:
             self.repo.update(import_id, processed=counts["processed"],
                              imported=counts["imported"],
                              skipped_overlap=counts["overlap"],
-                             skipped_retention=counts["retention"],
                              skipped_service=counts["service"],
                              skipped_range=counts["range"])
 
@@ -546,8 +536,6 @@ class ImportService:
                         counts["range"] += 1
                     elif boundary is not None and message.date >= boundary:
                         counts["overlap"] += 1
-                    elif cutoff is not None and message.date < cutoff:
-                        counts["retention"] += 1
                     else:
                         message_id = message.id
                         if message_id in seen_ids:
@@ -588,10 +576,9 @@ class ImportService:
                         self.repo.update(old.id, status=REPLACED)
             self.repo.update(import_id, raw_status=STAGE_DONE, error=None,
                              first_date=first_kept, last_date=last_kept)
-            logger.info("Import %s stored %s messages (%s outside the chosen dates, %s already "
-                        "recorded live, %s outside retention)", import_id, counts["imported"],
-                        counts["range"], counts["overlap"], counts["retention"],
-                        extra={"chat_id": chat_id})
+            logger.info("Import %s stored %s messages (%s outside the chosen dates, %s excluded "
+                        "by the live-recording boundary)", import_id, counts["imported"],
+                        counts["range"], counts["overlap"], extra={"chat_id": chat_id})
             return STAGE_OK
         except ImportCancelled:
             messages.delete_import(import_id)
@@ -755,42 +742,6 @@ class ImportService:
             notes.append(note)
             self.repo.update(import_id, limitations=notes)
 
-    # -------------------------------------------------------- distill stage
-
-    async def _distill_stage(self, import_id: int) -> str:
-        record = self.repo.get(import_id)
-        options = record.options
-        distill = options["distill"]
-        self.repo.update(import_id, distill_status=STAGE_RUNNING, distill_error=None)
-        try:
-            outcome = await Distiller(self.services, self.repo).distill(
-                record, record.chat_id, since=distill["start"], until=distill["end"],
-                chunk_tokens=options["distill_chunk_tokens"], max_chars=options["max_chars"],
-                should_stop=lambda: self._should_stop(import_id))
-        except DistillFailed as exc:
-            self._pause_stage(import_id, "distill", str(exc))
-            return STAGE_PAUSE
-        if outcome == DISTILL_STOPPED:
-            return STAGE_STOP
-        self.repo.update(import_id, distill_status=STAGE_DONE)
-        return STAGE_OK
-
-    async def _start_rolling_digest(self, import_id: int) -> None:
-        """A chat with no digest yet starts one from its recent messages
-        (only imported ones from the last import.digest_window_days)."""
-        record = self.repo.get(import_id)
-        keeper = self.services.keeper
-        chat = self.services.chats.get(record.chat_id)
-        if keeper is None or chat is None or record.raw_status != STAGE_DONE:
-            return
-        digest = self.services.digests.get(chat.chat_id)
-        if digest and digest.text:
-            return
-        batches = await keeper.catch_up(chat, actor=f"import {import_id}")
-        if batches:
-            logger.info("Started the digest from %s batches after import %s", batches,
-                        import_id, extra={"chat_id": chat.chat_id})
-
     # ------------------------------------------------- pause / resume / cancel
 
     def pause(self, import_id: int) -> None:
@@ -893,12 +844,6 @@ class ImportService:
             else:
                 logger.info("Import %s was interrupted by a restart; it will continue",
                             record.id)
-        for record in self.repo.with_distill_status(STAGE_RUNNING):
-            if record.status in (DONE, PARTIAL, REPLACED):  # from before stages existed
-                self.repo.update(record.id, distill_status=STAGE_FAILED,
-                                 distill_error="Interrupted by a restart. The messages were "
-                                               "imported; the notes found so far are kept.")
-                self._delete_file(record.id)
 
     def resume_interrupted(self) -> int:
         """Start the jobs recover() left running."""

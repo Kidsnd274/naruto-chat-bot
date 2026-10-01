@@ -53,7 +53,6 @@ def _upload_page(request: Request, *, error: str | None = None, status_code: int
     return request.app.state.templates.TemplateResponse(request, "import.html", {
         "records": importer.repo.recent(),
         "max_mb": services.settings["import.max_upload_mb"],
-        "retention_days": services.settings["retention.imported_messages_days"],
         "chat_titles": {c.chat_id: c.display_title for c in services.chats.list_all()},
         "error": error,
     }, status_code=status_code)

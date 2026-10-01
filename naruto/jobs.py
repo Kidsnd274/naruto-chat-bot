@@ -1,6 +1,9 @@
-"""Background jobs: retention cleanup, leaving unapproved groups, the model
-health check, due reminders, admin-rights checks and memory upkeep (digests
-and notes)."""
+"""Background jobs: cleanup of operational records, leaving unapproved
+groups, the model health check, due reminders, admin-rights checks and memory
+upkeep (digests and notes).
+
+Chat messages are never cleaned up here: they are kept until the owner
+deletes them (Chats → a group → Delete messages)."""
 
 import asyncio
 import logging
@@ -8,9 +11,7 @@ import time
 from typing import Awaitable, Callable
 
 from naruto.db.chats import PENDING
-from naruto.db.messages import IMPORT, LIVE
 from naruto.health import check_model
-from naruto.memory.history import mark_missed_months, unarchived_live_start
 from naruto.services import Services
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,6 @@ MAINTENANCE_INTERVAL_SECONDS = 3600
 HEALTH_INTERVAL_SECONDS = 60
 REMINDER_INTERVAL_SECONDS = 30
 RIGHTS_INTERVAL_SECONDS = 6 * 3600
-UNREAD_GRACE_DAYS = 7
 
 # Extra cleanup steps for features added later. Each gets the services and
 # returns a short description of what it removed, or None.
@@ -62,58 +62,9 @@ def cleanup_model_requests(services: Services) -> str | None:
     return f"{deleted} model request records" if deleted else None
 
 
-def _expire_messages(services: Services, source: str, days: int) -> int:
-    """Delete ``source`` messages older than ``days``. Messages the digest
-    hasn't read into memory yet get UNREAD_GRACE_DAYS more, so nothing is
-    lost while the model is busy or down."""
-    cutoff = int(time.time() - days * DAY)
-    grace_cutoff = cutoff - UNREAD_GRACE_DAYS * DAY
-    deleted = 0
-    for (chat_id,) in services.db.query(
-            "SELECT DISTINCT chat_id FROM messages WHERE source = ? AND date < ?",
-            (source, cutoff)):
-        digest = services.digests.get(chat_id)
-        read_until = digest.last_message_date if digest else None
-        if read_until is None:
-            threshold = grace_cutoff
-        else:
-            threshold = min(cutoff, max(read_until + 1, grace_cutoff))
-        if source == LIVE:
-            # A month's live messages wait for its history summary (within
-            # the hold), whatever the retention says.
-            held_from = unarchived_live_start(
-                services, chat_id, services.settings["history.live_hold_days"])
-            if held_from is not None:
-                threshold = min(threshold, held_from)
-        deleted += services.messages.delete_for_chat(chat_id, before=threshold, source=source)
-    return deleted
-
-
-def mark_missed_live_months(services: Services) -> str | None:
-    """Runs before the live-message cleanup: months whose hold ran out."""
-    missed = mark_missed_months(services, services.settings["history.live_hold_days"])
-    return f"{missed} live months missed their history summary" if missed else None
-
-
-def cleanup_live_messages(services: Services) -> str | None:
-    days = services.settings["retention.live_messages_days"]
-    if days <= 0:
-        return None
-    deleted = _expire_messages(services, LIVE, days)
-    return f"{deleted} live messages" if deleted else None
-
-
-def cleanup_imported_messages(services: Services) -> str | None:
-    days = services.settings["retention.imported_messages_days"]
-    if days <= 0:
-        return None
-    deleted = _expire_messages(services, IMPORT, days)
-    return f"{deleted} imported messages" if deleted else None
-
-
 def cleanup_reminders(services: Services) -> str | None:
-    """Sent and cancelled reminders follow the live-message retention."""
-    days = services.settings["retention.live_messages_days"]
+    """Sent and cancelled reminders; pending ones are never cleaned up."""
+    days = services.settings["retention.reminders_days"]
     if days <= 0:
         return None
     deleted = services.reminders.delete_finished_before(int(time.time() - days * DAY))
@@ -159,9 +110,7 @@ async def refresh_rights(services: Services, *, older_than: float) -> None:
 async def run_maintenance(services: Services) -> None:
     done = []
     for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests, cleanup_lab_runs,
-                 mark_missed_live_months, cleanup_live_messages,
-                 cleanup_imported_messages, cleanup_reminders, cleanup_import_previews,
-                 expire_paused_imports,
+                 cleanup_reminders, cleanup_import_previews, expire_paused_imports,
                  *cleanup_steps]:
         try:
             result = step(services)
@@ -171,7 +120,7 @@ async def run_maintenance(services: Services) -> None:
         if result:
             done.append(result)
     if done:
-        logger.info("Retention cleanup removed %s", ", ".join(done))
+        logger.info("Cleanup removed %s", ", ".join(done))
     try:
         left = await leave_stale_pending(services)
         if left:

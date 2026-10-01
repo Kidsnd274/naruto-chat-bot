@@ -60,7 +60,7 @@
         <legend><label><input type="checkbox" name="raw" {{ 'checked' if options.raw else '' }}> Import chat messages</label></legend>
         <label>From <input type="date" name="raw_from" value="{{ options.raw_from.isoformat() if options.raw_from else '' }}"></label>
         <label>to <input type="date" name="raw_to" value="{{ options.raw_to.isoformat() if options.raw_to else '' }}"></label>
-        <p class="muted small">Kept as searchable chat the bot can quote. Only messages within the imported-messages retention (Settings → Retention) and from before live recording began can be kept.</p>
+        <p class="muted small">Kept as searchable chat the bot can quote, however old, until you delete them. Only messages from before live recording began are imported. Imports never add memory notes or start the digest; those come from live chat.</p>
       </fieldset>
 
       <fieldset class="import-section">
@@ -72,18 +72,13 @@
             {% for grouping in groupings %}<option value="{{ grouping }}" {{ 'selected' if options.grouping == grouping else '' }}>{{ grouping_labels[grouping] }}</option>{% endfor %}
           </select>
         </label>
-        <p class="muted small">Dated summaries of what went on, kept after the messages themselves are deleted, so the bot can answer “what were we planning in summer 2021?”. Older messages than the retention allows are summarized too.</p>
+        <p class="muted small">Dated overviews of what went on, so the bot can answer “what were we planning in summer 2021?” without reading every message. They are made from the uploaded file: redoing them later needs the file again.</p>
         {% include "_import_summary_options.html" %}
         <details class="summary-advanced" {{ 'open' if options.regenerate else '' }}>
           <summary class="small muted">Advanced</summary>
           <label class="small"><input type="checkbox" name="regenerate" {{ 'checked' if options.regenerate else '' }}> Force rebuild</label>
           <p class="muted small">Generate fresh summaries instead of reusing matching ones. Replacing existing summaries still needs your permission.</p>
         </details>
-      </fieldset>
-
-      <fieldset class="import-section">
-        <legend><label><input type="checkbox" name="distill" {{ 'checked' if options.distill else '' }}> Add memory notes</label></legend>
-        <p class="muted small">Reads the summarized dates (or the imported ones, without summaries) for durable facts: preferences, birthdays, traditions, running jokes.</p>
       </fieldset>
     </div>
 

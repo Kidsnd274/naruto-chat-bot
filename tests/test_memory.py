@@ -1,5 +1,5 @@
 """Phase 4: group memory, the digest, skills and commands, reminders,
-image descriptions, retention and import distillation."""
+image descriptions, cleanup, and keeping imports out of memory."""
 
 import asyncio
 import io
@@ -679,32 +679,25 @@ def test_recorder_stores_only_visible_skill_commands(services, chat):
         "/summary", "/plan@naruto_bot now"]
 
 
-# --------------------------------------------------------------- retention
+# --------------------------------------------------------------- cleanup
 
-def test_retention_deletes_old_messages_descriptions_and_reminders(services, chat):
+async def test_maintenance_keeps_old_messages_and_cleans_finished_reminders(services, chat):
     now = time.time()
-    old = store(services, 1, "old", offset=int(now - 40 * 86400 - fakes.T0),
+    old = store(services, 1, "old", offset=int(now - 4000 * 86400 - fakes.T0),
                 media_kind="photo", media_file_id="f")
-    new = store(services, 2, "new", offset=int(now - 86400 - fakes.T0))
-    reply = store(services, 3, "re", offset=int(now - 3600 - fakes.T0), reply_to_message_id=1)
-    assert reply.reply_to_row_id == old.id
     services.messages.save_description(old, "a cat", "m")
     imported = store(services, 4, "old import", source=IMPORT,
-                     offset=int(now - 40 * 86400 - fakes.T0))
-    unread = store(services, 5, "not read yet", offset=int(now - 33 * 86400 - fakes.T0))
-    services.digests.save(GROUP_ID, "digest", actor="t", last=old)  # read up to message 1
+                     offset=int(now - 4000 * 86400 - fakes.T0))
     services.reminders.create(GROUP_ID, "done", int(now - 40 * 86400), created_by="t")
     services.reminders.mark_sent(1, 5)
-    assert jobs.cleanup_live_messages(services) == "1 live messages"
-    assert jobs.cleanup_imported_messages(services) == "1 imported messages"
-    assert jobs.cleanup_reminders(services) == "1 old reminders"
-    assert services.messages.get(old.id) is None and services.messages.get(new.id)
-    assert services.messages.get(unread.id) is not None  # unread: 7 more days
-    assert services.messages.get(imported.id) is None
-    assert services.messages.get(reply.id).reply_to_row_id is None
-    assert services.messages.descriptions([old.id]) == {}
-    services.settings.set("retention.live_messages_days", 0, actor="t")
-    assert jobs.cleanup_live_messages(services) is None
+    services.reminders.create(GROUP_ID, "still due", int(now - 40 * 86400), created_by="t")
+    await jobs.run_maintenance(services)
+    await jobs.run_maintenance(services)
+    assert services.messages.get(old.id) and services.messages.get(imported.id)
+    assert services.messages.descriptions([old.id]) == {old.id: "a cat"}
+    assert [r.text for r in services.reminders.for_chat(GROUP_ID)] == ["still due"]
+    services.settings.set("retention.reminders_days", 0, actor="t")
+    assert jobs.cleanup_reminders(services) is None  # 0 keeps them
 
 
 def test_memory_moves_with_a_group_upgrade(services, chat):
@@ -718,104 +711,50 @@ def test_memory_moves_with_a_group_upgrade(services, chat):
     assert services.reminders.for_chat(-1004001)[0].text == "r"
 
 
-# ------------------------------------------------------------ distillation
+# ----------------------------------------------- imports stay out of memory
 
-async def import_with_notes(services, tmp_path, **changes):
-    """Import the fixture's messages and distill notes (no summaries)."""
+async def import_fixture(services, tmp_path):
+    """Import the fixture's messages (no summaries)."""
     importer = ImportService(services, tmp_path / "imports")
     record = await importer.create_from_upload(io.BytesIO(FIXTURE.read_bytes()), "result.json")
     options = importer.default_options(record)
-    options.archive, options.distill = False, True
-    for name, value in changes.items():
-        setattr(options, name, value)
+    options.archive = False
     await importer.start(record.id, GROUP_ID, options=options)
     await asyncio.gather(*importer._tasks.values())
-    return importer, importer.repo.get(record.id)
+    return importer.repo.get(record.id)
 
 
-async def test_import_is_distilled_into_notes_and_a_first_digest(services, tmp_path):
-    services.settings.set("retention.imported_messages_days", 0, actor="t")
-    services.settings.set("import.digest_window_days", 365, actor="t")  # the fixture is old
+async def test_an_import_makes_no_notes_and_no_digest(services, chat, tmp_path):
     services.keeper = MemoryKeeper(services)
-    services.llm = ScriptedLLM(
-        json.dumps({"notes": [{"action": "add", "content": "Wei always brings the grill",
-                               "category": "running_joke", "about": "Wei"}]}),
-        digest_answer("- BBQ planning"))
-    importer, record = await import_with_notes(services, tmp_path)
-    assert record.status == "done" and record.distill_status == "done"
-    assert (record.distill_total, record.distill_done, record.notes_added) == (1, 1, 1)
-    note = services.notes.for_chat(GROUP_ID)[0]
-    assert note.created_by == "import" and note.person_id == person(services, 9)
-    first = services.llm.calls[0]
-    assert first["background"] is True and "## Messages (part 1 of 1" in \
-        first["messages"][1]["content"]
-    assert first["info"].task == "distill" and first["info"].import_id == record.id
-    assert services.digests.get(GROUP_ID).text == "- BBQ planning"
-    assert services.digests.get(GROUP_ID).updated_by == f"import {record.id}"
-    assert not Path(record.file_path or tmp_path / "gone").exists()
-
-
-async def test_an_old_import_does_not_become_the_current_digest(services, tmp_path):
-    services.settings.set("retention.imported_messages_days", 0, actor="t")
-    services.keeper = MemoryKeeper(services)  # digest start: imports of the last 14 days
-    services.llm = ScriptedLLM(json.dumps({"notes": []}))
-    _, record = await import_with_notes(services, tmp_path)
+    services.llm = ScriptedLLM()
+    record = await import_fixture(services, tmp_path)
     assert record.status == "done" and record.imported == 12
-    assert services.digests.get(GROUP_ID) is None  # a month-old export isn't "now"
-    assert services.keeper.due_chats() == []
-    store(services, 1, "new live message", offset=10_000_000)  # live counts whatever its age
-    keeper = services.keeper
-    assert keeper.services.digests.unread_count(GROUP_ID, None, keeper.imported_since())[0] == 1
+    assert services.llm.calls == []  # no model request at all
+    assert services.notes.for_chat(GROUP_ID) == []
+    assert services.digests.get(GROUP_ID) is None
+    assert services.keeper.due_chats() == []  # imported rows aren't unread
+    assert services.digests.unread_count(GROUP_ID, None) == (0, None)
 
 
-async def test_distillation_failure_pauses_and_resumes(services, tmp_path):
-    services.settings.set("retention.imported_messages_days", 0, actor="t")
-    services.llm = ScriptedLLM("not json")
-    importer, record = await import_with_notes(services, tmp_path)
-    assert record.status == "paused" and record.raw_status == "done" and record.imported > 0
-    assert record.distill_status == "paused" and "kept failing" in record.distill_error
-    assert Path(record.file_path).exists()  # kept to resume
-
-    services.llm = ScriptedLLM(json.dumps({"notes": [{"content": "Wei grills"}]}))
-    importer.resume(record.id)
-    await asyncio.gather(*importer._tasks.values())
-    record = importer.repo.get(record.id)
-    assert record.status == "done" and record.distill_status == "done"
-    assert record.notes_added == 1 and record.file_path is None
-    assert services.messages.count(GROUP_ID, IMPORT) == 12  # not imported twice
-
-
-async def test_reading_an_export_for_distillation_keeps_the_bot_responsive(services, tmp_path,
-                                                                          monkeypatch):
-    from naruto.memory import distill
-
-    services.settings.set("retention.imported_messages_days", 0, actor="t")
-    services.llm = ScriptedLLM(json.dumps({"notes": []}))
-    real = distill.export_chunks
-
-    def slow_export_chunks(*args, **kwargs):
-        time.sleep(0.3)  # a large export being parsed
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(distill, "export_chunks", slow_export_chunks)
-    ticks = 0
-
-    async def heartbeat():
-        nonlocal ticks
-        while True:
-            await asyncio.sleep(0.02)
-            ticks += 1
-
-    beating = asyncio.create_task(heartbeat())
-    _, record = await import_with_notes(services, tmp_path)
-    beating.cancel()
-    assert record.distill_status == "done"
-    assert ticks >= 10  # the loop kept running while the export was read
-
-
-def test_reading_an_export_stops_on_shutdown(services):
-    from naruto.memory.distill import DistillStopped, export_chunks
-
-    with pytest.raises(DistillStopped):
-        export_chunks(services, str(FIXTURE), chunk_tokens=1000, max_chars=1500,
-                      stopping=lambda: True)
+async def test_the_keeper_reads_live_messages_only(services, chat, tmp_path):
+    services.keeper = keeper = MemoryKeeper(services)
+    services.llm = ScriptedLLM()
+    await import_fixture(services, tmp_path)
+    imported = [m for m in services.messages.latest(GROUP_ID, 20) if m.text][-1]
+    # Live messages dated before and after the imported ones.
+    early = store(services, 1, "early live", offset=imported.date - fakes.T0 - 86400)
+    late = store(services, 2, "late live", offset=imported.date - fakes.T0 + 86400)
+    assert services.digests.unread_count(GROUP_ID, None) == (2, late.date)
+    batch, more = keeper._batch(chat, None)
+    assert [m.id for m in batch] == [early.id, late.id] and not more
+    # Messages handed in directly are filtered too.
+    batch, _ = keeper._batch(chat, [imported, late])
+    assert [m.id for m in batch] == [late.id]
+    services.llm = ScriptedLLM(digest_answer("- live only"))
+    assert await keeper.update(chat) == "- live only"
+    prompt = services.llm.calls[0]["messages"][1]["content"]
+    assert "early live" in prompt and imported.text not in prompt
+    assert services.digests.get(GROUP_ID).last_row_id == late.id
+    # Deleting the row the cursor points at doesn't make the rest unread again.
+    services.messages.delete_for_chat(GROUP_ID, before=late.date + 1, source=LIVE)
+    assert services.digests.unread_count(GROUP_ID, services.digests.get(GROUP_ID))[0] == 0

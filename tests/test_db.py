@@ -314,3 +314,41 @@ def test_upgrade_from_version_1_keeps_data(tmp_path):
     assert ChatRepository(upgraded).get(BASIC).title == "kept"
     assert upgraded.scalar("SELECT COUNT(*) FROM imports") == 0
     upgraded.close()
+
+
+def test_upgrade_to_13_keeps_one_summary_per_period_and_every_edit(tmp_path):
+    from naruto.db.database import Database
+
+    path = str(tmp_path / "v12.db")
+    old = Database(path)
+    for version, script in enumerate(MIGRATIONS[:12], start=1):
+        old._conn.executescript(f"BEGIN; {script} PRAGMA user_version = {version}; COMMIT;")
+    digest = ("INSERT INTO history_digests (id, chat_id, status, source, grouping, timezone, "
+              "period_start, period_end, period_id, fingerprint, text, edited, created_at, "
+              "updated_at, updated_by) VALUES (?, 1, 'active', 'live', 'month', 'UTC', 0, 10, "
+              "?, 'f', ?, ?, 0, 0, 't')")
+    with old.transaction():
+        # A crash between saving the summary and finishing the period, then
+        # two retries: three summaries of period 1, the period points at 11.
+        for digest_id, text, edited in ((10, "first try", 0), (11, "kept", 0),
+                                        (12, "owner fixed this", 1)):
+            old.execute(digest, (digest_id, 1, text, edited))
+        old.execute(digest, (20, 2, "only one", 0))  # not pointed at, but alone
+        old.execute("INSERT INTO history_periods (id, chat_id, source, grouping, timezone, "
+                    "period_start, period_end, status, digest_id, created_at, updated_at) "
+                    "VALUES (1, 1, 'live', 'month', 'UTC', 0, 10, 'done', 11, 0, 0)")
+        old.execute("INSERT INTO imports (status, file_name, distill_status, notes_added, "
+                    "created_at) VALUES ('paused', 'r.json', 'paused', 3, 0)")
+    old.close()
+
+    upgraded = open_database(path)
+    rows = upgraded.query("SELECT id, period_id, text FROM history_digests ORDER BY id")
+    assert [tuple(row) for row in rows] == [(11, 1, "kept"), (12, None, "owner fixed this"),
+                                            (20, 2, "only one")]
+    with pytest.raises(Exception, match="UNIQUE"):
+        upgraded.execute(digest.replace("?, 1, 'active'", "?, 1, 'staged'"), (30, 1, "x", 0))
+    columns = {row["name"] for row in upgraded.query("PRAGMA table_info(imports)")}
+    assert "distill_status" not in columns and "skipped_retention" not in columns
+    period_columns = {row["name"] for row in upgraded.query("PRAGMA table_info(history_periods)")}
+    assert {"settings_hash", "source_hash"} <= period_columns
+    upgraded.close()

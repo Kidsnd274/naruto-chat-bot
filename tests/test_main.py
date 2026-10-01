@@ -59,7 +59,7 @@ async def test_maintenance_survives_a_failing_step(services, monkeypatch, caplog
     with caplog.at_level(logging.INFO):
         await jobs.run_maintenance(services)
     assert "Cleanup step broken failed" in caplog.text
-    assert "Retention cleanup removed 3 things" in caplog.text
+    assert "Cleanup removed 3 things" in caplog.text
 
 
 # ---------------------------------------------------------------- web admin

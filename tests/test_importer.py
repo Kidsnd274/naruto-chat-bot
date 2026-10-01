@@ -23,8 +23,6 @@ NOW = SEP_2 + 5 * 86400
 @pytest.fixture
 def importer(services, tmp_path, monkeypatch):
     monkeypatch.setattr(service_module.time, "time", lambda: NOW)
-    services.settings.set("retention.imported_messages_days", 0, actor="t")  # keep all
-    services.settings.set("import.distill_memory", False, actor="t")  # see test_memory.py
     return ImportService(services, tmp_path / "imports")
 
 
@@ -35,7 +33,7 @@ async def upload(importer, content: bytes | None = None, name="result.json"):
 def raw_only(importer, record, **changes) -> ImportOptions:
     """Import the messages only (summaries need a model: see test_history.py)."""
     options = importer.default_options(record)
-    options.archive = options.distill = False
+    options.archive = False
     for name, value in changes.items():
         setattr(options, name, value)
     return options
@@ -102,7 +100,7 @@ async def test_match_by_id_alias_name_or_suggest(importer, services):
     assert match.how == "id" and match.chat.chat_id == -1004001
 
 
-async def test_estimate_counts_overlap_and_retention(importer, services):
+async def test_estimate_counts_the_live_recording_boundary(importer, services):
     services.chats.upsert_seen(CHAT)
     services.messages.insert_live(NewMessage(
         chat_id=CHAT, origin_chat_id=CHAT, source=LIVE, message_id=1, sender_name="A",
@@ -112,12 +110,16 @@ async def test_estimate_counts_overlap_and_retention(importer, services):
     assert (plan.raw_selected, plan.raw_eligible, plan.raw_live) == (12, 3, 9)
     assert importer.plan(record, -999, raw_only(importer, record)).raw_live == 0
 
-    services.settings.set("retention.imported_messages_days", 5, actor="t")  # cutoff Sep 2 09:00
-    plan = importer.plan(record, -999, raw_only(importer, record))
-    assert (plan.raw_eligible, plan.raw_too_old) == (1, 0)  # the default dates start on Sep 2
-    options = raw_only(importer, record, raw_from=plan.options.raw_from.replace(day=1))
-    plan = importer.plan(record, -999, options)
-    assert (plan.raw_selected, plan.raw_eligible, plan.raw_too_old) == (12, 1, 11)
+
+async def test_an_old_export_is_imported_whole_by_default(importer, services, monkeypatch):
+    """No age cutoff: an export from years ago keeps all its messages."""
+    monkeypatch.setattr(service_module.time, "time", lambda: SEP_2 + 3000 * 86400)
+    services.chats.upsert_seen(CHAT)
+    record = await upload(importer)
+    options = importer.default_options(record)
+    assert options.raw and (options.raw_from.day, options.raw_to.day) == (1, 2)
+    plan = importer.plan(record, CHAT, raw_only(importer, record))
+    assert (plan.raw_selected, plan.raw_eligible) == (12, 12) and not plan.errors
 
 
 # ------------------------------------------------------------------ import
@@ -153,16 +155,6 @@ async def test_import_skips_messages_at_or_after_first_live_message(importer, se
     record = await run_import(importer, await upload(importer))
     assert (record.imported, record.skipped_overlap) == (3, 9)
     assert record.last_date < SEP_1 + 250
-
-
-async def test_import_keeps_only_the_retention_window(importer, services):
-    services.chats.upsert_seen(CHAT)
-    services.settings.set("retention.imported_messages_days", 5, actor="t")  # cutoff = Sep 2 09:00
-    record = await upload(importer)
-    options = raw_only(importer, record)
-    options.raw_from = options.raw_from.replace(day=1)
-    record = await run_import(importer, record, options=options)
-    assert (record.imported, record.skipped_retention, record.skipped_range) == (1, 11, 0)
 
 
 async def test_import_keeps_only_the_chosen_dates(importer, services):

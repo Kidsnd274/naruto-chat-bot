@@ -75,7 +75,6 @@ class SummaryLLM:
 @pytest.fixture
 def importer(services, tmp_path, monkeypatch):
     monkeypatch.setattr(history_module, "RETRY_DELAYS_SECONDS", (0, 0))
-    services.settings.set("retention.imported_messages_days", 30, actor="t")
     services.settings.set("history.chunk_tokens", 1000, actor="t")
     return ImportService(services, tmp_path / "imports")
 
@@ -87,7 +86,7 @@ async def upload(importer, rows=None):
 
 def summaries_only(importer, record, **changes):
     options = importer.default_options(record)
-    options.raw = options.distill = False
+    options.raw = False
     for name, value in changes.items():
         setattr(options, name, value)
     return options
@@ -350,17 +349,13 @@ async def test_cancelling_keeps_finished_summaries_and_drops_staged_ones(service
     assert services.history.for_chat(GROUP_ID, status="staged")[1] == 0
 
 
-def test_history_moves_with_a_group_upgrade_and_outlives_retention(services):
-    from naruto import jobs
-
+def test_history_moves_with_a_group_upgrade(services):
     services.chats.upsert_seen(GROUP_ID)
     digest = services.history.add(
         chat_id=GROUP_ID, status="active", source="export", grouping=MONTH, timezone="UTC",
         period_start=ts(2020, 1, 1), period_end=ts(2020, 2, 1), first_message_at=None,
         last_message_at=None, message_count=3, import_id=None, period_id=None,
         fingerprint="x", text="- January 2020", limitations=[], actor="t")
-    jobs.cleanup_imported_messages(services)
-    jobs.cleanup_live_messages(services)
     services.chats.migrate(GROUP_ID, -1004001)
     moved = services.history.get(digest.id)
     assert moved.chat_id == -1004001 and moved.status == "active"
@@ -493,39 +488,24 @@ async def test_a_finished_month_of_live_chat_is_summarized(services, recorded):
     assert await archiver.run_due(now=now) == 0  # September isn't over
 
 
-async def test_live_messages_wait_for_their_summary(services, recorded, monkeypatch):
-    from naruto import jobs
-
-    now = recorded
-    monkeypatch.setattr(jobs.time, "time", lambda: now)
-    services.settings.set("retention.live_messages_days", 1, actor="t")
-    digest_read_everything(services)
-    jobs.cleanup_live_messages(services)
-    assert services.messages.count(GROUP_ID) == 6  # August is held for its summary
-
-    services.llm = SummaryLLM()
-    await history_module.LiveArchiver(services).run_due(now=now)
-    jobs.cleanup_live_messages(services)
-    # August is summarized; September is held until it is over.
-    assert services.messages.count(GROUP_ID) == 1
-
-
-async def test_a_month_not_summarized_within_the_hold_is_missed(services, recorded,
+async def test_live_messages_are_kept_whether_summarized_or_not(services, recorded,
                                                                 monkeypatch):
     from naruto import jobs
 
-    later = ts(2026, 9, 9)  # August ended more than 7 days ago
-    monkeypatch.setattr(jobs.time, "time", lambda: later)
-    monkeypatch.setattr(history_module.time, "time", lambda: later)
-    services.settings.set("retention.live_messages_days", 1, actor="t")
+    much_later = ts(2027, 6, 1)  # months after August ended
+    monkeypatch.setattr(jobs.time, "time", lambda: much_later)
     digest_read_everything(services)
-    assert jobs.mark_missed_live_months(services) == "1 live months missed their history summary"
-    jobs.cleanup_live_messages(services)
-    assert services.messages.count(GROUP_ID) == 1  # August's messages are gone now
-    (period,) = services.history.live_periods(GROUP_ID)
-    assert period.status == "failed" and period.error.startswith("Missed")
+    await jobs.run_maintenance(services)
+    assert services.messages.count(GROUP_ID) == 6  # nothing expires
+    assert services.history.live_periods(GROUP_ID) == []  # and nothing is marked missed
+
     services.llm = SummaryLLM()
-    assert await history_module.LiveArchiver(services).run_due(now=later) == 0
+    archiver = history_module.LiveArchiver(services)
+    assert await archiver.run_due(now=much_later) == 1  # August, late but complete
+    (digest,) = active(services)
+    assert digest.message_count == 5 and not any("expired" in n for n in digest.limitations)
+    await jobs.run_maintenance(services)
+    assert services.messages.count(GROUP_ID) == 6  # summarized messages stay too
 
 
 async def test_a_failing_live_summary_backs_off_and_retries(services, recorded):
@@ -541,17 +521,11 @@ async def test_a_failing_live_summary_backs_off_and_retries(services, recorded):
     assert len(active(services)) == 1
 
 
-async def test_live_summaries_can_be_turned_off_per_chat(services, recorded, monkeypatch):
-    from naruto import jobs
-
+async def test_live_summaries_can_be_turned_off_per_chat(services, recorded):
     services.settings.set_for_chat(GROUP_ID, "history.live_archive", False, actor="t")
     services.llm = SummaryLLM()
     assert await history_module.LiveArchiver(services).run_due(now=recorded) == 0
-    monkeypatch.setattr(jobs.time, "time", lambda: recorded)
-    services.settings.set("retention.live_messages_days", 1, actor="t")
-    digest_read_everything(services)
-    jobs.cleanup_live_messages(services)
-    assert services.messages.count(GROUP_ID) == 0  # nothing held: all past retention
+    assert services.llm.calls == []
 
 
 async def test_an_import_and_live_summaries_meet_at_the_recording_start(services, recorded,

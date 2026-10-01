@@ -16,8 +16,8 @@ _NO_REPLY_MARKER = re.compile(r"[*_]*\[\s*no[ _-]?reply\s*\][*_]*\s*", re.IGNORE
 # with "[123] Naruto (you) (18:05):".
 _TRANSCRIPT_PREFIX = re.compile(r"^\s*\[\d+\]\s*[^\n:]{0,80}?\([^)\n]*\)\s*:\s*")
 
-# Keys of the JSON the bot asks for in background requests (digest updates,
-# import distillation). A chat reply that starts with such an object is the
+# Keys of the JSON the bot asks for in background requests (digest
+# updates). A chat reply that starts with such an object is the
 # model answering in the wrong format, never something to post.
 INTERNAL_JSON_KEYS = frozenset({"digest", "notes"})
 _FENCE_OPEN = re.compile(r"^\s*```(?:json)?\s*", re.IGNORECASE)

@@ -88,31 +88,28 @@ class DigestRepository:
     def clear(self, chat_id: int) -> bool:
         return self.db.execute("DELETE FROM digests WHERE chat_id = ?", (chat_id,)).rowcount > 0
 
-    def unread(self, chat_id: int, digest: Digest | None, *, limit: int,
-               imported_since: int | None = None) -> list[StoredMessage]:
-        """Messages the digest hasn't read yet, oldest first. A digest with
-        no cursor yet starts from the live messages and only the imported
-        ones since ``imported_since``: an old export isn't what's going on
-        now (its history goes into history digests and notes instead)."""
-        sql, params = self._unread_where(chat_id, digest, imported_since)
+    def unread(self, chat_id: int, digest: Digest | None, *,
+               limit: int) -> list[StoredMessage]:
+        """Live messages the digest hasn't read yet, oldest first. Imported
+        messages never go into the digest (or the notes it proposes): an
+        export's history goes into history summaries, and stays searchable."""
+        sql, params = self._unread_where(chat_id, digest)
         rows = self.db.query(f"SELECT * FROM messages WHERE {sql} ORDER BY date, id LIMIT ?",
                              (*params, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
-    def unread_count(self, chat_id: int, digest: Digest | None,
-                     imported_since: int | None = None) -> tuple[int, int | None]:
-        """(messages not read yet, date of the newest one)."""
-        sql, params = self._unread_where(chat_id, digest, imported_since)
+    def unread_count(self, chat_id: int, digest: Digest | None) -> tuple[int, int | None]:
+        """(live messages not read yet, date of the newest one)."""
+        sql, params = self._unread_where(chat_id, digest)
         row = self.db.query_one(f"SELECT COUNT(*), MAX(date) FROM messages WHERE {sql}", params)
         return int(row[0] or 0), row[1]
 
     @staticmethod
-    def _unread_where(chat_id: int, digest: Digest | None,
-                      imported_since: int | None) -> tuple[str, tuple]:
+    def _unread_where(chat_id: int, digest: Digest | None) -> tuple[str, tuple]:
+        """The cursor is stored by value (date, row ID), so deleting the row
+        it points at doesn't move it."""
         if digest is None or digest.last_message_date is None:
-            if imported_since is None:
-                return "chat_id = ?", (chat_id,)
-            return "chat_id = ? AND (source = 'live' OR date >= ?)", (chat_id, imported_since)
-        return ("chat_id = ? AND (date > ? OR (date = ? AND id > ?))",
+            return "chat_id = ? AND source = 'live'", (chat_id,)
+        return ("chat_id = ? AND source = 'live' AND (date > ? OR (date = ? AND id > ?))",
                 (chat_id, digest.last_message_date, digest.last_message_date,
                  digest.last_row_id or 0))

@@ -231,7 +231,7 @@ def test_settings_page_lists_sections_and_drift(admin, services):
     services.seed.settings["model.temperature"] = 0.7
     services.seed.sources["model.temperature"] = "config.json"
     html = admin.client.get("/settings").text
-    for title in ("Model", "Persona and skills", "Retention", "Context"):
+    for title in ("Model", "Persona and skills", "Cleanup", "Context"):
         assert title in html
     assert "Old configuration differs from the database" in html
     assert 'id="model.temperature"' in html
@@ -303,8 +303,6 @@ FIXTURE = Path(__file__).parent / "fixtures" / "export_basic_group.json"
 def importer(services, tmp_path):
     from naruto.importer.service import ImportService
 
-    services.settings.set("retention.imported_messages_days", 0, actor="t")
-    services.settings.set("import.distill_memory", False, actor="t")
     services.imports = ImportService(services, tmp_path / "imports")
     return services.imports
 
@@ -359,10 +357,10 @@ def test_import_estimate_follows_the_chosen_group(admin, importer, services):
         date=1788228060 + 250))  # recorded live from the fourth export message on
     preview = admin.client.get(f"/import/{record_id}").text
     assert "Matched by chat ID" in preview
-    assert "9 were already recorded live" in preview
+    assert "9 are excluded by the live-recording boundary" in preview
     estimate = admin.client.get(f"/import/{record_id}/estimate",
                                 params={"target": "-777", **RAW_ONLY}).text
-    assert "already recorded live" not in estimate
+    assert "live-recording boundary" not in estimate
     assert "<strong>12</strong> of 12 messages" in estimate
     # Nothing chosen: an error, and Start is disabled.
     nothing = admin.client.get(f"/import/{record_id}/estimate",
@@ -713,24 +711,23 @@ def test_import_page_shows_the_stages(admin, importer, services):
     record = importer.repo.create(file_name="result.json", file_path="/nowhere", file_size=1)
     importer.repo.update(record.id, status="running", chat_id=CHAT, options={"tz": "UTC"},
                          raw_status="done", imported=12, archive_status="running",
-                         archive_total=8, archive_done=3, distill_status="waiting")
+                         archive_total=8, archive_done=3)
     page = admin.client.get(f"/import/{record.id}").text
     assert "3 of 8 periods done (37%)" in page and 'hx-get="/import/' in page
     assert "<strong>12</strong> messages imported" in page and ">Pause<" in page
     partial = admin.client.get(f"/import/{record.id}/progress").text
-    assert "Memory notes" in partial
+    assert "History summaries" in partial and "Memory notes" not in partial
 
     importer.repo.update(record.id, status="paused", archive_status="paused",
                          archive_error="1–30 Sep 2021: Part 2 kept failing: boom",
-                         source_expires_at=2_000_000_000, distill_status="waiting")
+                         source_expires_at=2_000_000_000)
     page = admin.client.get(f"/import/{record.id}").text
     assert "Part 2 kept failing: boom" in page and ">Resume<" in page
     assert "Cancel the rest" in page and "The uploaded file is kept until" in page
 
-    importer.repo.update(record.id, status="done", archive_status="done", archive_done=8,
-                         distill_status="done", distill_total=4, distill_done=4, notes_added=5)
+    importer.repo.update(record.id, status="done", archive_status="done", archive_done=8)
     page = admin.client.get(f"/import/{record.id}").text
-    assert "<strong>5</strong> new notes" in page and 'hx-get="/import/' not in page
+    assert 'hx-get="/import/' not in page
     assert f"/chats/{CHAT}/history?import={record.id}" in page
 
 

@@ -53,6 +53,7 @@ def test_old_evaluation_cases_still_load():
     assert focus.messages[0].date == 1790416800  # 2026-09-26 18:00 +08
     vision = scenarios["vision-describe"]
     assert vision.turns[0].message.image == FIXTURES / "images" / "orange.png"
+    assert vision.turns[0].message.image_data().startswith(b"\x89PNG")
     assert vision.turns[0].message.media == "photo"
     assert scenarios["character-serious-moment"].messages[1].from_bot
     assert scenarios["search-reply-to-older-message"].settings["context.recent_window"] == 2

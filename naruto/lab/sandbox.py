@@ -20,6 +20,7 @@ import io
 import itertools
 import json
 import logging
+from pathlib import Path
 import re
 import time
 from typing import Any, Callable
@@ -73,6 +74,7 @@ CHAT_ID = -1_000_000
 BOT_ID = 424242
 ACTOR = "lab"
 VISION_REFUSED = "refused the images"
+STATE_META = "lab_sandbox"  # meta key of a saved sandbox's own state
 FEATURES = ("vision",)  # besides tool names, what a scenario may require
 # Canned answers that mean the model server, the queue or the deadline
 # failed, not the model's judgment.
@@ -234,14 +236,14 @@ class SandboxTelegram:
 
     async def get_file(self, file_id, **kwargs):
         self._maybe_fail("get_file", file_id=file_id)
-        path = self.sandbox.images.get(file_id)
-        if path is None:
+        source = self.sandbox.images.get(file_id)
+        if source is None:
             self.unsupported.append(
                 "an image was needed that the scenario doesn't provide (add 'image' to the "
                 "message)")
             raise BadRequest("Wrong file_id or the file is temporarily unavailable")
         self._record("get_file", file_id=file_id)
-        return SimulatedFile(path.read_bytes())
+        return SimulatedFile(source.image_data())
 
     async def send_chat_action(self, chat_id, action, **kwargs):
         return True
@@ -306,6 +308,8 @@ class AttemptResult:
     duration_ms: int = 0
     usage: dict = field(default_factory=dict)
     models: list[str] = field(default_factory=list)
+    final_clock: float = 0  # the conversation's time after the last turn
+    max_message_id: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -342,15 +346,24 @@ def _diff(before: list, after: list) -> dict:
 
 class Sandbox:
     def __init__(self, scenario: Scenario, settings: dict[str, Any], *,
-                 llm_factory: Callable[[Any], Any], api_key: str = "lab"):
+                 llm_factory: Callable[[Any], Any], api_key: str = "lab",
+                 restore: Path | None = None):
         """``settings``: every setting value of the configuration under test
         (a baseline snapshot plus a candidate's changes). ``llm_factory``
-        gets the sandbox's SettingsService and returns the model client."""
+        gets the sandbox's SettingsService and returns the model client.
+        ``restore``: continue from an earlier attempt's saved state (save());
+        the scenario's turns then follow on from that conversation."""
         self.scenario = scenario
         first = scenario.turns[0].date if scenario.turns else None
         earliest = min((m.date for m in scenario.messages), default=first)
         self._now = float(earliest or first or 0)
         self.db = open_database(":memory:", clock=self.clock)
+        saved: dict = {}
+        self.restored = restore is not None
+        if restore is not None:
+            self.db.restore_from(restore)
+            saved = json.loads(self.db.get_meta(STATE_META) or "{}")
+            self._now = float(saved.get("clock", self._now))
         bootstrap = Bootstrap(telegram_bot_token="0:lab", openai_api_key=api_key,
                               admin_password="", owner_user_id=None,
                               database_path=":memory:", web_host="127.0.0.1", web_port=0)
@@ -363,18 +376,23 @@ class Sandbox:
                              username=scenario.bot_username)
         self.tg_chat = TgChat(id=CHAT_ID, type=scenario.chat_type, title=scenario.chat_title)
         self.tg_messages: dict[int, Message] = {}
-        self.images = {f"lab-photo-{m.id}": m.image for m in scenario.all_messages if m.image}
-        top = max((m.id for m in scenario.all_messages), default=0)
-        self.first_bot_message_id = max(100_000, top + 10_000)
+        self.images = {f"lab-photo-{m.id}": m for m in scenario.all_messages if m.has_image}
+        top = max([m.id for m in scenario.all_messages] + [saved.get("max_message_id", 0)])
+        self.first_bot_message_id = max(100_000, top + 10_000,
+                                        saved.get("next_bot_message_id", 0))
         self.telegram = SandboxTelegram(self, scenario.simulate)
+        self.telegram.pins = list(saved.get("pins", []))
         self.services.telegram = self.telegram
         self.recorder = Recorder(self.services)
         self.responder = Responder(self.services, self.recorder)
-        self._user_ids: dict[str, int] = {}
-        self._usernames = {int(m["id"]): m["username"] for m in scenario.members
-                           if m.get("id") is not None and m.get("username")}
+        self._user_ids: dict[str, int] = dict(saved.get("user_ids", {}))
+        self._usernames = {int(k): v for k, v in saved.get("usernames", {}).items()}
+        self._usernames.update({int(m["id"]): m["username"] for m in scenario.members
+                                if m.get("id") is not None and m.get("username")})
         self._updates = itertools.count(1)
         self._last_answer: Message | None = None
+        if saved.get("last_answer"):
+            self._last_answer = self.tg_message(int(saved["last_answer"]))
 
     # ------------------------------------------------------------- clock
 
@@ -402,11 +420,13 @@ class Sandbox:
                 raise SettingError(f"setting {key}: {exc}") from None
 
     async def setup(self) -> None:
-        """The chat as it is before the first turn."""
+        """The chat as it is before the first turn. A restored sandbox
+        already has its chat and state: only new members and messages."""
         services = self.services
-        services.chats.upsert_seen(CHAT_ID, title=self.scenario.chat_title,
-                                   chat_type=self.scenario.chat_type)
-        services.chats.set_status(CHAT_ID, "enabled")
+        if not self.restored:
+            services.chats.upsert_seen(CHAT_ID, title=self.scenario.chat_title,
+                                       chat_type=self.scenario.chat_type)
+            services.chats.set_status(CHAT_ID, "enabled")
         for member in self.scenario.members:
             user_id = member.get("id")
             if user_id is None:
@@ -419,7 +439,8 @@ class Sandbox:
                 services.members.add_alias(CHAT_ID, int(user_id), alias)
         for message in self.scenario.messages:
             await self._receive(message)
-        self._seed_state()
+        if not self.restored:
+            self._seed_state()
 
     @property
     def chat(self):
@@ -807,7 +828,25 @@ class Sandbox:
             model_ms=sum(t.model_ms for t in turns),
             wait_ms=getattr(self.services.llm, "wait_ms", 0),
             duration_ms=int((time.monotonic() - started) * 1000), usage=usage,
-            models=sorted({m for t in turns for m in t.models}))
+            models=sorted({m for t in turns for m in t.models}), final_clock=self._now,
+            max_message_id=self.max_message_id())
+
+    def max_message_id(self) -> int:
+        return int(self.db.scalar("SELECT COALESCE(MAX(message_id), 0) FROM messages "
+                                  "WHERE chat_id = ?", (CHAT_ID,)) or 0)
+
+    def save(self, path: Path) -> None:
+        """Keep the state after the last turn, so another attempt can
+        continue the conversation (``restore``)."""
+        self.db.set_meta(STATE_META, json.dumps({
+            "clock": self._now, "pins": self.telegram.pins, "user_ids": self._user_ids,
+            "usernames": {str(k): v for k, v in self._usernames.items()},
+            "last_answer": self._last_answer.message_id if self._last_answer else None,
+            "max_message_id": self.max_message_id(),
+            "next_bot_message_id": next(self.telegram._ids),
+        }))
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.db.backup_to(path)
 
     def close(self) -> None:
         self.db.close()

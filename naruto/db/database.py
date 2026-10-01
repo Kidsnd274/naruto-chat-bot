@@ -130,6 +130,26 @@ class Database:
         if current < len(MIGRATIONS):
             logger.info("Database schema is at version %s", len(MIGRATIONS))
 
+    # ------------------------------------------------------------- snapshots
+
+    def backup_to(self, path: str | Path) -> None:
+        """Copy the whole database to a file (a prompt-lab sandbox's state)."""
+        target = sqlite3.connect(str(path))
+        try:
+            with self._lock:
+                self._conn.backup(target)
+        finally:
+            target.close()
+
+    def restore_from(self, path: str | Path) -> None:
+        """Replace this database's contents with a backup_to() copy."""
+        source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            with self._lock:
+                source.backup(self._conn)
+        finally:
+            source.close()
+
     # ------------------------------------------------------------------ meta
 
     def get_meta(self, key: str) -> str | None:

@@ -30,6 +30,7 @@ from naruto.settings.service import SettingsService
 
 if TYPE_CHECKING:
     from naruto.importer.service import ImportService
+    from naruto.lab.service import LabService
     from naruto.memory.history import LiveArchiver
     from naruto.memory.keeper import MemoryKeeper
     from naruto.tg.access import ChatAccess
@@ -83,6 +84,7 @@ class Services:
     imports: "ImportService | None" = None  # set by main (needs an upload directory)
     keeper: "MemoryKeeper | None" = None  # digest and notes upkeep, set by main
     archiver: "LiveArchiver | None" = None  # monthly history of live chat, set by main
+    lab: "LabService | None" = None  # the prompt lab, set by main
     # One history job (an import's stages, a live month) per chat at a time.
     history_locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))
 

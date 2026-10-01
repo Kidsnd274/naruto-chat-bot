@@ -47,8 +47,14 @@ time of the turn it answers: that is "now" in the prompt.
 
 ``skill`` forces a skill instead of routing the request like the bot does:
 that makes the scenario a focused experiment, not an end-to-end test.
+
+``"continues": true`` marks turns written to follow on from an earlier
+attempt's conversation (run with continue_from): its first turn may reply to
+the bot's last answer, and it brings no chat, members or state of its own
+beyond new members and messages.
 """
 
+import base64
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
@@ -81,7 +87,8 @@ TURN_KEYS = {"id", "from", "from_id", "username", "text", "date", "after", "repl
              "expect"}
 SCENARIO_KEYS = {"id", "origin", "generated_by", "category", "description", "time", "timezone",
                  "chat", "bot", "members", "state", "messages", "trigger", "expect", "turns",
-                 "simulate", "requires", "rubric", "settings", "skill", "provenance"}
+                 "simulate", "requires", "rubric", "settings", "skill", "provenance",
+                 "continues"}
 DEFAULT_START = 1_780_000_000  # used when nothing has a date
 MINUTE = 60
 _DURATION = re.compile(r"^\s*(\d+)\s*(s|sec|secs|m|min|mins|h|hr|hrs|hours?|d|days?)\s*$",
@@ -107,6 +114,14 @@ class ScenarioMessage:
     file_name: str | None = None
     from_bot: bool = False
     image: Path | None = None
+    image_bytes: bytes | None = None  # an inline image (a data: URI in the JSON)
+
+    @property
+    def has_image(self) -> bool:
+        return self.image is not None or self.image_bytes is not None
+
+    def image_data(self) -> bytes:
+        return self.image_bytes if self.image_bytes is not None else self.image.read_bytes()
 
 
 @dataclass
@@ -147,6 +162,7 @@ class Scenario:
     generated_by: str | None = None
     provenance: dict = field(default_factory=dict)
     base_dir: Path | None = None
+    continues: bool = False  # follows on from an earlier attempt (continue_from)
 
     @property
     def focused(self) -> bool:
@@ -190,12 +206,13 @@ def parse_duration(value: str, where: str) -> int:
 class _Builder:
     """Assigns message IDs and dates in conversation order."""
 
-    def __init__(self, scenario_id: str, base_dir: Path | None, bot_name: str):
+    def __init__(self, scenario_id: str, base_dir: Path | None, bot_name: str,
+                 first_id: int = 1):
         self.where = f"scenario {scenario_id}"
         self.base_dir = base_dir
         self.bot_name = bot_name
         self.ids: dict[int, ScenarioMessage] = {}
-        self.next_id = 1
+        self.next_id = first_id
 
     def message(self, raw: dict, where: str, date: int | None) -> ScenarioMessage:
         if not isinstance(raw, dict):
@@ -213,9 +230,19 @@ class _Builder:
             raise ScenarioError(f"{where}: unknown media {media!r} ({', '.join(MEDIA_KINDS)}).")
         if image and media != "photo":
             raise ScenarioError(f"{where}: 'image' goes with media 'photo'.")
-        image_path = None
-        if image:
-            image_path = (self.base_dir / image) if self.base_dir else Path(image)
+        image_path = image_bytes = None
+        if isinstance(image, str) and image.startswith("data:"):
+            try:
+                image_bytes = base64.b64decode(image.split(",", 1)[1], validate=True)
+            except (IndexError, ValueError):
+                raise ScenarioError(f"{where}: 'image' isn't a valid base64 data: URI.") from None
+        elif image:
+            if self.base_dir is None:
+                raise ScenarioError(f"{where}: send the image inline, as a data: URI "
+                                    "(data:image/png;base64,...).")
+            image_path = self.base_dir / image
+            if not image_path.is_file():
+                raise ScenarioError(f"{where}: image {image} not found next to the scenario.")
         message_id = raw.get("id")
         if message_id is None:
             while self.next_id in self.ids:
@@ -236,7 +263,7 @@ class _Builder:
             date=_date(raw.get("date"), where) or date or DEFAULT_START,
             sender_id=raw.get("from_id"), username=raw.get("username"), reply_to=reply_to,
             media=media, emoji=raw.get("emoji"), file_name=raw.get("file_name"),
-            from_bot=from_bot, image=image_path)
+            from_bot=from_bot, image=image_path, image_bytes=image_bytes)
         self.ids[message_id] = message
         self.next_id = max(self.next_id, message_id + 1)
         return message
@@ -288,7 +315,9 @@ def _addresses_bot(message: ScenarioMessage, bot_username: str,
 
 
 def parse_scenario(raw: dict, base_dir: Path | None = None,
-                   defaults: dict | None = None) -> Scenario:
+                   defaults: dict | None = None, *, first_id: int = 1) -> Scenario:
+    """``first_id``: where automatic message IDs start (a scenario that
+    continues an earlier conversation starts after its messages)."""
     if not isinstance(raw, dict):
         raise ScenarioError("A scenario must be a JSON object.")
     data = {**(defaults or {}), **raw}
@@ -322,7 +351,7 @@ def parse_scenario(raw: dict, base_dir: Path | None = None,
     if not isinstance(raw_turns, list) or not raw_turns:
         raise ScenarioError(f"{where}: 'turns' must be a non-empty list.")
 
-    builder = _Builder(scenario_id, base_dir, bot_name)
+    builder = _Builder(scenario_id, base_dir, bot_name, first_id)
     first = raw_turns[0] if isinstance(raw_turns[0], dict) else {}
     start_time = _date(data.get("time"), f"{where}, time")
     first_date = _date(first.get("date"), f"{where}, turn 1")
@@ -384,8 +413,9 @@ def parse_scenario(raw: dict, base_dir: Path | None = None,
             if raw_turn.get("text"):
                 raise ScenarioError(f"{turn_where}: a command turn has no 'text'.")
             fields["text"] = "/" + " ".join([command, *args])
-        if raw_turn.get("reply_to_answer") and index == 1:
-            raise ScenarioError(f"{turn_where}: there is no earlier answer to reply to.")
+        if raw_turn.get("reply_to_answer") and index == 1 and not data.get("continues"):
+            raise ScenarioError(f"{turn_where}: there is no earlier answer to reply to (unless "
+                                "the scenario \"continues\" an earlier conversation).")
         message = builder.message(fields, turn_where, when)
         expect = _check_expect(raw_turn.get("expect"), turn_where)
         turn = Turn(index=index, message=message, expect=expect, before=before, command=command,
@@ -407,6 +437,9 @@ def parse_scenario(raw: dict, base_dir: Path | None = None,
         if any(turn.command for turn in turns):
             raise ScenarioError(f"{where}: a forced skill and commands don't mix.")
     state = data.get("state") or {}
+    if data.get("continues") and state:
+        raise ScenarioError(f"{where}: a scenario that continues a conversation has that "
+                            "conversation's state; it can't bring its own.")
     if not isinstance(state, dict) or set(state) - set(STATE_KEYS):
         raise ScenarioError(f"{where}: 'state' takes {', '.join(STATE_KEYS)}.")
     simulate = data.get("simulate") or {}
@@ -438,7 +471,8 @@ def parse_scenario(raw: dict, base_dir: Path | None = None,
         simulate=simulate, requires=list(data.get("requires") or []),
         rubric=list(data.get("rubric") or []), settings=settings, skill=skill,
         bot_name=bot_name, bot_username=bot_username, generated_by=data.get("generated_by"),
-        provenance=dict(data.get("provenance") or {}), base_dir=base_dir)
+        provenance=dict(data.get("provenance") or {}), base_dir=base_dir,
+        continues=bool(data.get("continues", False)))
 
 
 def load_scenarios(path: Path) -> list[Scenario]:

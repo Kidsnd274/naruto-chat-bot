@@ -76,6 +76,11 @@ def tunable_keys(scope_keys: list[str] | None = None) -> list[str]:
             if _matches(key, scope_keys) and _matches(key, TUNABLE + EXTENDED)]
 
 
+def is_extended(key: str) -> bool:
+    """Tunable only when a run's scope names it."""
+    return _matches(key, EXTENDED)
+
+
 def check_scope(scope_keys: list[str]) -> None:
     """Every pattern in a run's scope must name tunable settings."""
     for pattern in scope_keys:

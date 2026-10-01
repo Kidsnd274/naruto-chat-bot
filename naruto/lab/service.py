@@ -5,8 +5,11 @@ Nothing here changes the live bot's settings; activation (stage 6) is the
 only way a candidate reaches them.
 """
 
+import hashlib
+import hmac
 import logging
 from pathlib import Path
+import secrets
 from typing import Any
 
 from naruto.agent.skills import SKILLS
@@ -32,6 +35,11 @@ STOP_REASONS = ("objective_met", "budget_exhausted", "no_improvement", "blocked"
 PURPOSES = ("tuning", "validation", "regression")
 MAX_BATCH = 500
 MAX_REPEAT = 10
+TOKEN_PREFIX = "nlab_"
+
+
+def token_hash(secret: str) -> str:
+    return hashlib.sha256(secret.encode()).hexdigest()
 
 
 class LabError(Exception):
@@ -67,6 +75,35 @@ class LabService:
         self.repo = LabRepository(services.db)
         self.state_dir = Path(state_dir)
         self.executor = LabExecutor(self, llm_factory=llm_factory)
+
+    # ============================================================== tokens
+
+    def create_token(self, name: str, *, chats: list[int] = (),
+                     may_activate: bool = False) -> tuple[LabToken, str]:
+        """A new API token. The secret is returned once and never stored."""
+        name = (name or "").strip()[:60] or "agent"
+        secret = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        token = self.repo.add_token(name, token_hash(secret), chats=list(chats),
+                                    may_activate=may_activate)
+        logger.info("Lab API token %s (%s) created", token.id, name)
+        return token, secret
+
+    def authenticate(self, secret: str | None) -> LabToken | None:
+        if not secret or not secret.startswith(TOKEN_PREFIX):
+            return None
+        token = self.repo.token_by_hash(token_hash(secret))
+        if token is None or token.revoked_at is not None:
+            return None
+        if not hmac.compare_digest(token.token_hash, token_hash(secret)):
+            return None
+        self.repo.update_token(token.id, last_used_at=self.services.db.now())
+        return token
+
+    def set_token_access(self, token_id: int, *, chats: list[int], may_activate: bool) -> None:
+        self.repo.update_token(token_id, chats=list(chats), may_activate=int(may_activate))
+
+    def revoke_token(self, token_id: int) -> None:
+        self.repo.update_token(token_id, revoked_at=self.services.db.now())
 
     # ================================================================ runs
 
@@ -349,6 +386,25 @@ class LabService:
             settings_hash=config.settings_hash(values))
         logger.info("Lab run %s: candidate %s", run.id, candidate.label)
         return candidate
+
+    def add_candidate_from_files(self, run_id: int, *, name: str, files: dict[str, str],
+                                 parent=None, hypothesis: str = "",
+                                 rationale: str = "") -> LabCandidate:
+        """A candidate from a folder of configuration files (lab export's
+        layout): only what differs from the parent counts as a change."""
+        run = self.active_run(run_id)
+        if not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
+            raise LabError("files must map file names to their text.")
+        files = {name: text for name, text in files.items() if name != "CHANGES.md"}
+        parent_values = self.effective_settings(run, self.get_candidate(run, parent))
+        try:
+            changes = config.from_files(files, parent_values, self.tunable(run))
+        except SettingError as exc:
+            raise LabError(str(exc)) from None
+        if not changes:
+            raise LabError("The files are the same as the parent's configuration.")
+        return self.add_candidate(run_id, name=name, changes=changes, parent=parent,
+                                  hypothesis=hypothesis, rationale=rationale)
 
     def candidate_view(self, run: LabRun, candidate: LabCandidate | None) -> dict:
         keys = self.tunable(run)

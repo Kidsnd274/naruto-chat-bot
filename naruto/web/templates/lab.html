@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Lab{% endblock %}
+{% block content %}
+<h1>Lab</h1>
+<p class="muted">Experiments with the bot's prompts and model parameters. They run in sandboxes on the configured model: nothing here changes the live bot until a candidate is activated. An external agent (Claude Code, Codex…) drives them through the lab API with a token below; see <code>docs/LAB.md</code>.</p>
+
+{% if new_secret %}
+<section class="card notice warn">
+  <h2>New token: {{ new_token.name }}</h2>
+  <p>Copy it now: it isn't shown again (only a hash is kept).</p>
+  <p><code class="mono">{{ new_secret }}</code></p>
+  <p class="small">Give it to the agent as <code>NARUTO_LAB_TOKEN</code>, or save it in a file only you can read and pass <code>--token-file</code>.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Runs</h2>
+  {% if runs %}
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th class="num">#</th><th>Objective</th><th>State</th><th class="num">Attempts</th><th>Started</th></tr></thead>
+    <tbody>
+    {% for run, state in runs %}
+      <tr>
+        <td class="num">{{ run.id }}</td>
+        <td class="text">{{ run.objective|truncate(140) }}</td>
+        <td>
+          {% if state.state == "waiting_for_owner" %}<span class="badge warn-badge">waiting for your choice</span>
+          {% elif state.state == "finished" %}<span class="badge muted-badge">finished</span> <span class="small muted">{{ run.stop_reason }}</span>
+          {% else %}<span class="badge">{{ state.state }}</span>{% endif %}
+        </td>
+        <td class="num">{{ state.used.attempts }} / {{ state.budget.attempts }}</td>
+        <td class="small nowrap">{{ run.created_at|ts }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p class="muted">No runs yet. An agent starts one with <code>python3 -m naruto.lab run start</code>.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="tokens">
+  <h2>API tokens</h2>
+  <p class="muted small">A token lets an agent run experiments. By default it can only use made-up (synthetic) scenarios: tick the chats whose real messages and traces it may read, and whether it may activate a candidate. Treat a token like the admin password.</p>
+  {% if tokens %}
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th>Name</th><th>May read chats</th><th>May activate</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    {% for token in tokens %}
+      <tr>
+        <td>{{ token.name }}{% if token.revoked_at %} <span class="badge muted-badge">revoked</span>{% endif %}</td>
+        <td class="small">{% for chat_id in token.chats %}{{ chat_titles.get(chat_id, chat_id) }}{% if not loop.last %}, {% endif %}{% else %}<span class="muted">synthetic only</span>{% endfor %}</td>
+        <td>{{ "yes" if token.may_activate else "no" }}</td>
+        <td class="small nowrap">{{ token.created_at|ts }}</td>
+        <td class="small nowrap">{{ token.last_used_at|ago }}</td>
+        <td>
+          {% if not token.revoked_at %}
+          <details>
+            <summary class="small">Change</summary>
+            <form method="post" action="/lab/tokens/{{ token.id }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              {% for chat in chats %}
+                <label class="small"><input type="checkbox" name="chats" value="{{ chat.chat_id }}" {{ "checked" if chat.chat_id in token.chats else "" }}> {{ chat.display_title }}</label><br>
+              {% endfor %}
+              <label class="small"><input type="checkbox" name="may_activate" {{ "checked" if token.may_activate else "" }}> May activate candidates</label><br>
+              <button type="submit" class="small">Save</button>
+            </form>
+            <form method="post" action="/lab/tokens/{{ token.id }}/revoke">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="small danger">Revoke</button>
+            </form>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  <h3>New token</h3>
+  <form method="post" action="/lab/tokens">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p><label>Name <input name="name" placeholder="claude-code" class="narrow"></label></p>
+    {% if chats %}
+    <p class="small">May read these chats:</p>
+    {% for chat in chats %}
+      <label class="small"><input type="checkbox" name="chats" value="{{ chat.chat_id }}"> {{ chat.display_title }}</label><br>
+    {% endfor %}
+    {% endif %}
+    <p><label class="small"><input type="checkbox" name="may_activate"> May activate candidates (only in runs whose activation policy allows it)</label></p>
+    <button type="submit" class="primary">Create token</button>
+  </form>
+</section>
+{% endblock %}

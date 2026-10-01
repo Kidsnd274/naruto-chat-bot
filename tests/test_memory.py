@@ -219,11 +219,76 @@ async def test_a_busy_chat_can_update_its_digest_less_often(services, chat):
 
 async def test_automatic_notes_can_be_turned_off(services, chat):
     store(services, 1, "I love hiking")
+    kept = services.notes.add(GROUP_ID, "Alice likes swimming", created_by="owner", actor="o")
     services.settings.set("memory.auto_notes", False, actor="t")
-    services.llm = ScriptedLLM(digest_answer(notes=[{"content": "Alice loves hiking"}]))
+    services.llm = ScriptedLLM(digest_answer(notes=[
+        {"content": "Alice loves hiking"},
+        {"action": "update", "id": f"n{kept.id}", "content": "Alice likes hiking"}]))
     await MemoryKeeper(services).update(chat)
     assert "Automatic notes are turned off" in services.llm.calls[0]["messages"][0]["content"]
-    assert services.notes.count(GROUP_ID) == 0
+    # Neither added nor corrected.
+    assert [n.content for n in services.notes.for_chat(GROUP_ID)] == ["Alice likes swimming"]
+
+
+async def test_an_owner_edit_during_a_digest_update_wins(services, chat):
+    store(services, 1, "BBQ on Saturday?")
+    services.digests.save(GROUP_ID, "- Owner's version", actor="owner")
+    edited = asyncio.Event()
+
+    class EditingLLM(ScriptedLLM):
+        async def chat(self, messages, **kwargs):
+            # The owner corrects the digest while the model is busy.
+            services.digests.save(GROUP_ID, "- Owner's correction", actor="owner")
+            edited.set()
+            return await super().chat(messages, **kwargs)
+
+    services.llm = EditingLLM(digest_answer("- Stale model version"))
+    keeper = MemoryKeeper(services)
+    assert await keeper.update(chat) is None and edited.is_set()
+    digest = services.digests.get(GROUP_ID)
+    assert digest.text == "- Owner's correction"
+    assert digest.last_row_id is None  # the batch is still unread...
+    assert [c.chat_id for c in keeper.due_chats()] == [GROUP_ID]  # ...and read again soon
+    run = services.runs.recent()[0][0]
+    assert run.status == "error" and "edited or deleted" in run.error
+
+    services.llm = ScriptedLLM(digest_answer("- Saturday BBQ (owner's correction kept)"))
+    assert await keeper.update(chat) == "- Saturday BBQ (owner's correction kept)"
+    assert "## Current digest\n- Owner's correction" in services.llm.calls[0]["messages"][1]["content"]
+
+
+async def test_a_digest_deleted_during_an_update_stays_deleted(services, chat):
+    store(services, 1, "hello")
+
+    class DeletingLLM(ScriptedLLM):
+        async def chat(self, messages, **kwargs):
+            services.digests.save(GROUP_ID, "- Owner wrote one meanwhile", actor="owner")
+            return await super().chat(messages, **kwargs)
+
+    services.llm = DeletingLLM(digest_answer("- From the model"))
+    assert await MemoryKeeper(services).update(chat) is None  # no digest when it started
+    assert services.digests.get(GROUP_ID).text == "- Owner wrote one meanwhile"
+
+    services.digests.save(GROUP_ID, "- Base", actor="owner")
+    store(services, 2, "more", offset=2)
+
+    class ClearingLLM(ScriptedLLM):
+        async def chat(self, messages, **kwargs):
+            services.digests.clear(GROUP_ID)
+            return await super().chat(messages, **kwargs)
+
+    services.llm = ClearingLLM(digest_answer("- From the model"))
+    assert await MemoryKeeper(services).update(chat) is None
+    assert services.digests.get(GROUP_ID) is None
+
+
+def test_deleted_note_ids_are_never_reused(services, chat):
+    first = services.notes.add(GROUP_ID, "Alice is vegetarian", created_by="owner", actor="o")
+    second = services.notes.add(GROUP_ID, "Bob is late", created_by="owner", actor="o")
+    services.notes.delete(second.id, actor="o")
+    third = services.notes.add(-999, "Another chat's fact", created_by="owner", actor="o")
+    assert third.id > second.id > first.id
+    assert [change.action for change in services.notes.history(third.id)] == ["created"]
 
 
 async def test_memory_and_digest_are_background(services, wired, bot, chat):
@@ -690,3 +755,45 @@ async def test_distillation_failure_keeps_the_import(services, tmp_path):
     assert record.status == "done" and record.imported > 0
     assert record.distill_status == "failed" and "kept failing" in record.distill_error
     assert record.file_path is None
+
+
+async def test_reading_an_export_for_distillation_keeps_the_bot_responsive(services, tmp_path,
+                                                                          monkeypatch):
+    from naruto.memory import distill
+
+    services.settings.set("retention.imported_messages_days", 0, actor="t")
+    services.llm = ScriptedLLM(json.dumps({"notes": []}))
+    real = distill.export_chunks
+
+    def slow_export_chunks(*args, **kwargs):
+        time.sleep(0.3)  # a large export being parsed
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(distill, "export_chunks", slow_export_chunks)
+    importer = ImportService(services, tmp_path / "imports")
+    record = await importer.create_from_upload(io.BytesIO(FIXTURE.read_bytes()), "result.json")
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.02)
+            ticks += 1
+
+    beating = asyncio.create_task(heartbeat())
+    await importer.start(record.id, GROUP_ID)
+    await asyncio.gather(*importer._tasks.values())
+    beating.cancel()
+    assert importer.repo.get(record.id).distill_status == "done"
+    assert ticks >= 10  # the loop kept running while the export was read
+
+
+def test_reading_an_export_stops_on_shutdown(services):
+    import threading
+
+    from naruto.memory.distill import DistillStopped, export_chunks
+
+    stopping = threading.Event()
+    stopping.set()
+    with pytest.raises(DistillStopped):
+        export_chunks(services, str(FIXTURE), before=None, chunk_tokens=1000, stopping=stopping)

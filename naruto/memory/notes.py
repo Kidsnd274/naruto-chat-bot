@@ -46,13 +46,19 @@ def resolve_about(services: Services, chat_id: int, about, bot_id: int | None) -
 
 
 def apply_note_actions(services: Services, chat_id: int, actions, *, created_by: str,
-                       actor: str, bot_id: int | None, allow_add: bool = True,
+                       actor: str, bot_id: int | None, allow_changes: bool = True,
                        known_row_ids: set[int] | None = None) -> dict:
-    """Apply the add / update actions the model proposed. Deletions are
-    never automatic; locked notes and notes of other chats are skipped."""
+    """Apply the add / update actions the model proposed in a digest update
+    or an import. Deletions are never automatic; locked notes and notes of
+    other chats are skipped. ``allow_changes`` is Settings → Memory →
+    Automatic notes: off, nothing is added or corrected (explicit "remember
+    that…" goes through the memory tools instead)."""
     notes = services.notes
     counts = {"added": 0, "updated": 0, "skipped": 0}
     if not isinstance(actions, list):
+        return counts
+    if not allow_changes:
+        counts["skipped"] = len(actions)
         return counts
     existing = {note.content.lower() for note in notes.for_chat(chat_id)}
     limit = services.settings["memory.max_notes_per_chat"]
@@ -71,8 +77,7 @@ def apply_note_actions(services: Services, chat_id: int, actions, *, created_by:
             sources = [s for s in sources if s in known_row_ids]
         try:
             if kind == "add":
-                if not allow_add or not content or content.lower() in existing \
-                        or notes.count(chat_id) >= limit:
+                if not content or content.lower() in existing or notes.count(chat_id) >= limit:
                     counts["skipped"] += 1
                     continue
                 notes.add(chat_id, content, category=category,

@@ -7,6 +7,7 @@ the first one is built from the import's most recent days. Model requests
 run at background priority.
 """
 
+import asyncio
 from datetime import datetime
 import logging
 import threading
@@ -36,13 +37,17 @@ class DistillStopped(Exception):
 
 
 def export_chunks(services: Services, path: str, *, before: int | None,
-                  chunk_tokens: int) -> list[list[str]]:
-    """The export's messages (before ``before``) as dated lines, in chunks."""
+                  chunk_tokens: int, stopping: threading.Event | None = None) -> list[list[str]]:
+    """The export's messages (before ``before``) as dated lines, in chunks.
+    Reads the whole file, so call it in a worker thread; it gives up with
+    DistillStopped once ``stopping`` is set."""
     tz = services.timezone()
     max_chars = services.settings["context.max_message_chars"]
     lines: list[tuple[int | None, str, int, str]] = []
     with open(path, "rb") as handle:
-        for message in ExportReader(handle).messages():
+        for count, message in enumerate(ExportReader(handle).messages()):
+            if stopping is not None and count % 1000 == 0 and stopping.is_set():
+                raise DistillStopped
             if message.is_service or (before is not None and message.date >= before):
                 continue
             body = message_body(message.text, message.media_kind, message.media_meta)
@@ -97,8 +102,11 @@ class Distiller:
         services = self.services
         settings = services.settings.for_chat(chat_id)
         first_live = services.messages.first_live_date(chat_id)
-        chunks = export_chunks(services, record.file_path, before=first_live,
-                               chunk_tokens=settings["import.distill_chunk_tokens"])
+        # Parsing a large export takes a while: keep it off the event loop
+        # so the bot and the web admin stay responsive.
+        chunks = await asyncio.to_thread(
+            export_chunks, services, record.file_path, before=first_live,
+            chunk_tokens=settings["import.distill_chunk_tokens"], stopping=stopping)
         self.repo.update(record.id, distill_status="running", distill_total=len(chunks),
                          distill_done=0, notes_added=0, distill_error=None)
         actor = f"import {record.id}"
@@ -127,7 +135,7 @@ class Distiller:
                 counts = apply_note_actions(services, chat_id, data.get("notes") or [],
                                             created_by=IMPORT, actor=actor,
                                             bot_id=bot.id if bot else None,
-                                            allow_add=settings["memory.auto_notes"])
+                                            allow_changes=settings["memory.auto_notes"])
                 added += counts["added"]
             self.repo.update(record.id, distill_done=index, notes_added=added)
         if chunks and failed_parts == len(chunks):

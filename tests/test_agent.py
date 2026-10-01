@@ -19,6 +19,7 @@ from naruto.agent.runner import (
     AgentRunner,
     RunRequest,
 )
+from naruto.db.board import MAX_ITEMS_PER_SECTION, BoardFull
 from naruto.db.messages import IMPORT, NewMessage
 from naruto.llm import LLMClient, LLMError, request_completion, split_inline_tool_calls
 from naruto.tg.access import ChatAccess
@@ -315,6 +316,23 @@ async def test_an_answer_is_not_sent_if_the_chat_was_disabled_meanwhile(services
     assert run.error == "Not sent: the chat was disabled while it ran."
 
 
+async def test_no_tool_runs_after_the_chat_is_disabled(services, wired, bot, chat):
+    class DisablingLLM(ScriptedLLM):
+        async def chat(self, messages, **kwargs):
+            services.chats.set_status(GROUP_ID, "disabled")  # the owner, mid-request
+            return await super().chat(messages, **kwargs)
+
+    services.llm = DisablingLLM(
+        [tool_call("create_poll", {"question": "BBQ day?", "options": ["Sat", "Sun"]})],
+        "Vote!")
+    await say(wired, bot, message(6, "@naruto_bot poll it"))
+    assert bot.polls == [] and bot.sent == []
+    assert len(services.llm.calls) == 1  # stopped before the tool, no second request
+    run = services.runs.recent()[0][0]
+    assert run.status == "error" and run.error == "Stopped: the chat was disabled while it ran."
+    assert run.tool_calls == 0
+
+
 # ----------------------------------------------------------- read tools
 
 def store(services, message_id, text, *, sender=(7, "Alice"), offset=0, source="live"):
@@ -493,6 +511,47 @@ async def test_no_tools_are_offered_when_the_limit_is_zero(services, wired, bot,
 async def _record(bucket, text):
     bucket.append(text)
     return True
+
+
+async def test_confirming_a_plan_on_a_full_board_says_so(services, bot, chat):
+    full = [f"Plan {i}" for i in range(MAX_ITEMS_PER_SECTION)]
+    services.boards.set_section(GROUP_ID, "plans", full, actor="t")
+    plan = services.plans.create(GROUP_ID, "BBQ", ["Sat"], run_id=None, proposed_for_user_id=None)
+    answers = []
+    query = SimpleNamespace(data=f"plan:confirm:{plan.id}", from_user=BOB,
+                            answer=lambda text=None, **kw: _record(answers, text),
+                            edit_message_text=lambda text, **kw: _record(answers, text))
+    await PlanButtons(services, BoardPublisher(services)).on_callback(
+        SimpleNamespace(callback_query=query), context(bot))
+    assert services.plans.get(plan.id).status == "confirmed"
+    assert "board is full" in answers[0]
+    assert [i.text for i in services.boards.get(GROUP_ID).items("plans")] == full  # unchanged
+    assert bot.api_calls == []  # nothing new to publish
+
+
+async def test_the_board_stays_within_one_telegram_message(services, bot, chat):
+    long_items = [f"{i:02d} " + "x" * 287 for i in range(20)]  # ~6,000 characters
+    with pytest.raises(BoardFull):
+        services.boards.set_section(GROUP_ID, "plans", long_items, actor="t")
+    with pytest.raises(BoardFull):
+        services.boards.set_section(GROUP_ID, "plans", [f"p{i}" for i in range(26)], actor="t")
+    assert services.boards.get(GROUP_ID).is_empty  # nothing half-saved
+
+    _, results = await run_tools(services, bot, chat, tool_call(
+        "update_board", {"section": "decided", "items": [{"text": t} for t in long_items]}))
+    assert results[0].startswith("Error: Not changed: The board would be too long")
+    assert bot.api_calls == [] and bot.sent == []
+
+    # A board saved before the limit existed is cut to fit when published.
+    services.db.execute(
+        "INSERT INTO boards (chat_id, sections, updated_at, updated_by) VALUES (?, ?, 0, 't')",
+        (GROUP_ID, json.dumps({"plans": [{"text": t} for t in long_items]})))
+    await BoardPublisher(services).publish(bot, chat)
+    markdown = bot.api_calls[-1][1]["rich_message"]["markdown"]
+    assert len(markdown) <= 4096 and "more (too long to show" in markdown
+    bot.fail_rich = True
+    await BoardPublisher(services).publish(bot, chat, fresh=True)
+    assert len(bot.sent[-1]["text"]) <= 4096
 
 
 # ------------------------------------------------------------------ polls

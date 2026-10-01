@@ -41,6 +41,7 @@ STUCK_TEXT = "Sorry, I got stuck on that one. Could you ask again, a bit more sp
 LAST_CALL_NOTE = ("[No more tool calls are available in this response. Write your answer "
                   "now with what you have.]")
 IMAGES_REFUSED_NOTE = "[The image can't be shown: the model server doesn't accept images.]"
+CHAT_DISABLED_ERROR = "Stopped: the chat was disabled while it ran."
 TRACE_TEXT_CHARS = 20_000
 # How OpenAI-compatible servers word a refused image (Halogen without a
 # vision tower, llama.cpp without an mmproj, text-only models).
@@ -189,6 +190,13 @@ class AgentRunner:
                              "tool_calls": [call.as_request_part() for call in calls]})
             switching = any(call.name == "use_skill" for call in calls) and not switched
             for call in calls:
+                if not self._chat_enabled(request.chat):
+                    # Disabled while the model was busy (or by an earlier
+                    # tool's await): nothing more may happen in the chat.
+                    logger.info("Run %s stopped: the chat was disabled while it ran.",
+                                state.run_id)
+                    return self._finish(state, status="error", error=CHAT_DISABLED_ERROR,
+                                        result=result, totals=totals)
                 elapsed = timed()
                 if switching and call.name != "use_skill":
                     content, failed = "Not run: handing over to another mode.", True
@@ -283,6 +291,10 @@ class AgentRunner:
             messages[:] = without_images(messages, IMAGES_REFUSED_NOTE)
             return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
                                   stream=self.stream)
+
+    def _chat_enabled(self, chat: Chat) -> bool:
+        current = self.services.chats.get(chat.chat_id)
+        return current is not None and current.enabled
 
     @staticmethod
     def _request_text(request: RunRequest) -> str:

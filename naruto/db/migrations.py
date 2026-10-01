@@ -427,6 +427,41 @@ CREATE TABLE chat_settings (
 );
 """
 
+_V9_STABLE_NOTE_IDS = """
+-- Note IDs are never reused. Without AUTOINCREMENT, SQLite gave a new note
+-- the ID of the most recently deleted one, so it inherited that note's
+-- history (even from another chat) and old [n12] references reached it.
+-- The sequence starts above every ID used so far, deleted notes included.
+CREATE TABLE memory_notes_v9 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT NOT NULL,
+    person_id INTEGER,
+    source_row_ids TEXT,
+    created_by TEXT NOT NULL,
+    created_by_user_id INTEGER,
+    locked INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+INSERT INTO memory_notes_v9 (id, chat_id, content, category, person_id, source_row_ids,
+                             created_by, created_by_user_id, locked, created_at, updated_at)
+    SELECT id, chat_id, content, category, person_id, source_row_ids, created_by,
+           created_by_user_id, locked, created_at, updated_at FROM memory_notes;
+DROP TABLE memory_notes;
+ALTER TABLE memory_notes_v9 RENAME TO memory_notes;
+CREATE INDEX memory_notes_chat ON memory_notes (chat_id, id);
+DELETE FROM sqlite_sequence WHERE name IN ('memory_notes', 'memory_notes_v9');
+INSERT INTO sqlite_sequence (name, seq) VALUES ('memory_notes', MAX(
+    COALESCE((SELECT MAX(id) FROM memory_notes), 0),
+    COALESCE((SELECT MAX(note_id) FROM memory_note_history), 0)));
+
+-- Every change to a digest's text bumps its revision, so a background
+-- update can tell that the owner edited (or deleted) it meanwhile.
+ALTER TABLE digests ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -436,6 +471,7 @@ MIGRATIONS: list[str] = [
     _V6_MEMORY,
     _V7_REMINDER_RETRIES,
     _V8_CHAT_SETTINGS,
+    _V9_STABLE_NOTE_IDS,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

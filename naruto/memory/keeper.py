@@ -33,6 +33,7 @@ CHECK_INTERVAL_SECONDS = 60
 RETRY_AFTER_SECONDS = 15 * 60
 QUIET_MIN_MESSAGES = 10
 MAX_UNREAD_BATCH = 2000
+DIGEST_CHANGED = "Not saved: the digest was edited or deleted while this update ran."
 AUTO_NOTES_OFF = "\n\nAutomatic notes are turned off: always answer with an empty notes list."
 
 
@@ -165,6 +166,8 @@ class MemoryKeeper:
                       actor: str | None) -> str | None:
         services = self.services
         settings = services.settings.for_chat(chat.chat_id)
+        read = services.digests.get(chat.chat_id)
+        revision = read.revision if read else None  # to spot owner edits meanwhile
         batch, more = self._batch(chat, messages)
         if not batch:
             return None
@@ -199,10 +202,19 @@ class MemoryKeeper:
         if len(text) > limit * 2:
             text = text[: limit * 2].rsplit("\n", 1)[0]
         actor = actor or f"bot (run {run_id})"
-        services.digests.save(chat.chat_id, text, actor=actor, last=batch[-1])
+        if services.digests.save(chat.chat_id, text, actor=actor, last=batch[-1],
+                                 expected_revision=revision) is None:
+            # The owner edited or deleted the digest while the model worked:
+            # their version wins. The batch is still unread, so read it again
+            # on top of their version.
+            logger.info("The digest changed during the update; discarding its result.",
+                        extra={"chat_id": chat.chat_id})
+            services.runs.update(run_id, status="error", error=DIGEST_CHANGED, **outcome)
+            self.request_update(chat.chat_id)
+            return None
         counts = apply_note_actions(
             services, chat.chat_id, data.get("notes") or [], created_by=BOT, actor=actor,
-            bot_id=self._identity().id, allow_add=settings["memory.auto_notes"],
+            bot_id=self._identity().id, allow_changes=settings["memory.auto_notes"],
             known_row_ids={m.id for m in batch})
         services.runs.update(run_id, status="ok", **outcome)
         logger.info("Digest updated from %s messages (%s notes added, %s updated)", len(batch),

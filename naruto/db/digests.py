@@ -6,6 +6,8 @@ import sqlite3
 from naruto.db.database import Database, now_ts
 from naruto.db.messages import StoredMessage
 
+ANY = object()  # save(): no revision check (owner edits)
+
 
 @dataclass
 class Digest:
@@ -17,6 +19,7 @@ class Digest:
     updated_by: str
     error: str | None
     failed_at: int | None
+    revision: int = 0  # bumped by every change to the text or cursor
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Digest":
@@ -32,21 +35,46 @@ class DigestRepository:
         return Digest.from_row(row) if row else None
 
     def save(self, chat_id: int, text: str, *, actor: str,
-             last: StoredMessage | None = None) -> Digest:
+             last: StoredMessage | None = None,
+             expected_revision: int | None | object = ANY) -> Digest | None:
         """Store new digest text. ``last`` moves the cursor to that message;
-        without it (an owner edit) the cursor stays."""
+        without it (an owner edit) the cursor stays.
+
+        A background update passes ``expected_revision``: the revision it
+        read (None if there was no digest). If the digest changed or was
+        deleted since, nothing is saved and None is returned."""
         ts = now_ts()
         current = self.get(chat_id)
         last_row_id = last.id if last else (current.last_row_id if current else None)
         last_date = last.date if last else (current.last_message_date if current else None)
-        self.db.execute(
-            "INSERT INTO digests (chat_id, text, last_row_id, last_message_date, updated_at, "
-            "updated_by, error, failed_at) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL) "
-            "ON CONFLICT(chat_id) DO UPDATE SET text = excluded.text, "
-            "last_row_id = excluded.last_row_id, last_message_date = excluded.last_message_date, "
-            "updated_at = excluded.updated_at, updated_by = excluded.updated_by, "
-            "error = NULL, failed_at = NULL",
-            (chat_id, text.strip(), last_row_id, last_date, ts, actor))
+        values = (chat_id, text.strip(), last_row_id, last_date, ts, actor)
+        if expected_revision is ANY:
+            self.db.execute(
+                "INSERT INTO digests (chat_id, text, last_row_id, last_message_date, "
+                "updated_at, updated_by, error, failed_at, revision) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1) "
+                "ON CONFLICT(chat_id) DO UPDATE SET text = excluded.text, "
+                "last_row_id = excluded.last_row_id, "
+                "last_message_date = excluded.last_message_date, "
+                "updated_at = excluded.updated_at, updated_by = excluded.updated_by, "
+                "error = NULL, failed_at = NULL, revision = digests.revision + 1", values)
+        elif expected_revision is None:
+            # Only if there is still no digest (the owner may have written one).
+            saved = self.db.execute(
+                "INSERT INTO digests (chat_id, text, last_row_id, last_message_date, "
+                "updated_at, updated_by, error, failed_at, revision) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1) "
+                "ON CONFLICT(chat_id) DO NOTHING", values).rowcount
+            if not saved:
+                return None
+        else:
+            saved = self.db.execute(
+                "UPDATE digests SET text = ?, last_row_id = ?, last_message_date = ?, "
+                "updated_at = ?, updated_by = ?, error = NULL, failed_at = NULL, "
+                "revision = revision + 1 WHERE chat_id = ? AND revision = ?",
+                (*values[1:], chat_id, expected_revision)).rowcount
+            if not saved:
+                return None
         return self.get(chat_id)
 
     def set_error(self, chat_id: int, error: str) -> None:

@@ -16,7 +16,13 @@ from telegram.ext import ContextTypes
 
 from naruto import media
 from naruto.agent.context import ImageInput
-from naruto.agent.runner import FAILURE_TEXT, AgentRunner, RunOutcome, RunRequest
+from naruto.agent.runner import (
+    CHAT_DISABLED_ERROR,
+    FAILURE_TEXT,
+    AgentRunner,
+    RunOutcome,
+    RunRequest,
+)
 from naruto.db.chats import Chat
 from naruto.db.messages import StoredMessage
 from naruto.services import BotIdentity, Services
@@ -107,8 +113,9 @@ class Responder:
             return True
         logger.info("Dropping the answer of run %s: the chat was disabled while it ran.",
                     outcome.run_id)
-        self.services.runs.update(outcome.run_id,
-                                  error="Not sent: the chat was disabled while it ran.")
+        if outcome.error != CHAT_DISABLED_ERROR:  # the run already says it stopped
+            self.services.runs.update(outcome.run_id,
+                                      error="Not sent: the chat was disabled while it ran.")
         return False
 
     async def run(self, telegram_bot, chat: Chat, message: Message, trigger: StoredMessage,

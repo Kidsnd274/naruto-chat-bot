@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import logging
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.db.migrations import CHAT_SCOPED_TABLES
 
 logger = logging.getLogger(__name__)
@@ -168,7 +168,7 @@ class ChatRepository:
         Returns ``(chat, created)``. Titles and types are refreshed when given.
         """
         chat_id = self.resolve(chat_id)
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             existing = self.get(chat_id, resolve=False)
             if existing is None:
@@ -190,7 +190,7 @@ class ChatRepository:
             return self.get(chat_id, resolve=False), created
 
     def _update(self, chat_id: int, **fields) -> None:
-        fields["updated_at"] = now_ts()
+        fields["updated_at"] = self.db.now()
         assignments = ", ".join(f"{name} = ?" for name in fields)
         self.db.execute(
             f"UPDATE chats SET {assignments} WHERE chat_id = ?",
@@ -205,7 +205,7 @@ class ChatRepository:
         if chat is None:
             return None
         if chat.status != status:
-            ts = now_ts()
+            ts = self.db.now()
             fields: dict = {"status": status, "status_changed_at": ts}
             if status == ENABLED and chat.recording_since is None:
                 fields["recording_since"] = ts  # the recorder starts now
@@ -236,16 +236,16 @@ class ChatRepository:
             self.resolve(chat_id),
             can_pin=None if can_pin is None else int(can_pin),
             can_delete=None if can_delete is None else int(can_delete),
-            rights_checked_at=now_ts(),
+            rights_checked_at=self.db.now(),
         )
 
     def mark_owner_notified(self, chat_id: int) -> None:
-        self._update(self.resolve(chat_id), owner_notified_at=now_ts())
+        self._update(self.resolve(chat_id), owner_notified_at=self.db.now())
 
     def touch_activity(self, chat_id: int, ts: int | None = None) -> None:
         self.db.execute(
             "UPDATE chats SET last_activity_at = ? WHERE chat_id = ?",
-            (ts or now_ts(), self.resolve(chat_id)),
+            (ts or self.db.now(), self.resolve(chat_id)),
         )
 
     def seed_enabled(self, chat_id: int) -> bool:
@@ -269,7 +269,7 @@ class ChatRepository:
         """
         if old_chat_id == new_chat_id:
             return self.get(new_chat_id)
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             old = self.get(old_chat_id, resolve=False)
             new = self.get(new_chat_id, resolve=False)

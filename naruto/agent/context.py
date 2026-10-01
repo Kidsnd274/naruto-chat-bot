@@ -25,7 +25,6 @@ messages are appended.
 
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
-import time
 
 from naruto.agent.text import estimate_message_tokens, estimate_text_tokens, strip_bot_mention
 from naruto.db.chats import Chat
@@ -105,7 +104,7 @@ class ContextBuilder:
         settings = self._settings = self.services.settings.for_chat(chat.chat_id)
         self._skill = skill
         tz = self.services.timezone()
-        now = (now or datetime.now(tz)).astimezone(tz)
+        now = (now or self.services.now()).astimezone(tz)
 
         system = "\n\n".join(part for part in (
             settings["persona.prompt"].strip(),
@@ -237,7 +236,7 @@ class ContextBuilder:
         board = self.services.boards.get(chat.chat_id)
         if not board.is_empty:
             parts.append(f"Pinned board:\n{board.as_text()}")
-        cutoff = time.time() - OPEN_PLAN_DAYS * 86400
+        cutoff = services.time() - OPEN_PLAN_DAYS * 86400
         proposed = [plan for plan in self.services.plans.for_chat(chat.chat_id, status=PROPOSED,
                                                                    limit=5)
                     if plan.created_at >= cutoff]
@@ -369,7 +368,7 @@ class ContextBuilder:
                          images, bot: BotIdentity, tz: tzinfo,
                          note: str | None = None,
                          now: datetime | None = None, state: str = "") -> str | list[dict]:
-        now = now or datetime.now(tz)
+        now = now or self.services.now()
         offset = now.strftime("%z")
         offset = f"UTC{offset[:3]}:{offset[3:]}" if offset else "local time"
         when = datetime.fromtimestamp(trigger.date, tz)

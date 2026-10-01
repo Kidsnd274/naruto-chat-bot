@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.settings.registry import REGISTRY, Setting, SettingError
 
 logger = logging.getLogger(__name__)
@@ -150,7 +150,7 @@ class SettingsService:
         new_json = None if reset else _dump(value)
         if old_json == new_json:
             return
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             if new_json is None:
                 self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
@@ -210,7 +210,7 @@ class SettingsService:
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, key) DO UPDATE SET "
             "value = excluded.value, updated_at = excluded.updated_at, "
             "updated_by = excluded.updated_by",
-            (chat_id, key, _dump(value), now_ts(), actor))
+            (chat_id, key, _dump(value), self.db.now(), actor))
         logger.info("Setting %s for chat %s changed by %s", key, chat_id, actor,
                     extra={"chat_id": chat_id})
         return value

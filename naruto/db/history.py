@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import json
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.db.messages import fts_query
 from naruto.periods import MONTH, RANGE, WEEK
 
@@ -206,7 +206,7 @@ class HistoryRepository:
             last_message_at: int | None, message_count: int, import_id: int | None,
             period_id: int | None, fingerprint: str, text: str, limitations: list[str],
             actor: str) -> HistoryDigest:
-        ts = now_ts()
+        ts = self.db.now()
         digest_id = self.db.execute(
             "INSERT INTO history_digests (chat_id, status, source, grouping, timezone, "
             "period_start, period_end, first_message_at, last_message_at, message_count, "
@@ -227,7 +227,7 @@ class HistoryRepository:
         text = text.strip()
         if text == current.text:
             return current
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             self.db.execute(
                 "INSERT INTO history_digest_edits (digest_id, chat_id, text, changed_at, "
@@ -270,7 +270,7 @@ class HistoryRepository:
 
     def publish(self, staged_ids: list[int], replaced_ids: list[int], *, actor: str) -> None:
         """Swap staged digests in for the ones they replace, in one step."""
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             for digest_id in replaced_ids:
                 self.db.execute(
@@ -288,7 +288,7 @@ class HistoryRepository:
                    fingerprint: str | None, status: str = WAITING,
                    replaces: list[int] | None = None, digest_id: int | None = None,
                    error: str | None = None) -> HistoryPeriod:
-        ts = now_ts()
+        ts = self.db.now()
         period_id = self.db.execute(
             "INSERT INTO history_periods (chat_id, source, import_id, grouping, timezone, "
             "period_start, period_end, status, message_count, fingerprint, replaces, "
@@ -316,7 +316,7 @@ class HistoryRepository:
     def update_period(self, period_id: int, **fields) -> None:
         if "replaces" in fields and fields["replaces"] is not None:
             fields["replaces"] = json.dumps(fields["replaces"])
-        fields["updated_at"] = now_ts()
+        fields["updated_at"] = self.db.now()
         assignments = ", ".join(f"{name} = ?" for name in fields)
         self.db.execute(f"UPDATE history_periods SET {assignments} WHERE id = ?",
                         (*fields.values(), period_id))
@@ -331,4 +331,4 @@ class HistoryRepository:
         return self.db.execute(
             "UPDATE history_periods SET status = 'cancelled', error = ?, updated_at = ? "
             "WHERE import_id = ? AND status IN ('waiting', 'running', 'failed')",
-            (reason, now_ts(), import_id)).rowcount
+            (reason, self.db.now(), import_id)).rowcount

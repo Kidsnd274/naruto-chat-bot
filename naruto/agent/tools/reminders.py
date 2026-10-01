@@ -75,8 +75,8 @@ def parse_when(value: str, tz, now: float | None = None) -> int:
 async def set_reminder(ctx: ToolContext, args: dict) -> str:
     services = ctx.services
     tz = services.timezone()
-    due = parse_when(args["when"], tz)
-    now = time.time()
+    now = services.time()
+    due = parse_when(args["when"], tz, now)
     if due <= now + 30:
         raise ToolError("That time is already past. Check the time now in the current "
                         "request.")

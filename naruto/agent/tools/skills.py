@@ -15,7 +15,7 @@ def parse_since(ctx: ToolContext, value: str) -> int:
     text = (value or "").strip()
     match = _DURATION.match(text)
     if match:
-        now = datetime.now(ctx.services.timezone())
+        now = ctx.services.now()
         unit = timedelta(days=1) if match.group(2)[0].lower() == "d" else timedelta(hours=1)
         return int((now - int(match.group(1)) * unit).timestamp())
     if len(text) > 10:

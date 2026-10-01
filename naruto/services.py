@@ -118,6 +118,15 @@ class Services:
             return ZoneInfo(name)
         return datetime.now().astimezone().tzinfo
 
+    def time(self) -> float:
+        """The current Unix time. The wall clock, except in a prompt-lab
+        sandbox, which runs on its scenario's time (Database.clock)."""
+        return self.db.clock()
+
+    def now(self) -> datetime:
+        """The current time in the configured time zone (see time())."""
+        return datetime.fromtimestamp(self.time(), self.timezone())
+
     def is_owner(self, user_id: int | None) -> bool:
         owner = self.bootstrap.owner_user_id
         return owner is not None and user_id == owner

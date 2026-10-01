@@ -9,7 +9,7 @@ import json
 import re
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 CATEGORIES: tuple[tuple[str, str], ...] = (
     ("person", "Person"),
@@ -137,7 +137,7 @@ class NoteRepository:
             "INSERT INTO memory_note_history (note_id, chat_id, action, content, category, "
             "person_id, changed_at, changed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (note.id, note.chat_id, action, note.content, note.category, note.person_id,
-             now_ts(), actor))
+             self.db.now(), actor))
 
     def add(self, chat_id: int, content: str, *, category: str | None = None,
             person_id: int | None = None, source_row_ids: list[int] | None = None,
@@ -145,7 +145,7 @@ class NoteRepository:
         content = clean_content(content)
         if not content:
             raise ValueError("A note needs some text.")
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             note_id = self.db.execute(
                 "INSERT INTO memory_notes (chat_id, content, category, person_id, source_row_ids, "
@@ -181,7 +181,7 @@ class NoteRepository:
             fields["source_row_ids"] = json.dumps(merged[-20:])
         if not fields:
             return note
-        fields["updated_at"] = now_ts()
+        fields["updated_at"] = self.db.now()
         with self.db.transaction():
             assignments = ", ".join(f"{name} = ?" for name in fields)
             self.db.execute(f"UPDATE memory_notes SET {assignments} WHERE id = ?",
@@ -209,7 +209,7 @@ class NoteRepository:
         if note.locked != locked:
             with self.db.transaction():
                 self.db.execute("UPDATE memory_notes SET locked = ?, updated_at = ? WHERE id = ?",
-                                (int(locked), now_ts(), note_id))
+                                (int(locked), self.db.now(), note_id))
                 note = self.get(note_id)
                 self._log(note, "locked" if locked else "unlocked", actor)
         return note

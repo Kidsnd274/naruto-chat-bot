@@ -156,19 +156,23 @@ def split_reasoning(content: str) -> tuple[str, str | None]:
 
 class LLMClient:
     def __init__(self, settings: SettingsService, api_key: str,
-                 requests: "ModelRequestRepository | None" = None):
+                 requests: "ModelRequestRepository | None" = None, *,
+                 queue: ModelQueue | None = None):
+        """``queue`` shares another client's queue: a prompt-lab sandbox
+        builds requests from its own settings but waits its turn with the
+        bot's requests."""
         self.settings = settings
         self.api_key = api_key
         self.requests = requests
         self._client: openai.AsyncOpenAI | None = None
         self._client_key: tuple | None = None
-        self._queue: ModelQueue | None = None
+        self._queue: ModelQueue | None = queue
         self._listed_model: tuple[str, str] | None = None  # (endpoint, model)
 
     @property
     def queue(self) -> ModelQueue:
-        """Created on first use, so a client used only to build requests
-        (the evaluation) never registers a queue."""
+        """Created on first use, unless one was passed in (a prompt-lab
+        sandbox shares the bot's)."""
         if self._queue is None:
             self._queue = ModelQueue(self.settings, self.requests)
         return self._queue

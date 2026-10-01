@@ -104,6 +104,14 @@ def cleanup_import_previews(services: Services) -> str | None:
     return f"{discarded} unstarted import uploads" if discarded else None
 
 
+def expire_paused_imports(services: Services) -> str | None:
+    """Paused imports keep their file for history.source_keep_days."""
+    if services.imports is None:
+        return None
+    expired = services.imports.expire_paused()
+    return f"the files of {expired} paused imports" if expired else None
+
+
 async def leave_stale_pending(services: Services) -> int:
     hours = services.settings["behaviour.pending_leave_hours"]
     if hours <= 0 or services.access is None:
@@ -129,6 +137,7 @@ async def run_maintenance(services: Services) -> None:
     done = []
     for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests, cleanup_live_messages,
                  cleanup_imported_messages, cleanup_reminders, cleanup_import_previews,
+                 expire_paused_imports,
                  *cleanup_steps]:
         try:
             result = step(services)

@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from naruto.db.imports import DISCARDED, DONE, FAILED, PREVIEW, REPLACED, RUNNING
+from naruto.db.imports import DISCARDED, DONE, FAILED, PAUSED, PREVIEW, REPLACED, RUNNING
 from naruto.db.messages import IMPORT, LIVE, NewMessage
 from naruto.importer import service as service_module
-from naruto.importer.service import ImportProblem, ImportService, UploadTooLarge
+from naruto.importer.planning import ImportOptions
+from naruto.importer.service import ImportProblem, ImportService, UploadTooLarge, dates_path
 
 FIXTURE = Path(__file__).parent / "fixtures" / "export_basic_group.json"
 CHAT = -4001
@@ -31,8 +32,17 @@ async def upload(importer, content: bytes | None = None, name="result.json"):
     return await importer.create_from_upload(io.BytesIO(content or FIXTURE.read_bytes()), name)
 
 
-async def run_import(importer, record, chat_id=CHAT):
-    await importer.start(record.id, chat_id)
+def raw_only(importer, record, **changes) -> ImportOptions:
+    """Import the messages only (summaries need a model: see test_history.py)."""
+    options = importer.default_options(record)
+    options.archive = options.distill = False
+    for name, value in changes.items():
+        setattr(options, name, value)
+    return options
+
+
+async def run_import(importer, record, chat_id=CHAT, options=None):
+    await importer.start(record.id, chat_id, options=options or raw_only(importer, record))
     await asyncio.gather(*importer._tasks.values())
     return importer.repo.get(record.id)
 
@@ -49,7 +59,12 @@ async def test_upload_creates_a_preview(importer):
     assert preview["candidate_ids"] == [CHAT]
     assert preview["participants"][0] == {"id": 7, "name": "Alice Tan", "count": 4}
     assert preview["participant_count"] == 5
-    assert sum(count for _, count in preview["dates"]) == 12
+    assert preview["tz"] == "UTC" and sum(day[1] for day in preview["days"]) == 12
+    assert [day[1] for day in preview["days"]] == [11, 1]  # Sep 1, Sep 2
+    assert all(day[2] > 0 and len(day[3]) == 16 for day in preview["days"])
+    assert importer.message_dates(record) == sorted(importer.message_dates(record))
+    assert len(importer.message_dates(record)) == 12
+    assert dates_path(record.file_path).exists()
 
 
 async def test_upload_size_limit(importer, services):
@@ -93,12 +108,16 @@ async def test_estimate_counts_overlap_and_retention(importer, services):
         chat_id=CHAT, origin_chat_id=CHAT, source=LIVE, message_id=1, sender_name="A",
         date=SEP_1 + 250))  # after the first three export messages
     record = await upload(importer)
-    estimate = importer.estimate(record, CHAT)
-    assert (estimate["total"], estimate["overlap"]) == (12, 9)
-    assert importer.estimate(record, -999)["overlap"] == 0
+    plan = importer.plan(record, CHAT, raw_only(importer, record))
+    assert (plan.raw_selected, plan.raw_eligible, plan.raw_live) == (12, 3, 9)
+    assert importer.plan(record, -999, raw_only(importer, record)).raw_live == 0
 
-    services.settings.set("retention.imported_messages_days", 5, actor="t")  # cutoff = Sep 2
-    assert importer.estimate(record, CHAT)["in_retention"] == 1
+    services.settings.set("retention.imported_messages_days", 5, actor="t")  # cutoff Sep 2 09:00
+    plan = importer.plan(record, -999, raw_only(importer, record))
+    assert (plan.raw_eligible, plan.raw_too_old) == (1, 0)  # the default dates start on Sep 2
+    options = raw_only(importer, record, raw_from=plan.options.raw_from.replace(day=1))
+    plan = importer.plan(record, -999, options)
+    assert (plan.raw_selected, plan.raw_eligible, plan.raw_too_old) == (12, 1, 11)
 
 
 # ------------------------------------------------------------------ import
@@ -139,8 +158,34 @@ async def test_import_skips_messages_at_or_after_first_live_message(importer, se
 async def test_import_keeps_only_the_retention_window(importer, services):
     services.chats.upsert_seen(CHAT)
     services.settings.set("retention.imported_messages_days", 5, actor="t")  # cutoff = Sep 2 09:00
-    record = await run_import(importer, await upload(importer))
-    assert (record.imported, record.skipped_retention) == (1, 11)
+    record = await upload(importer)
+    options = raw_only(importer, record)
+    options.raw_from = options.raw_from.replace(day=1)
+    record = await run_import(importer, record, options=options)
+    assert (record.imported, record.skipped_retention, record.skipped_range) == (1, 11, 0)
+
+
+async def test_import_keeps_only_the_chosen_dates(importer, services):
+    services.chats.upsert_seen(CHAT)
+    record = await upload(importer)
+    options = raw_only(importer, record)
+    options.raw_from = options.raw_to  # Sep 2 only
+    record = await run_import(importer, record, options=options)
+    assert (record.imported, record.skipped_range) == (1, 11)
+
+
+async def test_a_narrower_reimport_replaces_only_its_dates(importer, services):
+    services.chats.upsert_seen(CHAT)
+    first = await run_import(importer, await upload(importer))
+    assert services.messages.count(CHAT, IMPORT) == 12
+    record = await upload(importer)
+    options = raw_only(importer, record)
+    options.raw_from = options.raw_to  # Sep 2 only
+    second = await run_import(importer, record, options=options)
+    assert second.imported == 1
+    assert services.messages.count(CHAT, IMPORT) == 12  # Sep 1 from the first, Sep 2 new
+    assert services.messages.count_import(first.id) == 11
+    assert importer.repo.get(first.id).status == DONE  # still has messages
 
 
 async def test_reimport_replaces_the_previous_import(importer, services):
@@ -187,9 +232,18 @@ async def test_failed_import_rolls_back(importer, services, monkeypatch):
 
     monkeypatch.setattr(services.messages, "resolve_import_replies", explode)
     record = await run_import(importer, await upload(importer))
-    assert record.status == FAILED and "disk on fire" in record.error
+    assert record.status == PAUSED and record.raw_status == "paused"
+    assert "disk on fire" in record.error
     assert services.messages.count(CHAT, IMPORT) == 0
-    assert list(importer.upload_dir.iterdir()) == []
+    assert Path(record.file_path).exists()  # kept so it can resume
+    assert record.source_expires_at == record.paused_at + 7 * 86400
+
+    monkeypatch.undo()
+    monkeypatch.setattr(service_module.time, "time", lambda: NOW)
+    importer.resume(record.id)
+    await asyncio.gather(*importer._tasks.values())
+    record = importer.repo.get(record.id)
+    assert record.status == DONE and record.imported == 12 and record.file_path is None
 
 
 async def test_start_rules(importer, services):
@@ -223,15 +277,38 @@ async def test_stale_previews_are_discarded(importer):
     assert importer.repo.get(record.id).status == DISCARDED
 
 
-async def test_shutdown_stops_a_running_import(importer, services):
+async def test_shutdown_stops_a_running_import_to_resume_later(importer, services, tmp_path):
     services.chats.upsert_seen(CHAT)
     record = await upload(importer)
     importer._stopping.set()  # as if shutdown began before the first batch
-    await importer.start(record.id, CHAT)
+    await importer.start(record.id, CHAT, options=raw_only(importer, record))
     await importer.shutdown()
     stopped = importer.repo.get(record.id)
-    assert stopped.status == FAILED and "shut down" in stopped.error
-    assert services.messages.count(CHAT) == 0 and stopped.file_path is None
+    assert stopped.status == RUNNING and stopped.raw_status == "waiting"
+    assert services.messages.count(CHAT) == 0 and Path(stopped.file_path).exists()
+
+    restarted = ImportService(services, tmp_path / "imports")  # the next start
+    restarted.recover()
+    assert restarted.resume_interrupted() == 1
+    await asyncio.gather(*restarted._tasks.values())
+    done = restarted.repo.get(record.id)
+    assert done.status == DONE and done.imported == 12 and done.file_path is None
+
+
+async def test_paused_imports_expire(importer, services):
+    services.chats.upsert_seen(CHAT)
+    record = await upload(importer)
+    await importer.start(record.id, CHAT, options=raw_only(importer, record))
+    importer.pause(record.id)
+    await asyncio.gather(*importer._tasks.values())
+    paused = importer.repo.get(record.id)
+    assert paused.status == PAUSED and paused.raw_status == "paused"
+    assert services.messages.count(CHAT) == 0
+    assert importer.expire_paused(now=paused.source_expires_at - 1) == 0
+    assert importer.expire_paused(now=paused.source_expires_at) == 1
+    expired = importer.repo.get(record.id)
+    assert expired.status == FAILED and expired.raw_status == "expired"
+    assert expired.file_path is None and list(importer.upload_dir.iterdir()) == []
 
 
 async def test_unexpected_read_errors_clean_up(importer, monkeypatch):

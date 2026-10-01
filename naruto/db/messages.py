@@ -175,6 +175,27 @@ class MessageRepository:
             "DELETE FROM messages WHERE source = 'import' AND import_id = ?", (import_id,)
         ).rowcount
 
+    def delete_imported_range(self, chat_id: int, start: int, end: int, *,
+                              keep_import_id: int) -> int:
+        """Earlier imports' messages in [start, end): a new import of those
+        dates replaces them. Imported messages outside the range stay."""
+        with self.db.transaction():
+            cursor = self.db.execute(
+                "DELETE FROM messages WHERE chat_id = ? AND source = 'import' AND date >= ? "
+                "AND date < ? AND (import_id IS NULL OR import_id != ?)",
+                (chat_id, start, end, keep_import_id))
+            self.db.execute(
+                "UPDATE messages SET reply_to_row_id = NULL WHERE chat_id = ? "
+                "AND source = 'import' AND reply_to_row_id IS NOT NULL AND NOT EXISTS "
+                "(SELECT 1 FROM messages AS target WHERE target.id = messages.reply_to_row_id)",
+                (chat_id,))
+        return cursor.rowcount
+
+    def count_import(self, import_id: int) -> int:
+        return int(self.db.scalar(
+            "SELECT COUNT(*) FROM messages WHERE source = 'import' AND import_id = ?",
+            (import_id,)) or 0)
+
     def apply_edit(
         self,
         origin_chat_id: int,

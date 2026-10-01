@@ -90,6 +90,9 @@ async def run() -> None:
     try:
         await bot.start()
         tasks.extend(start_background_jobs(services, reminders=bot.reminders))
+        resumed = services.imports.resume_interrupted()
+        if resumed:
+            logger.info("Resuming %s interrupted imports", resumed)
         logger.info("Bot started")
         if bootstrap.web_enabled:
             logger.info("Web admin on http://%s:%s/", bootstrap.web_host, bootstrap.web_port)

@@ -177,6 +177,9 @@ SECTIONS: tuple[Section, ...] = (
             "Both are kept up to date in the background, after replies to people."),
     Section("agent", "Agent limits",
             "Bounds for one bot response: model requests, tool calls and time."),
+    Section("history", "History",
+            "Dated summaries of past months or weeks (history digests). They outlive raw "
+            "messages: made from imported exports, and from live chat once each month is over."),
     Section("board", "Board", "The pinned board of plans, decisions and open questions."),
     Section("import", "Import", "Telegram Desktop history import."),
     Section("media", "Media", "Photos, stickers and other visual media."),
@@ -393,6 +396,42 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("agent.search_results", "agent", "Search results",
             "How many messages search_chat returns at most.",
             "int", 12, min=1, max=100),
+    # ------------------------------------------------------------- history
+    Setting("history.instructions", "history", "Summary instructions",
+            "System prompt for history digests. {bot_name}, {period} and {max_chars} are filled "
+            "in. Changing it means re-uploading an export makes new summaries instead of "
+            "reusing the old ones.",
+            "text", load_prompt("history"), max=20000),
+    Setting("history.chunk_tokens", "history", "Messages per request (tokens)",
+            "One request reads at most this many tokens of messages; a busy month takes several "
+            "requests, each carrying the summary so far. Keep it plus about 3,000 tokens within "
+            "the context of one server slot.",
+            "int", 6000, min=1000, max=100_000),
+    Setting("history.digest_max_chars", "history", "Summary size (characters)",
+            "Each period's summary is kept under about this length.",
+            "int", 2500, min=300, max=10000),
+    Setting("history.max_output_tokens", "history", "Max output tokens",
+            "Output limit for one summary request (with reasoning on, it includes the reasoning).",
+            "int", 2000, min=200, max=16000),
+    Setting("history.reasoning", "history", "Reasoning",
+            "Let the model think while summarizing (slower).",
+            "bool", False),
+    Setting("history.lookup_results", "history", "Summaries per lookup",
+            "How many period summaries the bot's history lookup returns at once.",
+            "int", 3, min=1, max=10),
+    Setting("history.source_keep_days", "history", "Keep a paused import's file (days)",
+            "An import that paused (after errors, or by you) keeps its uploaded file this long so "
+            "it can resume. After that the file is deleted and unfinished work needs a new upload.",
+            "int", 7, min=1, max=90),
+    Setting("history.live_archive", "history", "Summarize live chat monthly",
+            "Once a month is over, summarize its live messages into a history digest before "
+            "retention deletes them.",
+            "bool", True),
+    Setting("history.live_hold_days", "history", "Hold live messages for the summary (days)",
+            "Live messages of a month that isn't summarized yet are kept until it is, at most "
+            "this many days after the month ends (so the start of a month can outlive the "
+            "retention period by up to about five weeks). 0 doesn't hold them.",
+            "int", 7, min=0, max=30),
     # --------------------------------------------------------------- board
     Setting("board.format", "board", "Board format",
             "rich: a Telegram rich message (headings and lists). html: a plain "
@@ -413,9 +452,10 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("import.distill_chunk_tokens", "import", "Distillation chunk (tokens)",
             "How much of the export one model request reads.",
             "int", 6000, min=1000, max=100_000),
-    Setting("import.digest_window_days", "import", "Digest window for imports (days)",
-            "If the chat has no digest yet, the first one is built from the import's last "
-            "this many days.",
+    Setting("import.digest_window_days", "import", "Digest start for imports (days)",
+            "A chat with no digest yet starts it from imported messages of the last this many "
+            "days only (plus live ones), so an old export isn't taken as what's going on now. "
+            "Older history goes into history digests and memory notes instead.",
             "int", 14, min=1, max=365),
     # --------------------------------------------------------------- media
     Setting("media.enabled", "media", "Media enabled",
@@ -474,6 +514,7 @@ PER_CHAT: frozenset[str] = frozenset({
     "memory.prompt_notes",
     "memory.digest_every_messages",
     "memory.digest_quiet_minutes",
+    "history.live_archive",
     "board.format",
     "board.pin",
     "media.enabled",

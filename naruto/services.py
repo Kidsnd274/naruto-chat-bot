@@ -1,6 +1,8 @@
 """Shared objects used by the Telegram handlers, the web admin and the
 background jobs. Everything runs in one process on one asyncio loop."""
 
+import asyncio
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 import time
@@ -12,6 +14,7 @@ from naruto.db.board import BoardRepository
 from naruto.db.chats import ChatRepository
 from naruto.db.database import Database
 from naruto.db.digests import DigestRepository
+from naruto.db.history import HistoryRepository
 from naruto.db.logs import LogRepository
 from naruto.db.members import MemberRepository
 from naruto.db.memory import NoteRepository
@@ -27,6 +30,7 @@ from naruto.settings.service import SettingsService
 
 if TYPE_CHECKING:
     from naruto.importer.service import ImportService
+    from naruto.memory.history import LiveArchiver
     from naruto.memory.keeper import MemoryKeeper
     from naruto.tg.access import ChatAccess
 
@@ -69,6 +73,7 @@ class Services:
     notes: NoteRepository
     digests: DigestRepository
     reminders: ReminderRepository
+    history: HistoryRepository
     requests: ModelRequestRepository
     llm: LLMClient
     seed: SeedData = field(default_factory=SeedData)
@@ -77,6 +82,9 @@ class Services:
     telegram: Any = None  # the telegram.Bot, set once it exists
     imports: "ImportService | None" = None  # set by main (needs an upload directory)
     keeper: "MemoryKeeper | None" = None  # digest and notes upkeep, set by main
+    archiver: "LiveArchiver | None" = None  # monthly history of live chat, set by main
+    # One history job (an import's stages, a live month) per chat at a time.
+    history_locks: defaultdict = field(default_factory=lambda: defaultdict(asyncio.Lock))
 
     @classmethod
     def create(cls, bootstrap: Bootstrap, db: Database, seed: SeedData | None = None) -> "Services":
@@ -98,6 +106,7 @@ class Services:
             notes=NoteRepository(db),
             digests=DigestRepository(db),
             reminders=ReminderRepository(db),
+            history=HistoryRepository(db),
             requests=requests,
             llm=LLMClient(settings, bootstrap.openai_api_key, requests),
             seed=seed or SeedData(),

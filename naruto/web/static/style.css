@@ -278,7 +278,12 @@ details summary { cursor: pointer; padding: 0.3rem 0; }
 ol.steps { margin: 0.3rem 0 0.6rem; padding-left: 1.3rem; }
 ol.steps li { margin: 0.2rem 0; }
 .estimate { margin: 0.6rem 0; }
-.import-form > select { margin-right: 0.4rem; }
+.import-form select[name=target] { margin-right: 0.4rem; }
+.import-section { border: 1px solid var(--border); border-radius: 8px; margin: 0.8rem 0; padding: 0.6rem 0.9rem; }
+.import-section legend { font-weight: 600; padding: 0 0.3rem; }
+.import-section > label { display: inline-flex; gap: 0.3rem; align-items: center; margin: 0.2rem 0.8rem 0.2rem 0; }
+.badge.paused, .badge.waiting, .badge.partial { background: var(--warn-soft); color: var(--warn); }
+.badge.cancelled, .badge.expired, .badge.skipped { background: var(--info-soft); color: var(--text); }
 .identities input { width: 100%; min-width: 10rem; }
 
 /* --------------------------------------------------------------- progress */

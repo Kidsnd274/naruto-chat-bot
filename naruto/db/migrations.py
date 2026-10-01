@@ -488,6 +488,165 @@ CREATE INDEX model_requests_chat ON model_requests (chat_id, id);
 CREATE INDEX model_requests_queued ON model_requests (queued_at);
 """
 
+_V11_HISTORY = """
+-- When the bot started recording a chat live. Imports stop here, so live
+-- and imported history (and their summaries) never overlap. Unlike the
+-- first stored live message, it doesn't move when retention deletes
+-- messages. Backfilled from the earliest live message.
+ALTER TABLE chats ADD COLUMN recording_since INTEGER;
+UPDATE chats SET recording_since = (
+    SELECT MIN(date) FROM messages WHERE messages.chat_id = chats.chat_id AND source = 'live');
+UPDATE chats SET recording_since = status_changed_at
+    WHERE recording_since IS NULL AND status = 'enabled';
+
+-- Imports get separate stages (raw messages, history summaries, memory
+-- notes), each with its own status, and can pause and resume. Rebuilt
+-- because SQLite can't change a CHECK constraint.
+CREATE TABLE imports_v11 (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('preview', 'running', 'paused', 'done', 'partial',
+                                           'failed', 'replaced', 'discarded')),
+    file_name TEXT NOT NULL,
+    file_path TEXT,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    export_name TEXT NOT NULL DEFAULT '',
+    export_type TEXT NOT NULL DEFAULT '',
+    export_id INTEGER,
+    preview TEXT,
+    options TEXT,
+    total INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0,
+    imported INTEGER NOT NULL DEFAULT 0,
+    skipped_overlap INTEGER NOT NULL DEFAULT 0,
+    skipped_retention INTEGER NOT NULL DEFAULT 0,
+    skipped_service INTEGER NOT NULL DEFAULT 0,
+    skipped_range INTEGER NOT NULL DEFAULT 0,
+    first_date INTEGER,
+    last_date INTEGER,
+    error TEXT,
+    raw_status TEXT,
+    archive_status TEXT,
+    archive_total INTEGER NOT NULL DEFAULT 0,
+    archive_done INTEGER NOT NULL DEFAULT 0,
+    archive_error TEXT,
+    distill_status TEXT,
+    distill_total INTEGER NOT NULL DEFAULT 0,
+    distill_done INTEGER NOT NULL DEFAULT 0,
+    notes_added INTEGER NOT NULL DEFAULT 0,
+    distill_error TEXT,
+    limitations TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    paused_at INTEGER,
+    source_expires_at INTEGER
+);
+INSERT INTO imports_v11 (id, chat_id, status, file_name, file_path, file_size, export_name,
+                         export_type, export_id, preview, total, processed, imported,
+                         skipped_overlap, skipped_retention, skipped_service, first_date,
+                         last_date, error, raw_status, distill_status, distill_total,
+                         distill_done, notes_added, distill_error, created_at, started_at,
+                         finished_at)
+    SELECT id, chat_id, status, file_name, file_path, file_size, export_name, export_type,
+           export_id, preview, total, processed, imported, skipped_overlap, skipped_retention,
+           skipped_service, first_date, last_date, error,
+           CASE status WHEN 'done' THEN 'done' WHEN 'replaced' THEN 'done'
+                       WHEN 'failed' THEN 'failed' WHEN 'running' THEN 'running' END,
+           distill_status, distill_total, distill_done, notes_added, distill_error, created_at,
+           started_at, finished_at
+    FROM imports;
+DROP TABLE imports;
+ALTER TABLE imports_v11 RENAME TO imports;
+CREATE INDEX imports_chat ON imports (chat_id, id);
+
+-- Dated summaries of past periods (a month, a week or a chosen range). They
+-- outlive raw messages and uploads, so they keep their own provenance.
+-- period_end is exclusive; first/last_message_at is what was actually read.
+CREATE TABLE history_digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'staged', 'replaced')),
+    source TEXT NOT NULL CHECK (source IN ('export', 'live')),
+    grouping TEXT NOT NULL CHECK (grouping IN ('month', 'week', 'range')),
+    timezone TEXT NOT NULL,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    first_message_at INTEGER,
+    last_message_at INTEGER,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    import_id INTEGER,
+    period_id INTEGER,
+    fingerprint TEXT NOT NULL,
+    text TEXT NOT NULL,
+    limitations TEXT,
+    edited INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL
+);
+CREATE INDEX history_digests_chat ON history_digests (chat_id, status, period_start);
+
+CREATE VIRTUAL TABLE history_digests_fts USING fts5(
+    text,
+    content = 'history_digests',
+    content_rowid = 'id',
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER history_digests_fts_insert AFTER INSERT ON history_digests BEGIN
+    INSERT INTO history_digests_fts (rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER history_digests_fts_delete AFTER DELETE ON history_digests BEGIN
+    INSERT INTO history_digests_fts (history_digests_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER history_digests_fts_update AFTER UPDATE OF text ON history_digests BEGIN
+    INSERT INTO history_digests_fts (history_digests_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+    INSERT INTO history_digests_fts (rowid, text) VALUES (new.id, new.text);
+END;
+
+-- The text before every owner edit.
+CREATE TABLE history_digest_edits (
+    id INTEGER PRIMARY KEY,
+    digest_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    changed_at INTEGER NOT NULL,
+    changed_by TEXT NOT NULL
+);
+CREATE INDEX history_digest_edits_digest ON history_digest_edits (digest_id, id);
+
+-- Work on one period: its progress, so an interrupted or failed summary
+-- resumes where it stopped. consumed is how many of the period's messages
+-- (in date order) have been read; partial is the summary so far.
+CREATE TABLE history_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('export', 'live')),
+    import_id INTEGER,
+    grouping TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('waiting', 'running', 'done', 'reused', 'failed',
+                                           'cancelled')),
+    message_count INTEGER NOT NULL DEFAULT 0,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    chunks_done INTEGER NOT NULL DEFAULT 0,
+    partial TEXT,
+    fingerprint TEXT,
+    replaces TEXT,
+    digest_id INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX history_periods_import ON history_periods (import_id, period_start);
+CREATE INDEX history_periods_chat ON history_periods (chat_id, source, period_start);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -499,10 +658,12 @@ MIGRATIONS: list[str] = [
     _V8_CHAT_SETTINGS,
     _V9_STABLE_NOTE_IDS,
     _V10_MODEL_QUEUE,
+    _V11_HISTORY,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
 CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans",
                       "digests", "memory_notes", "memory_note_history", "reminders",
-                      "media_descriptions", "chat_settings", "model_requests")
+                      "media_descriptions", "chat_settings", "model_requests",
+                      "history_digests", "history_digest_edits", "history_periods")

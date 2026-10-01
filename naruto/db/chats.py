@@ -41,6 +41,7 @@ class Chat:
     updated_at: int
     status_changed_at: int | None
     last_activity_at: int | None
+    recording_since: int | None = None  # when live recording started (imports stop here)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Chat":
@@ -48,7 +49,8 @@ class Chat:
         for key in ("can_pin", "can_delete"):
             if data[key] is not None:
                 data[key] = bool(data[key])
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        # Columns added by later migrations have defaults here.
+        return cls(**{k: data[k] for k in cls.__dataclass_fields__ if k in data})
 
     @property
     def enabled(self) -> bool:
@@ -203,9 +205,17 @@ class ChatRepository:
         if chat is None:
             return None
         if chat.status != status:
-            self._update(chat_id, status=status, status_changed_at=now_ts())
+            ts = now_ts()
+            fields: dict = {"status": status, "status_changed_at": ts}
+            if status == ENABLED and chat.recording_since is None:
+                fields["recording_since"] = ts  # the recorder starts now
+            self._update(chat_id, **fields)
             logger.info("Chat %s status %s -> %s", chat_id, chat.status, status)
         return self.get(chat_id, resolve=False)
+
+    def set_recording_since(self, chat_id: int, ts: int | None) -> None:
+        """The owner's correction of when live recording began."""
+        self._update(self.resolve(chat_id), recording_since=ts)
 
     def set_membership(
         self,
@@ -285,6 +295,9 @@ class ChatRepository:
                     added_by_user_id=new.added_by_user_id or old.added_by_user_id,
                     added_by_name=new.added_by_name or old.added_by_name,
                     created_at=min(old.created_at, new.created_at),
+                    recording_since=min((ts for ts in (old.recording_since,
+                                                       new.recording_since) if ts is not None),
+                                        default=None),
                 )
                 self.db.execute("DELETE FROM chats WHERE chat_id = ?", (old_chat_id,))
             for table in CHAT_SCOPED_TABLES:

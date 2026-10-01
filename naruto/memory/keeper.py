@@ -55,6 +55,26 @@ class MemoryKeeper:
         """Update this chat's digest at the next check, whatever the counts."""
         self._requested.add(chat_id)
 
+    def imported_since(self, now: float | None = None) -> int:
+        """A chat without a digest starts it from imported messages this
+        recent only (Settings → Import → Digest start)."""
+        days = self.services.settings["import.digest_window_days"]
+        return int((now or time.time()) - days * 86400)
+
+    async def catch_up(self, chat: Chat, *, max_batches: int = 10,
+                       actor: str | None = None) -> int:
+        """Bring a chat's digest up to date now (after an import): read
+        every waiting batch, at most ``max_batches``. Returns batches read."""
+        done = 0
+        while done < max_batches:
+            digest = self.services.digests.get(chat.chat_id)
+            unread, _ = self.services.digests.unread_count(chat.chat_id, digest,
+                                                           self.imported_since())
+            if not unread or await self.update(chat, actor=actor) is None:
+                break
+            done += 1
+        return done
+
     def _identity(self) -> BotIdentity:
         return self.services.status.bot or BotIdentity(id=0, username="", name="Naruto")
 
@@ -72,7 +92,8 @@ class MemoryKeeper:
             if (digest and digest.failed_at and now - digest.failed_at < RETRY_AFTER_SECONDS
                     and not requested):
                 continue
-            unread, newest = self.services.digests.unread_count(chat.chat_id, digest)
+            unread, newest = self.services.digests.unread_count(
+                chat.chat_id, digest, self.imported_since(now))
             if not unread:
                 self._requested.discard(chat.chat_id)
                 continue
@@ -107,7 +128,8 @@ class MemoryKeeper:
         are waiting."""
         if messages is None:
             digest = self.services.digests.get(chat.chat_id)
-            messages = self.services.digests.unread(chat.chat_id, digest, limit=MAX_UNREAD_BATCH)
+            messages = self.services.digests.unread(chat.chat_id, digest, limit=MAX_UNREAD_BATCH,
+                                                    imported_since=self.imported_since())
         budget = self.services.settings["memory.digest_input_tokens"]
         max_chars = self.services.settings["context.max_message_chars"]
         used, batch = 0, []

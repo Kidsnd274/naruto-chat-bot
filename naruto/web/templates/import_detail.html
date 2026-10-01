@@ -13,7 +13,7 @@
       {% if record.preview %}
         {% set p = record.preview %}
         <dt>Messages</dt><dd>{{ p.total }}{% if p.service %} <span class="muted small">(+{{ p.service }} service messages, skipped)</span>{% endif %}{% if p.unreadable %} <span class="muted small">({{ p.unreadable }} unreadable)</span>{% endif %}</dd>
-        <dt>Date range</dt><dd>{{ p.first_date|ts("%d %b %Y") }} – {{ p.last_date|ts("%d %b %Y") }}</dd>
+        <dt>Dates</dt><dd>{{ p.first_date|ts("%d %b %Y") }} – {{ p.last_date|ts("%d %b %Y") }}</dd>
         <dt>Participants</dt><dd>{{ p.participant_count }}</dd>
       {% endif %}
       <dt>Uploaded</dt><dd>{{ record.created_at|ts }}</dd>
@@ -34,88 +34,106 @@
 
 {% if record.status == "preview" %}
 <section class="card">
-  <h2>Import into</h2>
-  {% if match.how == "id" %}
-    <p class="ok-text small">Matched by chat ID.</p>
-  {% elif match.how == "name" %}
-    <p class="small">Matched by name — check that this is the right group.</p>
-  {% else %}
-    <p class="small">No known group matches this export. Pick one, or create it as a new pending group (useful before adding the bot).</p>
-  {% endif %}
   <form method="post" action="/import/{{ record.id }}/start" class="import-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <select name="target" hx-get="/import/{{ record.id }}/estimate" hx-target="#estimate" hx-trigger="change">
-      {% for chat in chats %}
-        <option value="{{ chat.chat_id }}" {{ 'selected' if target == chat.chat_id else '' }}>{{ chat.display_title }} ({{ chat.status }}, {{ chat.chat_id }})</option>
-      {% endfor %}
-      {% if match.suggested_chat_id is not none %}
-        <option value="new" {{ 'selected' if target is none else '' }}>New pending group “{{ record.export_name }}” ({{ match.suggested_chat_id }})</option>
+    <div id="plan-inputs" hx-get="/import/{{ record.id }}/estimate" hx-trigger="change" hx-include="#plan-inputs" hx-target="#estimate">
+      <input type="hidden" name="options" value="1">
+      <h2>Import into</h2>
+      {% if match.how == "id" %}
+        <p class="ok-text small">Matched by chat ID.</p>
+      {% elif match.how == "name" %}
+        <p class="small">Matched by name — check that this is the right group.</p>
+      {% else %}
+        <p class="small">No known group matches this export. Pick one, or create it as a new pending group (useful before adding the bot).</p>
       {% endif %}
-    </select>
-    <button type="submit" class="primary">Import</button>
-  <div id="estimate">{% include "_import_estimate.html" %}</div>
+      <select name="target" aria-label="Group">
+        {% for chat in chats %}
+          <option value="{{ chat.chat_id }}" {{ 'selected' if target == chat.chat_id else '' }}>{{ chat.display_title }} ({{ chat.status }}, {{ chat.chat_id }})</option>
+        {% endfor %}
+        {% if match.suggested_chat_id is not none %}
+          <option value="new" {{ 'selected' if target is none else '' }}>New pending group “{{ record.export_name }}” ({{ match.suggested_chat_id }})</option>
+        {% endif %}
+      </select>
+      <p class="muted small">Dates are whole days in {{ timezone }}; the export runs from {{ record.preview.first_date|ts("%d %b %Y") }} to {{ record.preview.last_date|ts("%d %b %Y") }}.</p>
 
-  {% if identities %}
-  <h2>People in this export</h2>
-  <p class="muted small">Telegram user IDs are the same everywhere, so each person below is matched to their account automatically. The name box becomes their name in every chat (it starts with the name this export uses, i.e. your contact name for them); clear it to keep their current name. If someone is really the same person as another entry, choose them under “Same person as”.</p>
-  <div class="table-wrap">
-  <table class="compact identities">
-    <thead><tr><th>In the export</th><th class="num">Messages</th><th>Known as</th><th>Name to use</th><th>Same person as</th></tr></thead>
-    <tbody>
-    {% for row in identities %}
-      <tr>
-        <td>{{ row.export_name }} <span class="muted mono small">{{ row.user_id }}</span></td>
-        <td class="num small">{{ row.count }}</td>
-        <td class="small">
-          {% if row.person %}
-            <a href="/people/{{ row.person.id }}">{{ row.person.display_name }}</a>{% if row.person.username %} <span class="muted">@{{ row.person.username }}</span>{% endif %}
-          {% else %}
-            <span class="muted">new: not seen live yet</span>
-          {% endif %}
-        </td>
-        <td><input name="name-{{ row.user_id }}" value="{{ row.suggested_name }}" maxlength="100" aria-label="Name to use for {{ row.export_name }}"></td>
-        <td>
-          <select name="merge-{{ row.user_id }}" aria-label="Same person as">
-            <option value="">— this account —</option>
-            {% for p in people if not row.person or p.id != row.person.id %}
-              <option value="{{ p.id }}">{{ p.display_name }}{% if p.username %} (@{{ p.username }}){% endif %}</option>
-            {% endfor %}
+      <fieldset class="import-section">
+        <legend><label><input type="checkbox" name="raw" {{ 'checked' if options.raw else '' }}> Import chat messages</label></legend>
+        <label>From <input type="date" name="raw_from" value="{{ options.raw_from.isoformat() if options.raw_from else '' }}"></label>
+        <label>to <input type="date" name="raw_to" value="{{ options.raw_to.isoformat() if options.raw_to else '' }}"></label>
+        <p class="muted small">Kept as searchable chat the bot can quote. Only messages within the imported-messages retention (Settings → Retention) and from before live recording began can be kept.</p>
+      </fieldset>
+
+      <fieldset class="import-section">
+        <legend><label><input type="checkbox" name="archive" {{ 'checked' if options.archive else '' }}> Make history summaries</label></legend>
+        <label>From <input type="date" name="archive_from" value="{{ options.archive_from.isoformat() if options.archive_from else '' }}"></label>
+        <label>to <input type="date" name="archive_to" value="{{ options.archive_to.isoformat() if options.archive_to else '' }}"></label>
+        <label>Grouping
+          <select name="grouping">
+            {% for grouping in groupings %}<option value="{{ grouping }}" {{ 'selected' if options.grouping == grouping else '' }}>{{ grouping_labels[grouping] }}</option>{% endfor %}
           </select>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% endif %}
+        </label>
+        <p class="muted small">Dated summaries of what went on, kept after the messages themselves are deleted, so the bot can answer “what were we planning in summer 2021?”. Older messages than the retention allows are summarized too.</p>
+        <label class="small"><input type="checkbox" name="replace" {{ 'checked' if options.replace else '' }}> Replace existing summaries these dates overlap</label>
+        <label class="small"><input type="checkbox" name="replace_edited" {{ 'checked' if options.replace_edited else '' }}> …including ones you edited</label>
+        <label class="small"><input type="checkbox" name="regenerate" {{ 'checked' if options.regenerate else '' }}> Rebuild summaries even when the messages haven't changed</label>
+      </fieldset>
+
+      <fieldset class="import-section">
+        <legend><label><input type="checkbox" name="distill" {{ 'checked' if options.distill else '' }}> Add memory notes</label></legend>
+        <p class="muted small">Reads the summarized dates (or the imported ones, without summaries) for durable facts: preferences, birthdays, traditions, running jokes.</p>
+      </fieldset>
+    </div>
+
+    <div id="estimate">{% include "_import_estimate.html" %}</div>
+
+    {% if identities %}
+    <h2>People in this export</h2>
+    <p class="muted small">Telegram user IDs are the same everywhere, so each person below is matched to their account automatically. The name box becomes their name in every chat (it starts with the name this export uses, i.e. your contact name for them); clear it to keep their current name. If someone is really the same person as another entry, choose them under “Same person as”.</p>
+    <div class="table-wrap">
+    <table class="compact identities">
+      <thead><tr><th>In the export</th><th class="num">Messages</th><th>Known as</th><th>Name to use</th><th>Same person as</th></tr></thead>
+      <tbody>
+      {% for row in identities %}
+        <tr>
+          <td>{{ row.export_name }} <span class="muted mono small">{{ row.user_id }}</span></td>
+          <td class="num small">{{ row.count }}</td>
+          <td class="small">
+            {% if row.person %}
+              <a href="/people/{{ row.person.id }}">{{ row.person.display_name }}</a>{% if row.person.username %} <span class="muted">@{{ row.person.username }}</span>{% endif %}
+            {% else %}
+              <span class="muted">new: not seen live yet</span>
+            {% endif %}
+          </td>
+          <td><input name="name-{{ row.user_id }}" value="{{ row.suggested_name }}" maxlength="100" aria-label="Name to use for {{ row.export_name }}"></td>
+          <td>
+            <select name="merge-{{ row.user_id }}" aria-label="Same person as">
+              <option value="">— this account —</option>
+              {% for p in people if not row.person or p.id != row.person.id %}
+                <option value="{{ p.id }}">{{ p.display_name }}{% if p.username %} (@{{ p.username }}){% endif %}</option>
+              {% endfor %}
+            </select>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
   </form>
   <form method="post" action="/import/{{ record.id }}/discard">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="small">Discard upload</button>
   </form>
 </section>
-{% elif record.status == "running" %}
-<section class="card">
-  <h2>Importing…</h2>
-  {% include "_import_progress.html" %}
-</section>
 {% else %}
 <section class="card">
-  <h2>Result</h2>
-  {% if record.status in ("done", "replaced") %}
-    <p><strong>{{ record.imported }}</strong> messages imported into {% if chat %}<a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a>{% else %}chat {{ record.chat_id }}{% endif %}.</p>
-    <ul class="plain small">
-      <li>{{ record.skipped_overlap }} skipped: already recorded live (on or after the first live message)</li>
-      <li>{{ record.skipped_retention }} skipped: older than the retention period</li>
-      <li>{{ record.skipped_service }} service messages skipped</li>
-      {% if record.first_date %}<li>Imported range: {{ record.first_date|ts("%d %b %Y") }} – {{ record.last_date|ts("%d %b %Y") }}</li>{% endif %}
-    </ul>
-    {% if record.status == "replaced" %}<p class="muted">A later import of the same group replaced this one.</p>{% endif %}
-    {% include "_import_distill.html" %}
-  {% elif record.status == "failed" %}
+  <h2>{% if record.status == "running" %}Importing…{% else %}Result{% endif %}</h2>
+  {% if record.status == "failed" and not record.options %}
     <p class="notice error">{{ record.error }}</p>
-  {% else %}
+  {% elif record.status == "discarded" %}
     <p class="muted">Discarded.</p>
+  {% else %}
+    {% include "_import_stages.html" %}
   {% endif %}
 </section>
 {% endif %}

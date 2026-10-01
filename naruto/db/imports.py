@@ -6,12 +6,28 @@ import sqlite3
 
 from naruto.db.database import Database, now_ts
 
+_JSON_FIELDS = ("preview", "options", "limitations")
+
+# Overall status of an import.
 PREVIEW = "preview"
 RUNNING = "running"
+PAUSED = "paused"  # a stage stopped after errors or by the owner; resumable
 DONE = "done"
+PARTIAL = "partial"  # finished, but a stage failed, was cancelled or expired
 FAILED = "failed"
-REPLACED = "replaced"
+REPLACED = "replaced"  # a later import replaced all its messages
 DISCARDED = "discarded"
+
+# Status of each stage (raw_status, archive_status, distill_status).
+STAGE_SKIPPED = "skipped"  # not asked for
+STAGE_WAITING = "waiting"
+STAGE_RUNNING = "running"
+STAGE_PAUSED = "paused"
+STAGE_DONE = "done"
+STAGE_FAILED = "failed"
+STAGE_CANCELLED = "cancelled"
+STAGE_EXPIRED = "expired"  # the uploaded file was deleted before it finished
+UNFINISHED_STAGES = (STAGE_WAITING, STAGE_RUNNING, STAGE_PAUSED)
 
 
 @dataclass
@@ -38,17 +54,45 @@ class ImportRecord:
     created_at: int
     started_at: int | None
     finished_at: int | None
-    distill_status: str | None = None  # running | done | failed | skipped
+    options: dict | None = None  # what the owner chose, frozen at start (planning.py)
+    skipped_range: int = 0
+    raw_status: str | None = None
+    archive_status: str | None = None
+    archive_total: int = 0  # periods with messages
+    archive_done: int = 0
+    archive_error: str | None = None
+    distill_status: str | None = None
     distill_total: int = 0
     distill_done: int = 0
     notes_added: int = 0
     distill_error: str | None = None
+    limitations: list | None = None
+    paused_at: int | None = None
+    source_expires_at: int | None = None  # a paused import's file is deleted then
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ImportRecord":
         data = {name: row[name] for name in cls.__dataclass_fields__}
-        data["preview"] = json.loads(data["preview"]) if data["preview"] else None
+        for name in _JSON_FIELDS:
+            data[name] = json.loads(data[name]) if data[name] else None
         return cls(**data)
+
+    @property
+    def stages(self) -> list[tuple[str, str]]:
+        """(name, status) of the stages that were asked for."""
+        return [(name, status) for name, status in (
+            ("raw", self.raw_status), ("archive", self.archive_status),
+            ("distill", self.distill_status)) if status and status != STAGE_SKIPPED]
+
+    @property
+    def unfinished(self) -> bool:
+        return any(status in UNFINISHED_STAGES for _, status in self.stages)
+
+    @property
+    def archive_percent(self) -> int:
+        if not self.archive_total:
+            return 0
+        return min(100, int(self.archive_done * 100 / self.archive_total))
 
     @property
     def progress_percent(self) -> int:
@@ -80,8 +124,9 @@ class ImportRepository:
         return ImportRecord.from_row(row) if row else None
 
     def update(self, import_id: int, **fields) -> None:
-        if "preview" in fields and fields["preview"] is not None:
-            fields["preview"] = json.dumps(fields["preview"], ensure_ascii=False)
+        for name in _JSON_FIELDS:
+            if name in fields and fields[name] is not None:
+                fields[name] = json.dumps(fields[name], ensure_ascii=False)
         assignments = ", ".join(f"{name} = ?" for name in fields)
         self.db.execute(f"UPDATE imports SET {assignments} WHERE id = ?",
                         (*fields.values(), import_id))

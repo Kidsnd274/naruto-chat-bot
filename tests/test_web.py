@@ -24,7 +24,10 @@ def app(services, monkeypatch):
 
 @pytest.fixture
 def client(app):
-    return TestClient(app, follow_redirects=False)
+    # One event loop for every request, as in production: background jobs
+    # started by a request (imports) keep running between requests.
+    with TestClient(app, follow_redirects=False) as client:
+        yield client
 
 
 def csrf_from(html: str) -> str:
@@ -305,6 +308,17 @@ def importer(services, tmp_path):
     return services.imports
 
 
+RAW_ONLY = {"options": "1", "raw": "on", "raw_from": "2026-09-01", "raw_to": "2026-09-02"}
+
+
+def wait_until(predicate):
+    for _ in range(250):  # the job runs in a worker thread
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def upload(admin, content: bytes, name="result.json"):
     return admin.client.post("/import", files={"file": (name, content, "application/json")},
                              headers={"X-CSRF-Token": admin.token, "HX-Request": "true"})
@@ -320,14 +334,13 @@ def test_import_upload_preview_and_run(admin, importer, services):
     preview = admin.client.get(location).text
     assert "BBQ crew" in preview and "private_group" in preview
     assert "Alice Tan" in preview and "No known group matches" in preview
-    assert "New pending group" in preview and "<strong>12</strong> messages in the export" in preview
+    assert "New pending group" in preview
+    assert "<strong>12</strong> of 12 messages in the chosen dates will be imported" in preview
+    assert "Make history summaries" in preview and 'value="2026-09-01"' in preview
 
-    started = admin.post(f"/import/{record_id}/start", {"target": "new"})
+    started = admin.post(f"/import/{record_id}/start", {"target": "new", **RAW_ONLY})
     assert started.status_code == 303
-    for _ in range(200):  # the job runs in a worker thread
-        if importer.repo.get(record_id).status == "done":
-            break
-        time.sleep(0.02)
+    assert wait_until(lambda: importer.repo.get(record_id).status == "done")
     result = admin.client.get(location).text
     assert "<strong>12</strong> messages imported" in result
     assert services.chats.get(-4001).status == "pending"
@@ -340,10 +353,20 @@ def test_import_estimate_follows_the_chosen_group(admin, importer, services):
     services.chats.upsert_seen(-4001, title="BBQ crew")
     services.chats.upsert_seen(-777, title="Other")
     record_id = int(upload(admin, FIXTURE.read_bytes()).headers["HX-Redirect"].rsplit("/", 1)[1])
+    services.messages.insert_live(NewMessage(
+        chat_id=-4001, origin_chat_id=-4001, source=LIVE, message_id=1, sender_name="A",
+        date=1788228060 + 250))  # recorded live from the fourth export message on
     preview = admin.client.get(f"/import/{record_id}").text
     assert "Matched by chat ID" in preview
-    estimate = admin.client.get(f"/import/{record_id}/estimate", params={"target": "-777"}).text
-    assert "No overlap" in estimate
+    assert "9 were already recorded live" in preview
+    estimate = admin.client.get(f"/import/{record_id}/estimate",
+                                params={"target": "-777", **RAW_ONLY}).text
+    assert "already recorded live" not in estimate
+    assert "<strong>12</strong> of 12 messages" in estimate
+    # Nothing chosen: an error, and Start is disabled.
+    nothing = admin.client.get(f"/import/{record_id}/estimate",
+                               params={"target": "-777", "options": "1"}).text
+    assert "Choose at least one" in nothing and "disabled" in nothing
 
 
 def test_import_upload_errors(admin, importer, services):
@@ -361,7 +384,9 @@ def test_import_discard_and_invalid_start(admin, importer):
     assert admin.post(f"/import/{record_id}/start", {"target": "abc"}).status_code == 400
     assert admin.post(f"/import/{record_id}/discard").status_code == 303
     assert importer.repo.get(record_id).status == "discarded"
-    assert admin.post(f"/import/{record_id}/start", {"target": "new"}).status_code == 409
+    assert admin.post(f"/import/{record_id}/start", {"target": "new"}).status_code == 303
+    assert "Not started: This import can no longer be started." in \
+        admin.client.get(f"/import/{record_id}").text
     assert admin.client.get("/import/999").status_code == 404
 
 
@@ -452,8 +477,8 @@ def test_merge_needs_confirmation_then_split(admin, crowd, services):
     assert admin.client.get("/people/99999").status_code == 404
 
 
-def test_import_preview_maps_people(admin, importer, services, chat):
-    services.members.upsert_live(-4001, 7, "Alice T.", "alice")
+def test_import_preview_maps_people(admin, importer, services):
+    services.members.upsert_live(-777, 7, "Alice T.", "alice")  # known from another group
     record_id = int(upload(admin, FIXTURE.read_bytes()).headers["HX-Redirect"].rsplit("/", 1)[1])
     preview = admin.client.get(f"/import/{record_id}").text
     assert "People in this export" in preview
@@ -462,12 +487,9 @@ def test_import_preview_maps_people(admin, importer, services, chat):
 
     bob_person = services.people.touch_live(80, "Bobby", "bobby")
     admin.post(f"/import/{record_id}/start", {
-        "target": "-4001", "name-7": "Alice Tan", "merge-7": "",
-        "name-8": "Bob", "merge-8": str(bob_person)})
-    for _ in range(200):
-        if importer.repo.get(record_id).status == "done":
-            break
-        time.sleep(0.02)
+        "target": "new", "name-7": "Alice Tan", "merge-7": "",
+        "name-8": "Bob", "merge-8": str(bob_person), **RAW_ONLY})
+    assert wait_until(lambda: importer.repo.get(record_id).status == "done")
     assert services.people.for_user(7).display_name == "Alice Tan"
     assert services.people.for_user(8).id == bob_person
 
@@ -627,15 +649,29 @@ def test_digest_and_reminders_on_the_chat_page(admin, chat, services):
     assert "Cancelled reminder 1." in page and "Reminder 1 is already cancelled." in page
 
 
-def test_import_page_shows_distillation(admin, importer, services):
+def test_import_page_shows_the_stages(admin, importer, services):
     record = importer.repo.create(file_name="result.json", file_path="/nowhere", file_size=1)
-    importer.repo.update(record.id, status="done", chat_id=CHAT, distill_status="running",
-                         distill_total=4, distill_done=1, notes_added=2)
+    importer.repo.update(record.id, status="running", chat_id=CHAT, options={"tz": "UTC"},
+                         raw_status="done", imported=12, archive_status="running",
+                         archive_total=8, archive_done=3, distill_status="waiting")
     page = admin.client.get(f"/import/{record.id}").text
-    assert "part 1 of 4 (25%), 2 notes so far" in page
-    importer.repo.update(record.id, distill_status="done", notes_added=5)
-    partial = admin.client.get(f"/import/{record.id}/distill").text
-    assert "<strong>5</strong> new memory notes" in partial and "hx-get" not in partial
+    assert "3 of 8 periods done (37%)" in page and 'hx-get="/import/' in page
+    assert "<strong>12</strong> messages imported" in page and ">Pause<" in page
+    partial = admin.client.get(f"/import/{record.id}/progress").text
+    assert "Memory notes" in partial
+
+    importer.repo.update(record.id, status="paused", archive_status="paused",
+                         archive_error="1–30 Sep 2021: Part 2 kept failing: boom",
+                         source_expires_at=2_000_000_000, distill_status="waiting")
+    page = admin.client.get(f"/import/{record.id}").text
+    assert "Part 2 kept failing: boom" in page and ">Resume<" in page
+    assert "Cancel the rest" in page and "The uploaded file is kept until" in page
+
+    importer.repo.update(record.id, status="done", archive_status="done", archive_done=8,
+                         distill_status="done", distill_total=4, distill_done=4, notes_added=5)
+    page = admin.client.get(f"/import/{record.id}").text
+    assert "<strong>5</strong> new notes" in page and 'hx-get="/import/' not in page
+    assert f"/chats/{CHAT}/history?import={record.id}" in page
 
 
 # ------------------------------------------------------------------ queue

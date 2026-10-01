@@ -720,18 +720,28 @@ def test_memory_moves_with_a_group_upgrade(services, chat):
 
 # ------------------------------------------------------------ distillation
 
+async def import_with_notes(services, tmp_path, **changes):
+    """Import the fixture's messages and distill notes (no summaries)."""
+    importer = ImportService(services, tmp_path / "imports")
+    record = await importer.create_from_upload(io.BytesIO(FIXTURE.read_bytes()), "result.json")
+    options = importer.default_options(record)
+    options.archive, options.distill = False, True
+    for name, value in changes.items():
+        setattr(options, name, value)
+    await importer.start(record.id, GROUP_ID, options=options)
+    await asyncio.gather(*importer._tasks.values())
+    return importer, importer.repo.get(record.id)
+
+
 async def test_import_is_distilled_into_notes_and_a_first_digest(services, tmp_path):
     services.settings.set("retention.imported_messages_days", 0, actor="t")
+    services.settings.set("import.digest_window_days", 365, actor="t")  # the fixture is old
     services.keeper = MemoryKeeper(services)
     services.llm = ScriptedLLM(
         json.dumps({"notes": [{"action": "add", "content": "Wei always brings the grill",
                                "category": "running_joke", "about": "Wei"}]}),
         digest_answer("- BBQ planning"))
-    importer = ImportService(services, tmp_path / "imports")
-    record = await importer.create_from_upload(io.BytesIO(FIXTURE.read_bytes()), "result.json")
-    await importer.start(record.id, GROUP_ID)
-    await asyncio.gather(*importer._tasks.values())
-    record = importer.repo.get(record.id)
+    importer, record = await import_with_notes(services, tmp_path)
     assert record.status == "done" and record.distill_status == "done"
     assert (record.distill_total, record.distill_done, record.notes_added) == (1, 1, 1)
     note = services.notes.for_chat(GROUP_ID)[0]
@@ -739,22 +749,40 @@ async def test_import_is_distilled_into_notes_and_a_first_digest(services, tmp_p
     first = services.llm.calls[0]
     assert first["background"] is True and "## Messages (part 1 of 1" in \
         first["messages"][1]["content"]
+    assert first["info"].task == "distill" and first["info"].import_id == record.id
     assert services.digests.get(GROUP_ID).text == "- BBQ planning"
     assert services.digests.get(GROUP_ID).updated_by == f"import {record.id}"
     assert not Path(record.file_path or tmp_path / "gone").exists()
 
 
-async def test_distillation_failure_keeps_the_import(services, tmp_path):
+async def test_an_old_import_does_not_become_the_current_digest(services, tmp_path):
+    services.settings.set("retention.imported_messages_days", 0, actor="t")
+    services.keeper = MemoryKeeper(services)  # digest start: imports of the last 14 days
+    services.llm = ScriptedLLM(json.dumps({"notes": []}))
+    _, record = await import_with_notes(services, tmp_path)
+    assert record.status == "done" and record.imported == 12
+    assert services.digests.get(GROUP_ID) is None  # a month-old export isn't "now"
+    assert services.keeper.due_chats() == []
+    store(services, 1, "new live message", offset=10_000_000)  # live counts whatever its age
+    keeper = services.keeper
+    assert keeper.services.digests.unread_count(GROUP_ID, None, keeper.imported_since())[0] == 1
+
+
+async def test_distillation_failure_pauses_and_resumes(services, tmp_path):
     services.settings.set("retention.imported_messages_days", 0, actor="t")
     services.llm = ScriptedLLM("not json")
-    importer = ImportService(services, tmp_path / "imports")
-    record = await importer.create_from_upload(io.BytesIO(FIXTURE.read_bytes()), "result.json")
-    await importer.start(record.id, GROUP_ID)
+    importer, record = await import_with_notes(services, tmp_path)
+    assert record.status == "paused" and record.raw_status == "done" and record.imported > 0
+    assert record.distill_status == "paused" and "kept failing" in record.distill_error
+    assert Path(record.file_path).exists()  # kept to resume
+
+    services.llm = ScriptedLLM(json.dumps({"notes": [{"content": "Wei grills"}]}))
+    importer.resume(record.id)
     await asyncio.gather(*importer._tasks.values())
     record = importer.repo.get(record.id)
-    assert record.status == "done" and record.imported > 0
-    assert record.distill_status == "failed" and "kept failing" in record.distill_error
-    assert record.file_path is None
+    assert record.status == "done" and record.distill_status == "done"
+    assert record.notes_added == 1 and record.file_path is None
+    assert services.messages.count(GROUP_ID, IMPORT) == 12  # not imported twice
 
 
 async def test_reading_an_export_for_distillation_keeps_the_bot_responsive(services, tmp_path,
@@ -770,8 +798,6 @@ async def test_reading_an_export_for_distillation_keeps_the_bot_responsive(servi
         return real(*args, **kwargs)
 
     monkeypatch.setattr(distill, "export_chunks", slow_export_chunks)
-    importer = ImportService(services, tmp_path / "imports")
-    record = await importer.create_from_upload(io.BytesIO(FIXTURE.read_bytes()), "result.json")
     ticks = 0
 
     async def heartbeat():
@@ -781,19 +807,15 @@ async def test_reading_an_export_for_distillation_keeps_the_bot_responsive(servi
             ticks += 1
 
     beating = asyncio.create_task(heartbeat())
-    await importer.start(record.id, GROUP_ID)
-    await asyncio.gather(*importer._tasks.values())
+    _, record = await import_with_notes(services, tmp_path)
     beating.cancel()
-    assert importer.repo.get(record.id).distill_status == "done"
+    assert record.distill_status == "done"
     assert ticks >= 10  # the loop kept running while the export was read
 
 
 def test_reading_an_export_stops_on_shutdown(services):
-    import threading
-
     from naruto.memory.distill import DistillStopped, export_chunks
 
-    stopping = threading.Event()
-    stopping.set()
     with pytest.raises(DistillStopped):
-        export_chunks(services, str(FIXTURE), before=None, chunk_tokens=1000, stopping=stopping)
+        export_chunks(services, str(FIXTURE), chunk_tokens=1000, max_chars=1500,
+                      stopping=lambda: True)

@@ -1,0 +1,82 @@
+<div id="stages"{% if record.status == "running" %} hx-get="/import/{{ record.id }}/progress" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  {% set labels = {"waiting": "waiting", "running": "running", "paused": "paused", "done": "done", "failed": "failed", "cancelled": "cancelled", "expired": "expired"} %}
+  {% if record.raw_status and record.raw_status != "skipped" %}
+    <h3>Chat messages <span class="badge {{ record.raw_status }}">{{ labels.get(record.raw_status, record.raw_status) }}</span></h3>
+    {% if record.raw_status == "running" %}
+      <progress value="{{ record.processed }}" max="{{ record.total or 1 }}"></progress>
+      <p class="muted small">{{ record.processed }} of {{ record.total }} messages read ({{ record.progress_percent }}%), {{ record.imported }} imported.</p>
+    {% elif record.raw_status == "done" %}
+      <p><strong>{{ record.imported }}</strong> messages imported{% if record.chat_id %} into <a href="/chats/{{ record.chat_id }}">{{ chat.display_title if chat else record.chat_id }}</a>{% endif %}{% if record.first_date %} ({{ record.first_date|ts("%d %b %Y") }} – {{ record.last_date|ts("%d %b %Y") }}){% endif %}.</p>
+      <ul class="plain small muted">
+        {% if record.skipped_range %}<li>{{ record.skipped_range }} outside the chosen dates</li>{% endif %}
+        {% if record.skipped_overlap %}<li>{{ record.skipped_overlap }} already recorded live</li>{% endif %}
+        {% if record.skipped_retention %}<li>{{ record.skipped_retention }} older than the retention period</li>{% endif %}
+        {% if record.skipped_service %}<li>{{ record.skipped_service }} service messages</li>{% endif %}
+      </ul>
+      {% if record.status == "replaced" %}<p class="muted small">A later import of these dates replaced these messages.</p>{% endif %}
+    {% elif record.error %}
+      <p class="notice error">{{ record.error }}</p>
+    {% endif %}
+  {% endif %}
+
+  {% if record.archive_status and record.archive_status != "skipped" %}
+    <h3>History summaries <span class="badge {{ record.archive_status }}">{{ labels.get(record.archive_status, record.archive_status) }}</span></h3>
+    {% if record.archive_total %}
+      <progress value="{{ record.archive_done }}" max="{{ record.archive_total or 1 }}"></progress>
+      <p class="muted small">{{ record.archive_done }} of {{ record.archive_total }} periods done ({{ record.archive_percent }}%).{% if record.status == "running" %} Replies to people go first, so this can take a while.{% endif %}</p>
+    {% elif record.archive_status == "running" %}
+      <p class="muted small">Reading the export…</p>
+    {% endif %}
+    {% if record.archive_error %}<p class="notice {{ 'error' if record.archive_status in ('paused', 'failed') else 'warn' }}">{{ record.archive_error }}</p>{% endif %}
+    {% if periods %}
+      <details>
+        <summary class="small">Periods</summary>
+        <div class="table-wrap">
+        <table class="compact">
+          <thead><tr><th>Period</th><th class="num">Messages</th><th>State</th><th class="num">Parts read</th><th>Note</th></tr></thead>
+          <tbody>
+          {% for p in periods %}
+            <tr>
+              <td class="small nowrap">{{ p.period_start|ts("%d %b %Y") }} – {{ (p.period_end - 1)|ts("%d %b %Y") }}</td>
+              <td class="num small">{{ p.message_count }}</td>
+              <td><span class="badge {{ 'done' if p.status in ('done', 'reused') else 'failed' if p.status == 'failed' else 'pending' }}">{{ p.status }}</span></td>
+              <td class="num small">{{ p.chunks_done or "" }}</td>
+              <td class="small">{{ p.error or "" }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </details>
+    {% endif %}
+    {% if record.chat_id and record.archive_done %}<p class="small"><a href="/chats/{{ record.chat_id }}/history?import={{ record.id }}">See the summaries →</a></p>{% endif %}
+  {% endif %}
+
+  {% if record.distill_status and record.distill_status != "skipped" %}
+    <h3>Memory notes <span class="badge {{ record.distill_status }}">{{ labels.get(record.distill_status, record.distill_status) }}</span></h3>
+    {% if record.distill_total %}
+      <progress value="{{ record.distill_done }}" max="{{ record.distill_total or 1 }}"></progress>
+    {% endif %}
+    <p class="small">{% if record.distill_total %}Part {{ record.distill_done }} of {{ record.distill_total }}, {% endif %}<strong>{{ record.notes_added }}</strong> new notes{% if record.chat_id %} (<a href="/chats/{{ record.chat_id }}/memory">see them</a>){% endif %}.</p>
+    {% if record.distill_error %}<p class="notice {{ 'error' if record.distill_status in ('paused', 'failed') else 'warn' }}">{{ record.distill_error }}</p>{% endif %}
+  {% endif %}
+
+  {% if record.limitations %}
+    <h3>Notes</h3>
+    <ul class="plain small">{% for note in record.limitations %}<li>{{ note }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if record.status == "paused" %}
+    <p class="notice warn">Paused{% if record.source_expires_at %}. The uploaded file is kept until {{ record.source_expires_at|ts }}; after that, unfinished work needs a new upload{% endif %}.</p>
+  {% endif %}
+  <div class="actions">
+    {% if record.status == "running" %}
+      <form method="post" action="/import/{{ record.id }}/pause"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="small">Pause</button></form>
+    {% elif record.status == "paused" %}
+      <form method="post" action="/import/{{ record.id }}/resume"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="small primary">Resume</button></form>
+    {% endif %}
+    {% if record.status in ("running", "paused") %}
+      <form method="post" action="/import/{{ record.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="small">Cancel the rest…</button></form>
+    {% endif %}
+  </div>
+</div>

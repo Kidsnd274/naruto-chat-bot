@@ -807,3 +807,23 @@ def test_history_page_lists_edits_and_deletes_summaries(admin, chat, services):
     assert services.chats.get(CHAT).recording_since == 1627776000
     admin.post(f"/chats/{CHAT}/history-clear", {"confirm": "yes"})
     assert services.history.coverage(CHAT)[2] == 0
+
+
+def test_a_failed_live_month_can_be_retried(admin, chat, services):
+    start = calendar.timegm((2026, 8, 1, 0, 0, 0))
+    end = calendar.timegm((2026, 9, 1, 0, 0, 0))
+    period = services.history.add_period(
+        chat_id=CHAT, source="live", import_id=None, grouping="month", timezone="UTC",
+        period_start=start, period_end=end, message_count=40, fingerprint=None,
+        status="failed", error="Part 1 kept failing: server down")
+    services.history.update_period(period.id, attempts=3)
+    page = admin.client.get(f"/chats/{CHAT}/history").text
+    assert "kept failing: server down" in page and f"/periods/{period.id}/retry" in page
+    admin.post(f"/chats/{CHAT}/history/periods/{period.id}/retry")
+    retried = services.history.get_period(period.id)
+    assert (retried.status, retried.attempts, retried.error) == ("waiting", 0, None)
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert "will be summarized again" in page
+    admin.post(f"/chats/{CHAT}/history/periods/{period.id}/retry")  # twice: harmless
+    assert services.history.get_period(period.id).status == "waiting"
+    assert admin.post(f"/chats/-999/history/periods/{period.id}/retry").status_code == 404

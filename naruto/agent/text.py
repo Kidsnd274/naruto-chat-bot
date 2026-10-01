@@ -116,6 +116,19 @@ def estimate_message_tokens(messages: list[dict], image_tokens: int) -> int:
     return total
 
 
+def estimate_request_tokens(messages: list[dict], tools: list[dict] | None,
+                            image_tokens: int) -> int:
+    """The whole request: its messages, the tool calls in them and the tool
+    list. An estimate, not the server's token count."""
+    total = estimate_message_tokens(messages, image_tokens)
+    for message in messages:
+        if message.get("tool_calls"):
+            total += estimate_text_tokens(json.dumps(message["tool_calls"]))
+    if tools:
+        total += estimate_text_tokens(json.dumps(tools))
+    return total
+
+
 def has_images(messages: list[dict]) -> bool:
     return any(isinstance(m.get("content"), list)
                and any(p.get("type") == "image_url" for p in m["content"]) for m in messages)

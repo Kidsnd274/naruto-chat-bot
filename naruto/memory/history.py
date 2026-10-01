@@ -452,6 +452,17 @@ def request_overhead(settings) -> int:
         estimate_text_tokens("x" * longest) + 200
 
 
+def retry_live_month(services: Services, period_id: int) -> bool:
+    """The owner's Retry on a failed live month: a fresh allowance of
+    attempts. The archiver's next round picks it up, and checks its messages
+    before continuing a partial summary. Retrying twice is harmless."""
+    period = services.history.get_period(period_id)
+    if period is None or period.source != LIVE or period.status != FAILED:
+        return False
+    services.history.update_period(period_id, status=WAITING, attempts=0, error=None)
+    return True
+
+
 def zone(tz_name: str, services: Services) -> tzinfo:
     return services.timezone() if tz_name == "server" else ZoneInfo(tz_name)
 
@@ -514,14 +525,9 @@ class LiveArchiver:
         return None
 
     def retry(self, period_id: int) -> bool:
-        """The owner's Retry on a failed month: a fresh allowance of
-        attempts. The next round picks it up (it checks its messages
-        before continuing)."""
-        services = self.services
-        period = services.history.get_period(period_id)
-        if period is None or period.source != LIVE or period.status != FAILED:
+        period = self.services.history.get_period(period_id)
+        if not retry_live_month(self.services, period_id):
             return False
-        services.history.update_period(period_id, status=WAITING, attempts=0, error=None)
         self._failed_at.pop(period.chat_id, None)
         return True
 

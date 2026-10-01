@@ -339,8 +339,9 @@ SETTINGS: tuple[Setting, ...] = (
             "cache. The window holds up to size + step - 1 messages.",
             "int", 20, min=1, max=500),
     Setting("context.input_token_budget", "context", "Input token budget",
-            "Estimated input tokens per request. The oldest recent messages are "
-            "dropped to fit.",
+            "Estimated input tokens of every reply request, follow-ups with tool results "
+            "included. The oldest recent messages are dropped to fit, then long tool results "
+            "are shortened. The server's context per slot must hold this plus the output.",
             "int", 12000, min=1000, max=1_000_000),
     Setting("context.max_message_chars", "context", "Max characters per message",
             "Longer messages are shortened in the recent window.",
@@ -367,10 +368,11 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("memory.digest_max_chars", "memory", "Digest size (characters)",
             "The digest is kept under this length.",
             "int", 1500, min=200, max=10000),
-    Setting("memory.digest_input_tokens", "memory", "Messages per update (tokens)",
-            "One update reads at most this many new messages (estimated tokens); a longer "
-            "backlog is read over several updates.",
-            "int", 8000, min=1000, max=100_000),
+    Setting("memory.digest_input_tokens", "memory", "Tokens per update",
+            "Estimated input of one digest update: the instructions, the digest, the notes and "
+            "as many new messages as fit; a longer backlog is read over several updates. Keep "
+            "it plus Max output tokens within the context of one server slot.",
+            "int", 12000, min=2000, max=100_000),
     Setting("memory.reasoning", "memory", "Reasoning",
             "Let the model think during digest updates (slower).",
             "bool", False),

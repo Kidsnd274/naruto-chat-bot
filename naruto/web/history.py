@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse
 
 from naruto.db.chats import Chat
 from naruto.db.history import ACTIVE, REPLACED, STAGED
+from naruto.memory.history import retry_live_month
 from naruto.periods import day_start, describe_span, period_label
 from naruto.services import Services
 from naruto.web.auth import require_admin
@@ -134,6 +135,26 @@ async def delete_digest(request: Request, chat_id: int, digest_id: int):
     logger.info("Deleted the history summary of %s from the web admin", span,
                 extra={"chat_id": chat.chat_id})
     flash(request, f"Deleted the summary of {span}.")
+    return _to_history(chat)
+
+
+@router.post("/chats/{chat_id}/history/periods/{period_id}/retry")
+async def retry_period(request: Request, chat_id: int, period_id: int):
+    """Try a failed live month again."""
+    services = _services(request)
+    chat = _chat(services, chat_id)
+    period = services.history.get_period(period_id)
+    if period is None or period.chat_id != chat.chat_id:
+        raise HTTPException(status_code=404, detail="Unknown month.")
+    span = describe_span(period.period_start, period.period_end, services.timezone())
+    retried = services.archiver.retry(period_id) if services.archiver is not None \
+        else retry_live_month(services, period_id)
+    if retried:
+        logger.info("Retrying the live summary of %s from the web admin", span,
+                    extra={"chat_id": chat.chat_id})
+        flash(request, f"{span} will be summarized again within about 10 minutes.")
+    else:
+        flash(request, f"{span} isn't failed, so there is nothing to retry.")
     return _to_history(chat)
 
 

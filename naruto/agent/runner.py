@@ -5,6 +5,11 @@ per run and a deadline that includes waiting for the model server. The last
 allowed request is reserved for the answer: its tool results say that no
 more tools are available. Every model request and tool call is traced in
 the run's ``steps``.
+
+Every request, follow-ups with tool results included, is kept within
+context.input_token_budget (an estimate): the oldest recent messages go
+first, then long tool results are shortened. A request whose instructions,
+background and current message alone don't fit isn't sent.
 """
 
 import asyncio
@@ -19,6 +24,7 @@ from naruto.agent.context import ContextBuilder, ImageInput
 from naruto.agent.skills import Skill, get_skill
 from naruto.agent.text import (
     clean_model_output,
+    estimate_request_tokens,
     estimate_text_tokens,
     has_images,
     strip_bot_mention,
@@ -43,11 +49,17 @@ LAST_CALL_NOTE = ("[No more tool calls are available in this response. Write you
                   "now with what you have.]")
 IMAGES_REFUSED_NOTE = "[The image can't be shown: the model server doesn't accept images.]"
 CHAT_DISABLED_ERROR = "Stopped: the chat was disabled while it ran."
+SHORTENED_NOTE = "\n…[shortened to fit the input budget]"
+MIN_TOOL_RESULT_CHARS = 400  # tool results aren't shortened below this
 BUSY_TEXT = "Sorry, I'm handling too many requests right now. Please try again in a minute."
 TRACE_TEXT_CHARS = 20_000
 # How OpenAI-compatible servers word a refused image (Halogen without a
 # vision tower, llama.cpp without an mmproj, text-only models).
 _IMAGES_REFUSED = re.compile(r"image|vision|multimodal|mmproj", re.IGNORECASE)
+
+
+class RequestTooLarge(LLMError):
+    """Even without recent messages the request is over the input budget."""
 
 
 @dataclass
@@ -154,6 +166,7 @@ class AgentRunner:
         while True:
             state.model_requests += 1
             try:
+                self._fit(request, skill, since, builder, messages, tools, state)
                 result = await self._request(request.chat, messages, tools, reasoning, state)
             except LLMError as exc:
                 logger.error("Model request failed: %s", exc)
@@ -235,6 +248,7 @@ class AgentRunner:
             logger.warning("The answer was internal JSON instead of a reply; asking again.")
             state.model_requests += 1
             try:
+                self._fit(request, skill, since, builder, messages, tools, state)
                 result = await self._request(request.chat, messages, tools, reasoning, state)
             except LLMError as exc:
                 logger.error("Model request failed: %s", exc)
@@ -272,6 +286,52 @@ class AgentRunner:
         return self._finish(state, status="ok", text=text,
                             threaded=should_reply or request.force_reply,
                             result=result, totals=totals)
+
+    def _fit(self, request: RunRequest, skill: Skill, since: int | None,
+             builder: ContextBuilder, messages: list[dict], tools: list[dict],
+             state: RunState) -> None:
+        """Keep the next request within the input budget, in place: rebuild
+        the first three messages (system, context, current request) with
+        room for the follow-up rounds, which drops the oldest recent
+        messages, then shorten the longest tool results. Raises
+        RequestTooLarge when it still doesn't fit."""
+        settings = self.services.settings.for_chat(request.chat.chat_id)
+        budget = settings["context.input_token_budget"]
+        image_tokens = settings["media.estimated_image_tokens"]
+        if estimate_request_tokens(messages, tools, image_tokens) <= budget:
+            return
+        dropped = shortened = 0
+        if len(messages) > 3:
+            follow_ups = estimate_request_tokens(messages[3:], tools, image_tokens)
+            prompt = builder.build(request.chat, request.trigger, bot=request.bot,
+                                   images=request.images, skill=skill.name, since=since,
+                                   note=request.note, reserved_tokens=follow_ups)
+            base = prompt.messages
+            if has_images(base) and not has_images(messages):
+                base = without_images(base, IMAGES_REFUSED_NOTE)  # refused earlier
+            messages[:3] = base
+            dropped = prompt.dropped
+        while estimate_request_tokens(messages, tools, image_tokens) > budget:
+            results = [m for m in messages if m.get("role") == "tool"
+                       and len(m["content"]) > MIN_TOOL_RESULT_CHARS + len(SHORTENED_NOTE)]
+            if not results:
+                break
+            longest = max(results, key=lambda m: len(m["content"]))
+            text = longest["content"].removesuffix(SHORTENED_NOTE)
+            keep = max(MIN_TOOL_RESULT_CHARS, len(text) // 2)
+            longest["content"] = text[:keep] + SHORTENED_NOTE
+            shortened += 1
+        total = estimate_request_tokens(messages, tools, image_tokens)
+        state.steps.append({"type": "fit", "request": state.model_requests, "budget": budget,
+                            "dropped": dropped, "shortened": shortened, "tokens": total})
+        if total > budget:
+            raise RequestTooLarge(
+                f"The request needs about {total} tokens even without recent messages, over "
+                f"the input budget of {budget} (Settings → Context → Input token budget). "
+                "Raise the budget, or make the background smaller (notes per request, digest "
+                "size, tool result length).")
+        logger.info("Fitted request %s to the input budget: dropped %s recent messages, "
+                    "shortened tool results %s times.", state.model_requests, dropped, shortened)
 
     async def _request(self, chat: Chat, messages: list[dict], tools: list[dict], reasoning,
                        state: RunState) -> ChatResult:

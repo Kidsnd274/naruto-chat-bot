@@ -758,3 +758,29 @@ async def test_the_keeper_reads_live_messages_only(services, chat, tmp_path):
     # Deleting the row the cursor points at doesn't make the rest unread again.
     services.messages.delete_for_chat(GROUP_ID, before=late.date + 1, source=LIVE)
     assert services.digests.unread_count(GROUP_ID, services.digests.get(GROUP_ID))[0] == 0
+
+
+async def test_a_digest_update_fits_its_tokens(services, chat):
+    from naruto.agent.text import estimate_text_tokens
+
+    services.keeper = keeper = MemoryKeeper(services)
+    services.settings.set("memory.digest_input_tokens", 3000, actor="t")
+    for i in range(30):
+        services.notes.add(GROUP_ID, f"fact {i}: " + "something worth keeping " * 4,
+                           created_by="owner", actor="o")
+    for i in range(60):
+        store(services, 100 + i, f"message {i} " + "about the bbq " * 20, offset=i)
+    services.llm = ScriptedLLM(digest_answer("- part one"))
+    await keeper.update(chat)
+    prompt = services.llm.calls[0]["messages"]
+    assert sum(estimate_text_tokens(m["content"]) for m in prompt) <= 3000
+    assert "(More messages follow in the next update.)" in prompt[1]["content"]
+
+    services.settings.set("memory.digest_input_tokens", 2000, actor="t")
+    for i in range(60):
+        services.notes.add(GROUP_ID, f"more {i}: " + "another long remembered detail " * 4,
+                           created_by="owner", actor="o")
+    calls = len(services.llm.calls)
+    assert await keeper.update(chat) is None
+    assert len(services.llm.calls) == calls  # not sent
+    assert "leaving no room for new messages" in services.digests.get(GROUP_ID).error

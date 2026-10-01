@@ -7,6 +7,8 @@
       {% elif step.type == "check" %}
         <strong>Asked again</strong> <span class="muted small">— the answer skipped a tool the request needs</span>
         <pre class="prompt">{{ step.note }}</pre>
+      {% elif step.type == "fit" %}
+        <strong>Fitted request {{ step.request }} to the input budget</strong> <span class="muted small">— about {{ step.tokens }} of {{ step.budget }} tokens{% if step.dropped %}; {{ step.dropped }} recent messages dropped{% endif %}{% if step.shortened %}; tool results shortened {{ step.shortened }} times{% endif %}</span>
       {% elif step.type == "model" %}
         <strong>Model request {{ step.request }}</strong>{% if step.purpose is defined %} <span class="small">— {{ step.purpose }}</span>{% endif %}
         <span class="muted small">

@@ -35,6 +35,7 @@ CHECK_INTERVAL_SECONDS = 60
 RETRY_AFTER_SECONDS = 15 * 60
 QUIET_MIN_MESSAGES = 10
 MAX_UNREAD_BATCH = 2000
+MIN_MESSAGE_TOKENS = 300  # what an update must leave for new messages
 DIGEST_CHANGED = "Not saved: the digest was edited or deleted while this update ran."
 AUTO_NOTES_OFF = "\n\nAutomatic notes are turned off: always answer with an empty notes list."
 
@@ -103,6 +104,20 @@ class MemoryKeeper:
 
     # --------------------------------------------------------------- update
 
+    def message_budget(self, chat: Chat) -> int:
+        """Tokens of an update left for new messages: the instructions, the
+        digest and the notes come out of memory.digest_input_tokens. Raises
+        MemoryOutputError when they leave too little."""
+        total = self.services.settings["memory.digest_input_tokens"]
+        fixed = sum(estimate_text_tokens(m["content"])
+                    for m in self.build_prompt(chat, [], more=True))
+        if total - fixed < MIN_MESSAGE_TOKENS:
+            raise MemoryOutputError(
+                f"The instructions, digest and notes take about {fixed} of the {total} tokens "
+                "per update, leaving no room for new messages. Raise Memory → Tokens per "
+                "update, or keep fewer notes.")
+        return total - fixed
+
     def _batch(self, chat: Chat, messages: list[StoredMessage] | None) -> tuple[list, bool]:
         """The unread live messages that fit the token budget, and whether
         more are waiting."""
@@ -111,7 +126,7 @@ class MemoryKeeper:
             messages = self.services.digests.unread(chat.chat_id, digest, limit=MAX_UNREAD_BATCH)
         else:
             messages = [message for message in messages if message.is_live]
-        budget = self.services.settings["memory.digest_input_tokens"]
+        budget = self.message_budget(chat)
         max_chars = self.services.settings["context.max_message_chars"]
         used, batch = 0, []
         for message in messages:
@@ -172,7 +187,12 @@ class MemoryKeeper:
         settings = services.settings.for_chat(chat.chat_id)
         read = services.digests.get(chat.chat_id)
         revision = read.revision if read else None  # to spot owner edits meanwhile
-        batch, more = self._batch(chat, messages)
+        try:
+            batch, more = self._batch(chat, messages)
+        except MemoryOutputError as exc:
+            logger.warning("Digest update not sent: %s", exc, extra={"chat_id": chat.chat_id})
+            services.digests.set_error(chat.chat_id, str(exc))
+            return None
         if not batch:
             return None
         prompt = self.build_prompt(chat, batch, more=more)

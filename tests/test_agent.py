@@ -219,6 +219,46 @@ async def test_search_then_answer_is_traced(services, wired, bot, chat):
     assert run.reply_message_ids == [901]  # FakeBot numbers its messages from 901
 
 
+async def test_every_request_fits_the_input_budget(services, wired, bot, chat):
+    from naruto.agent.text import estimate_request_tokens
+
+    services.settings.set("context.input_token_budget", 4000, actor="t")
+    services.settings.set("agent.tool_result_chars", 20000, actor="t")
+    services.settings.set("agent.search_results", 40, actor="t")
+    for i in range(40):
+        await wired.recorder.on_message(update(message(
+            10 + i, f"bbq plan {i}: " + "bring charcoal and more charcoal " * 8, sender=BOB,
+            offset=i)), context(bot))
+    services.llm = ScriptedLLM([tool_call("search_chat", {"query": "bbq"})],
+                               [tool_call("search_chat", {"query": "charcoal"})],
+                               "[REPLY] Lots of charcoal.")
+    await say(wired, bot, message(60, "@naruto_bot what do we bring?", offset=100))
+
+    assert bot.sent[-1]["text"] == "Lots of charcoal."
+    sizes = [estimate_request_tokens(call["messages"], call["tools"], 2048)
+             for call in services.llm.calls]
+    assert len(sizes) == 3 and max(sizes) <= 4000
+    run = services.runs.recent()[0][0]
+    fits = [s for s in run.steps if s["type"] == "fit"]
+    assert fits and fits[-1]["tokens"] <= 4000
+    assert fits[-1]["dropped"] > 0 or fits[-1]["shortened"] > 0
+    # The current request and the tool calls with their results are all still there.
+    last = services.llm.calls[-1]["messages"]
+    assert "what do we bring?" in last[2]["content"]
+    assert [m["role"] for m in last[3:]] == ["assistant", "tool", "assistant", "tool"]
+
+
+async def test_a_request_too_large_without_history_is_not_sent(services, wired, bot, chat):
+    services.settings.set("context.input_token_budget", 1000, actor="t")
+    services.settings.set("persona.prompt", "You are Naruto. " * 400, actor="t")
+    services.llm = ScriptedLLM("[REPLY] never")
+    await say(wired, bot, message(6, "@naruto_bot hi"))
+    assert services.llm.calls == []
+    assert bot.sent[-1]["text"] == FAILURE_TEXT
+    run = services.runs.recent()[0][0]
+    assert run.status == "error" and "Input token budget" in run.error
+
+
 async def test_last_request_gets_no_more_tools(services, wired, bot, chat):
     services.settings.set("agent.max_model_requests", 2, actor="t")
     services.llm = ScriptedLLM([tool_call("search_chat", {"query": "a"})],

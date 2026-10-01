@@ -21,11 +21,15 @@
     {% if live_periods %}
       <ul class="plain small">
         {% for p in live_periods %}
-          <li>{{ p.period_start|ts("%d %b %Y") }} – {{ (p.period_end - 1)|ts("%d %b %Y") }}: <span class="badge {{ 'failed' if p.status == 'failed' else 'pending' }}">{{ p.status }}</span>{% if p.chunks_done %} <span class="muted">{{ p.chunks_done }} parts read</span>{% endif %}{% if p.error %} <span class="muted">{{ p.error }}</span>{% endif %}</li>
+          <li>{{ p.period_start|ts("%d %b %Y") }} – {{ (p.period_end - 1)|ts("%d %b %Y") }}: <span class="badge {{ 'failed' if p.status == 'failed' else 'pending' }}">{{ p.status }}</span>{% if p.chunks_done %} <span class="muted">{{ p.chunks_done }} parts read</span>{% endif %}{% if p.error %} <span class="muted">{{ p.error }}</span>{% endif %}
+            {% if p.status == "failed" %}<form method="post" action="/chats/{{ chat.chat_id }}/history/periods/{{ p.id }}/retry" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="small">Retry</button></form>{% endif %}</li>
         {% endfor %}
       </ul>
     {% else %}
       <p class="muted small">Nothing waiting. Finished months show up in the list below.</p>
+    {% endif %}
+    {% if live_periods %}
+      <p class="muted small">A month whose summary keeps failing is marked failed and left alone, so later months still go ahead; Retry tries it again. Its messages are kept either way.</p>
     {% endif %}
   </section>
 </div>

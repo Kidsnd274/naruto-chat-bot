@@ -345,3 +345,13 @@ A code review against the implementation kept the owner decisions in section 1 a
 | Schema (8) | Prefer reset | Small forward migration V13 | Reset still needs legacy detection; migrating is about the same work and keeps test history. |
 
 Already in place and needing only tests, not code: FTS cleanup on delete (trigger), media descriptions (cascade), dangling reply links (`delete_for_chat()`), reply snippets (not stored when the target is stored), the digest cursor stored by value, and suppression of deleted live summaries (their period stays `done`).
+
+## 11. Implementation status (2026-10-02)
+
+Implemented on branch `memory_simplification`, phases 1–6, with the full test suite passing after each phase. Notes for review:
+
+- **Schema:** migration V13 as described in section 8; tested by upgrading a version-12 database with duplicate summaries, an edited duplicate and a paused distillation stage.
+- **Setting meanings changed:** `history.chunk_tokens` ("Tokens per request", default 8,000, minimum 2,000) and `memory.digest_input_tokens` ("Tokens per update", default 12,000, minimum 2,000) now count the whole request, not only its messages, so their defaults were raised to keep about as many messages per request. `retention.reminders_days` (default 30) replaces the reminders' use of the removed live-message retention. A stored value for a removed setting is ignored.
+- **Pause during a period's last request** keeps that request's result as the period's checkpoint rather than publishing it; resuming completes the period without another request.
+- **Visibility of an import's incoming messages:** hidden from replies, searches and the message browser while its raw stage runs (`MessageRepository._incoming`). The extra lookup runs only while an import of that chat is storing messages.
+- **Not done in this pass** (as planned in section 10): DST-aware calendar filters, stored-timezone labels, a name-change preview before import Start, retry-timing labels, rebuilding export summaries from stored messages, and a real-model summary quality sample (fake-model tests cover the mechanics only).

@@ -6,7 +6,7 @@
   on the same data, so they do the same thing). That state becomes the new
   scenario's chat and state, and the chosen turn its turn.
 - From an agent run in a real chat: the messages the run read are exact
-  (while retention keeps them); notes, the digest, the board, reminders and
+  (unless the owner has deleted them since); notes, the digest, the board, reminders and
   history summaries are as they are now, not as they were then, and the
   scenario's provenance says so.
 """
@@ -252,7 +252,7 @@ def scenario_from_chat(services, run, *, slug: str, expect: dict | None,
                           "stored, so it can't become a scenario.")
     trigger = services.messages.get(run.trigger_row_id)
     if trigger is None:
-        raise ReplayError("The run's messages are gone (retention deleted them).")
+        raise ReplayError("The run's messages are gone (deleted on the chat page).")
     chat = services.chats.get(run.chat_id)
     window = services.messages.before(run.chat_id, trigger, limit=max(run.window_size or 40, 1))
     bot = services.status.bot

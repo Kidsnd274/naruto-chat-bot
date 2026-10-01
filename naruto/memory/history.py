@@ -310,7 +310,7 @@ class HistoryWriter:
             raise HistoryFailed(
                 f"The summary instructions and the summary so far take about {overhead} of the "
                 f"{opts.chunk_tokens} tokens per request, leaving no room for messages. Raise "
-                "History → Messages per request, or shorten the instructions.")
+                "History → Tokens per request, or shorten the instructions.")
         return budget
 
     async def process(self, chat: Chat, period: HistoryPeriod, lines: list[ArchiveLine], *,

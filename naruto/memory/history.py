@@ -438,10 +438,13 @@ class LiveArchiver:
             failed = self._failed_at.get(chat.chat_id)
             if failed and now - failed < self.RETRY_AFTER_SECONDS:
                 continue
+            lock = services.history_locks[chat.chat_id]
+            if lock.locked():
+                continue  # an import is working on this chat's history: next round
             due = self.due_month(chat, now)
             if due is None:
                 continue
-            async with services.history_locks[chat.chat_id]:
+            async with lock:
                 if await self.archive(chat, *due, now=now):
                     finished += 1
         return finished
@@ -516,22 +519,55 @@ def live_limitations(chat: Chat, start: int, end: int, lines: list[ArchiveLine],
     return notes
 
 
-def give_up_held_months(services: Services, hold_days: int, now: float | None = None) -> int:
-    """Live months whose summary didn't happen within the hold: retention
-    deletes their messages now, so mark them failed ("missed")."""
+def mark_missed_months(services: Services, hold_days: int, now: float | None = None) -> int:
+    """Live months still not summarized when their hold runs out: retention
+    deletes their messages next, so record them as missed (the history page
+    shows them). Without a hold (0), the archiver gets whatever is left."""
+    if hold_days <= 0:
+        return 0
     now = now or time.time()
     tz = services.timezone()
-    count = 0
-    for chat in services.chats.list_all():
-        for period in services.history.live_periods(chat.chat_id):
-            if period.status in (WAITING, RUNNING) and \
-                    period.period_end + hold_days * 86400 < now:
-                services.history.update_period(
-                    period.id, status=FAILED,
-                    error=f"Missed: not summarized within {hold_days} days of "
-                          f"{describe_span(period.period_start, period.period_end, tz)}.")
-                count += 1
-    return count
+    tz_name = services.settings["general.timezone"] or "server"
+    missed = 0
+    for chat in services.chats.list_by_status(ENABLED):
+        if not services.settings.for_chat(chat.chat_id)["history.live_archive"]:
+            continue
+        oldest = services.db.scalar(
+            "SELECT MIN(date) FROM messages WHERE chat_id = ? AND source = ?",
+            (chat.chat_id, LIVE_SOURCE))
+        if oldest is None:
+            continue
+        periods = {(p.period_start, p.period_end): p
+                   for p in services.history.live_periods(chat.chat_id)}
+        this_month = day_start(local_date(int(now), tz).replace(day=1), tz)
+        for start, end in plan_periods(day_start(local_date(oldest, tz).replace(day=1), tz),
+                                       this_month, MONTH, tz):
+            if end + hold_days * 86400 >= now:
+                break
+            period_start = max(start, chat.recording_since or start)
+            if period_start >= end:
+                continue
+            period = periods.get((period_start, end))
+            if period is not None and period.status not in (WAITING, RUNNING):
+                continue
+            has_messages = services.db.scalar(
+                "SELECT 1 FROM messages WHERE chat_id = ? AND source = 'live' AND date >= ? "
+                "AND date < ? LIMIT 1", (chat.chat_id, period_start, end))
+            if not has_messages:
+                continue
+            error = (f"Missed: not summarized within {hold_days} days after the month ended, "
+                     "so retention deleted its messages.")
+            if period is None:
+                services.history.add_period(
+                    chat_id=chat.chat_id, source=LIVE, import_id=None, grouping=MONTH,
+                    timezone=tz_name, period_start=period_start, period_end=end,
+                    message_count=0, fingerprint=None, status=FAILED, error=error)
+            else:
+                services.history.update_period(period.id, status=FAILED, error=error)
+            logger.warning("Live history of %s was missed", describe_span(period_start, end, tz),
+                           extra={"chat_id": chat.chat_id})
+            missed += 1
+    return missed
 
 
 def unarchived_live_start(services: Services, chat_id: int, hold_days: int,

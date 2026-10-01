@@ -256,8 +256,10 @@ class HistoryRepository:
         """Every digest of the chat, and the periods that built them."""
         with self.db.transaction():
             self.db.execute("DELETE FROM history_digest_edits WHERE chat_id = ?", (chat_id,))
-            self.db.execute("DELETE FROM history_periods WHERE chat_id = ? AND status IN "
-                            "('done', 'reused', 'failed', 'cancelled')", (chat_id,))
+            # Live months stay recorded as done, so the archiver doesn't make
+            # their summaries again from messages still stored.
+            self.db.execute("DELETE FROM history_periods WHERE chat_id = ? AND source = 'export' "
+                            "AND status IN ('done', 'reused', 'failed', 'cancelled')", (chat_id,))
             return self.db.execute("DELETE FROM history_digests WHERE chat_id = ?",
                                    (chat_id,)).rowcount
 

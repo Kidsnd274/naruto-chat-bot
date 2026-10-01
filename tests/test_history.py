@@ -444,3 +444,126 @@ async def test_skills_without_the_tool_dont_hear_about_it(services, archive):
     assert "Summaries of earlier history" not in plan_prompt.messages[1]["content"]
     banter = ContextBuilder(services).build(chat, trigger, bot=services.status.bot)
     assert "Summaries of earlier history" in banter.messages[1]["content"]
+
+
+# ------------------------------------------------------------ live archive
+
+def live(services, message_id, when, text, sender=(7, "Alice")):
+    from naruto.db.messages import LIVE, NewMessage
+
+    return services.messages.insert_live(NewMessage(
+        chat_id=GROUP_ID, origin_chat_id=GROUP_ID, source=LIVE, message_id=message_id,
+        sender_id=sender[0], sender_name=sender[1], date=when, text=text))
+
+
+def digest_read_everything(services):
+    """The rolling digest has read every message, so its own grace for
+    unread messages doesn't keep any: only the history hold is left."""
+    newest = services.messages.get(services.db.scalar(
+        "SELECT id FROM messages WHERE chat_id = ? ORDER BY date DESC, id DESC LIMIT 1",
+        (GROUP_ID,)))
+    services.digests.save(GROUP_ID, "- now", actor="t", last=newest)
+
+
+@pytest.fixture
+def recorded(services, monkeypatch):
+    """A chat recorded live since 10 Aug 2026, with messages in August and
+    September; "now" is 3 Sep 2026."""
+    monkeypatch.setattr(history_module, "RETRY_DELAYS_SECONDS", (0, 0))
+    services.chats.upsert_seen(GROUP_ID, title="BBQ crew")
+    services.chats.set_status(GROUP_ID, "enabled")
+    services.chats.set_recording_since(GROUP_ID, ts(2026, 8, 10))
+    for day in range(10, 31, 5):
+        live(services, day, ts(2026, 8, day, 20), f"August {day}: BBQ talk")
+    live(services, 100, ts(2026, 9, 1, 9), "September already")
+    return ts(2026, 9, 3)
+
+
+async def test_a_finished_month_of_live_chat_is_summarized(services, recorded):
+    now = recorded
+    services.llm = SummaryLLM()
+    archiver = history_module.LiveArchiver(services)
+    assert await archiver.run_due(now=now) == 1
+    (digest,) = active(services)
+    assert (digest.source, digest.grouping) == ("live", "month")
+    assert (digest.period_start, digest.period_end) == (ts(2026, 8, 10), ts(2026, 9, 1))
+    assert digest.message_count == 5 and "10–31 Aug 2026" in digest.text
+    assert "Live recording began on 10 Aug 2026" in digest.limitations[0]
+    assert services.llm.calls[0]["info"].task == "live_archive"
+    assert await archiver.run_due(now=now) == 0  # September isn't over
+
+
+async def test_live_messages_wait_for_their_summary(services, recorded, monkeypatch):
+    from naruto import jobs
+
+    now = recorded
+    monkeypatch.setattr(jobs.time, "time", lambda: now)
+    services.settings.set("retention.live_messages_days", 1, actor="t")
+    digest_read_everything(services)
+    jobs.cleanup_live_messages(services)
+    assert services.messages.count(GROUP_ID) == 6  # August is held for its summary
+
+    services.llm = SummaryLLM()
+    await history_module.LiveArchiver(services).run_due(now=now)
+    jobs.cleanup_live_messages(services)
+    # August is summarized; September is held until it is over.
+    assert services.messages.count(GROUP_ID) == 1
+
+
+async def test_a_month_not_summarized_within_the_hold_is_missed(services, recorded,
+                                                                monkeypatch):
+    from naruto import jobs
+
+    later = ts(2026, 9, 9)  # August ended more than 7 days ago
+    monkeypatch.setattr(jobs.time, "time", lambda: later)
+    monkeypatch.setattr(history_module.time, "time", lambda: later)
+    services.settings.set("retention.live_messages_days", 1, actor="t")
+    digest_read_everything(services)
+    assert jobs.mark_missed_live_months(services) == "1 live months missed their history summary"
+    jobs.cleanup_live_messages(services)
+    assert services.messages.count(GROUP_ID) == 1  # August's messages are gone now
+    (period,) = services.history.live_periods(GROUP_ID)
+    assert period.status == "failed" and period.error.startswith("Missed")
+    services.llm = SummaryLLM()
+    assert await history_module.LiveArchiver(services).run_due(now=later) == 0
+
+
+async def test_a_failing_live_summary_backs_off_and_retries(services, recorded):
+    now = recorded
+    services.llm = SummaryLLM(fail=lambda call: True)
+    archiver = history_module.LiveArchiver(services)
+    assert await archiver.run_due(now=now) == 0
+    (period,) = services.history.live_periods(GROUP_ID)
+    assert period.status == "waiting" and "kept failing" in period.error
+    services.llm = SummaryLLM()
+    assert await archiver.run_due(now=now + 60) == 0  # backing off
+    assert await archiver.run_due(now=now + 16 * 60) == 1
+    assert len(active(services)) == 1
+
+
+async def test_live_summaries_can_be_turned_off_per_chat(services, recorded, monkeypatch):
+    from naruto import jobs
+
+    services.settings.set_for_chat(GROUP_ID, "history.live_archive", False, actor="t")
+    services.llm = SummaryLLM()
+    assert await history_module.LiveArchiver(services).run_due(now=recorded) == 0
+    monkeypatch.setattr(jobs.time, "time", lambda: recorded)
+    services.settings.set("retention.live_messages_days", 1, actor="t")
+    digest_read_everything(services)
+    jobs.cleanup_live_messages(services)
+    assert services.messages.count(GROUP_ID) == 0  # nothing held: all past retention
+
+
+async def test_an_import_and_live_summaries_meet_at_the_recording_start(services, recorded,
+                                                                         tmp_path):
+    services.llm = SummaryLLM()
+    rows = [(i, ts(2026, 7, 1 + i, 12), 7, "Alice", f"July {i}") for i in range(1, 20)]
+    rows += [(100 + i, ts(2026, 8, 1 + i, 12), 7, "Alice", f"August {i}") for i in range(20)]
+    importer = ImportService(services, tmp_path / "imports")
+    record = await upload(importer, rows)
+    record = await run(importer, record, summaries_only(importer, record))
+    await history_module.LiveArchiver(services).run_due(now=recorded)
+    spans = [(d.source, d.period_start, d.period_end) for d in active(services)]
+    assert spans == [("export", ts(2026, 7, 1), ts(2026, 8, 1)),
+                     ("export", ts(2026, 8, 1), ts(2026, 8, 10)),
+                     ("live", ts(2026, 8, 10), ts(2026, 9, 1))]

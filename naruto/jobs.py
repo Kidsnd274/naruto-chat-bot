@@ -10,6 +10,7 @@ from typing import Awaitable, Callable
 from naruto.db.chats import PENDING
 from naruto.db.messages import IMPORT, LIVE
 from naruto.health import check_model
+from naruto.memory.history import mark_missed_months, unarchived_live_start
 from naruto.services import Services
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,21 @@ def _expire_messages(services: Services, source: str, days: int) -> int:
             threshold = grace_cutoff
         else:
             threshold = min(cutoff, max(read_until + 1, grace_cutoff))
+        if source == LIVE:
+            # A month's live messages wait for its history summary (within
+            # the hold), whatever the retention says.
+            held_from = unarchived_live_start(
+                services, chat_id, services.settings["history.live_hold_days"])
+            if held_from is not None:
+                threshold = min(threshold, held_from)
         deleted += services.messages.delete_for_chat(chat_id, before=threshold, source=source)
     return deleted
+
+
+def mark_missed_live_months(services: Services) -> str | None:
+    """Runs before the live-message cleanup: months whose hold ran out."""
+    missed = mark_missed_months(services, services.settings["history.live_hold_days"])
+    return f"{missed} live months missed their history summary" if missed else None
 
 
 def cleanup_live_messages(services: Services) -> str | None:
@@ -135,7 +149,8 @@ async def refresh_rights(services: Services, *, older_than: float) -> None:
 
 async def run_maintenance(services: Services) -> None:
     done = []
-    for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests, cleanup_live_messages,
+    for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests,
+                 mark_missed_live_months, cleanup_live_messages,
                  cleanup_imported_messages, cleanup_reminders, cleanup_import_previews,
                  expire_paused_imports,
                  *cleanup_steps]:
@@ -187,4 +202,6 @@ def start_background_jobs(services: Services, *, reminders=None) -> list[asyncio
             first_delay=10)))
     if services.keeper is not None:
         tasks.append(asyncio.create_task(services.keeper.run_forever()))
+    if services.archiver is not None:
+        tasks.append(asyncio.create_task(services.archiver.run_forever()))
     return tasks

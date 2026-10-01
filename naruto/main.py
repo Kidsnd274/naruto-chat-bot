@@ -16,6 +16,7 @@ from naruto.db import open_database
 from naruto.importer.service import ImportService
 from naruto.jobs import start_background_jobs
 from naruto.logs import flush_periodically, set_level, setup_logging
+from naruto.memory.history import LiveArchiver
 from naruto.memory.keeper import MemoryKeeper
 from naruto.services import Services
 from naruto.settings.seed import apply_seed_if_needed, collect_seed
@@ -73,6 +74,7 @@ async def run() -> None:
     services = Services.create(bootstrap, db, seed)
     apply_seed_if_needed(db, services.settings, services.chats, seed)
     services.keeper = MemoryKeeper(services)
+    services.archiver = LiveArchiver(services)
     services.imports = ImportService(
         services, Path(bootstrap.database_path).resolve().parent / "imports")
     services.imports.recover()
@@ -105,6 +107,7 @@ async def run() -> None:
             await bot.stop()
         except Exception:
             logger.exception("Error while stopping the bot")
+        services.archiver.stop()
         await services.imports.shutdown()
         for task in tasks:
             task.cancel()

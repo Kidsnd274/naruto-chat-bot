@@ -84,6 +84,7 @@ python3 -m venv .venv
 What it can do when asked, besides chatting:
 
 - **Look things up** further back than the recent messages it sees, including imported history ("what time did Mei say her flight lands?").
+- **Remember older times** from history summaries, dated summaries of past months or weeks that outlive the messages ("what were we planning in summer 2021?"). It says when an answer comes from a summary rather than the messages themselves.
 - **The board:** one pinned message per group with 🗓 Plans, ✅ Decided and ❓ Open questions, edited in place ("put the BBQ on the board", "mark booking the pit done"). It is sent as a Telegram rich message, or as a plain formatted message if rich messages are refused (Settings → Board).
 - **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
@@ -109,11 +110,13 @@ Commands (each goes straight to a focused skill):
 | Page | What it does |
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
-| Chats | Every group with status, admin rights, message and memory-note counts; enable, disable, leave. Each chat has its roster (with aliases), its memory notes, the digest (view, edit, update now), reminders, the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion (messages, digest, board, memory). |
+| Chats | Every group with status, admin rights, message and memory-note counts; enable, disable, leave. Each chat has its roster (with aliases), its memory notes, the digest (view, edit, update now), history summaries, reminders, the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion (messages, digest, board, memory, history summaries). |
+| History (per chat) | Every history summary: search, filter by date, edit (earlier versions are kept) and delete; live months waiting for their summary; and the date live recording began. |
 | Memory (per chat) | Every memory note: filter by person, category or text; add, edit, lock (the bot and members can't change a locked note) and delete; each note shows who created it, the messages it came from and its change history. |
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
+| Queue | Every model request running and waiting (replies first, then background work such as digests, history summaries and import memory), the capacity limits, pausing background work, cancelling a waiting request, and a history of recent requests with waiting and model time. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. Some (persona, digest frequency, automatic notes, board, images, recent window, progress message) can also be set for one chat on that chat's **Settings for this chat** page. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
 
@@ -122,20 +125,31 @@ Commands (each goes straight to a focused skill):
 The bot only sees messages from when it joined. To give it older history:
 
 1. In Telegram Desktop, open the group → ⋮ → **Export chat history**, choose **Machine-readable JSON**, and untick photos, videos, voice messages, stickers and files (media becomes markers such as `[photo]`).
-2. On the web admin's **Import** page, upload `result.json`. The preview shows the message count, date range, participants and how much would be kept, and pre-selects the group by chat ID (or name).
-3. Under **People in this export**, check the names: each sender is matched to their Telegram account, and the name box starts with the name the export uses (your contact name for them). Pick "Same person as" if someone is really another entry.
-4. Click **Import**.
+2. On the web admin's **Import** page, upload `result.json`. The preview pre-selects the group by chat ID (or name).
+3. Choose what to do, each with its own dates (whole days in the configured time zone):
+   - **Import chat messages:** kept as searchable chat. Only messages inside the imported-messages retention (Settings → Retention) can be kept, so this starts unticked for an old export.
+   - **Make history summaries:** dated summaries, monthly, weekly or one for the whole range, of any dates in the export, however old. They are kept after the messages are gone, and the bot looks them up when asked about earlier times.
+   - **Add memory notes:** durable facts from the summarized dates (or the imported ones).
 
-Only messages from before the bot's first recorded message are imported (so nothing is duplicated), and only those inside the imported-messages retention period. Importing the same group again replaces the previous import. You can also import into a group the bot hasn't joined yet; it is created as pending.
+   The estimate below updates as you change things: how many messages are kept, summarized or skipped and why, how many model requests it takes, and which existing summaries would be reused or replaced.
+4. Under **People in this export**, check the names: each sender is matched to their Telegram account, and the name box starts with the name the export uses (your contact name for them). Pick "Same person as" if someone is really another entry.
+5. Click **Start**.
 
-After the import, the bot reads the **whole** export in chunks, including messages older than the retention period, and turns what's worth remembering into memory notes; if the group has no digest yet, it builds the first one from the import's last two weeks. The Import page shows the progress. This keeps the model busy for a while (replies to people still go first); turn it off under Settings → Import. The uploaded file is deleted when everything is done.
+Nothing from after live recording began (shown on the chat's History page; set when the bot was enabled) is imported or summarized from the export, so nothing is counted twice. Importing messages for some dates replaces earlier imported messages in those dates only. Uploading the same export again reuses the summaries that would come out the same; to rebuild summaries that overlap the chosen dates, tick **Replace them** (and **including edited ones** to replace summaries you corrected). Replaced summaries stay in use until all their replacements are done. You can also import into a group the bot hasn't joined yet; it is created as pending.
+
+Summaries and memory notes keep the model busy in the background (replies to people go first; see the Queue page). The Import page shows each stage's progress, and can **pause**, **resume** and **cancel the rest**. If a summary keeps failing, the import pauses; the uploaded file is kept for 7 days (Settings → History) so it can resume, and a restart continues where it stopped. The file is deleted when everything is done.
+
+If the group has no digest yet, it starts from imported messages of the last two weeks only (Settings → Import), so an old export isn't taken as what's going on now.
+
+**Live chat** gets a history summary too: once a month is over, its live messages are summarized before retention deletes them (Settings → History → Summarize live chat monthly; it can be turned off per chat). Until then the month's messages are kept, at most 7 days after the month ends.
 
 ### Model server notes
 
 - **Reasoning:** most skills let the model think briefly before answering (Settings → Persona and skills → reasoning, and Model → Reasoning effort, default *low*). Without it, Qwen3.8 often said “Reminder set!” without setting one. If an answer still skips the tool a request needs, the bot asks the model once more (shown as “Asked again” on the Agent runs page).
 - **Prompt cache:** the start of each request stays the same from one message to the next (the time now, the board and reminders come last), so the server only reads what's new. A request that misses the cache, such as the first `/summary` in a while or the first reply after a digest update, is noticeably slower.
 - **Images** need a model server with vision (for Halogen, `HALOGEN_VISION_TOWER`). Without it the bot answers without seeing the image.
-- **Parallel requests** (Model settings, default 1): raise it to the server's number of slots (Halogen: 4, see its `/props`) so replies in different chats and background digest updates don't wait for each other.
+- **Parallel requests** (Model settings or the Queue page, default 1): raise it to the server's number of slots (Halogen: 4, see its `/props`) so replies in different chats and background work don't wait for each other. Replies always start before waiting background work. Background work may use at most **Background parallel requests** (default 1) and never the **Slots kept for replies** (default 1; on a one-slot server a reply waits for the request in progress, then goes first). Each slot of a llama-server-style server gets part of its context, so check that a reply (Context → Input token budget) and a history summary (History → Messages per request, plus about 3,000 tokens) fit one slot.
+- **History summaries take time:** every period is at least one request; a busy month takes several. The import preview estimates the requests and tokens. On Halogen (about 160 tokens/s for an uncached prompt), a 50,000-message export takes a couple of hours per pass, and memory notes are a second pass. Pause background work on the Queue page if the server is needed for something else; replies are not affected.
 - **Progress messages:** when a summary, plan or list of open questions takes longer than 8 seconds, the bot posts “Reading back through the chat…” and then replaces it with the answer (Settings → Behaviour; 0 turns it off).
 
 ### Evaluating models

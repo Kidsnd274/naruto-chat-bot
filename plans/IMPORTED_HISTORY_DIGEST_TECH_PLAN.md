@@ -1,6 +1,8 @@
 # Technical plan: history digests, live archiving and the model queue
 
-Implements `plans/IMPORTED_HISTORY_DIGEST_PLAN.md` (the feature plan), plus monthly archiving of live chat (owner's choice, 2026-10-01). After approval, save this plan as `plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md`. Implementation starts only when the owner asks.
+Implements `plans/IMPORTED_HISTORY_DIGEST_PLAN.md` (the feature plan), plus monthly archiving of live chat (owner's choice, 2026-10-01).
+
+Status: all five stages implemented on branch `history_digests` (2026-10-01); see "Implementation notes" at the end for deviations and what still needs checking on the real model server.
 
 ## Context
 
@@ -241,3 +243,29 @@ Plus the three Model settings from stage 1.
 ## Delivery
 
 Work on a new branch `history_digests`, created from `bot_rework`, with 2–4 commits per stage and no pushing. The order is stages 1 → 5, and every stage leaves the bot working.
+
+## Implementation notes (2026-10-01)
+
+Built on branch `history_digests` (from `bot_rework`), one or two commits per stage. 478 tests pass, including `tests/test_model_queue.py` and `tests/test_history.py`. A run of the real web admin, import service and model queue was also done against a temporary database: a synthetic three-year export, a fake OpenAI-compatible server, and curl. It covered upload, the preview estimate, weekly and monthly plans, start, the queue page, pause and resume, and completion. The result was 34 monthly summaries, no duplicates, a 120-message month read in 8 parts, and exactly the estimated 41 requests.
+
+### Deviations
+
+- **Migration numbers:** migration 9 went to two review fixes (memory note IDs that are never reused, and a digest revision), so the queue is migration 10 and history is migration 11.
+- **Default dates:** found in the real run.
+  - Summaries start at the beginning of the export's first month, so that month is a whole period and its notes say where the export begins.
+  - "Import chat messages" starts unticked when the whole export is older than the retention. Otherwise Start was blocked on the first view.
+- **One import per chat at a time:** a second import of a chat can't start while another is running or paused. A paused import's staged summaries could otherwise be published over newer ones.
+- **Rolling-digest start:** a chat with no digest reads all live messages, but only imported messages newer than `import.digest_window_days`. This replaces both the import's first-digest step and an unbounded first read.
+- **Replacements:** each group of overlapping summaries is published once its own replacements are done, not the whole import at once. Active summaries never overlap.
+- **Distillation and failures:** after repeated failures, distillation resumes at the first failed chunk, not after it.
+- **Retries:** `LLMClient` retries once for connection errors, 5xx and 429 (not time-outs). The retry keeps its place in its priority.
+- **Deleting all summaries:** live months stay recorded as done, so the archiver doesn't rebuild them from messages still stored.
+- **Calendar helpers:** these live in `naruto/periods.py`, to avoid an import cycle with the prompt builder.
+- **Shutdown:** running jobs get 10 seconds, then jobs still waiting for the model are cancelled; their checkpoints are kept.
+
+### Still to check on the real setup
+
+- Halogen/Gufo throughput for a large real export, and the per-slot context with `model.parallel_requests` above 1. Then choose `history.chunk_tokens`, `history.digest_max_chars` and the backlog caps (50 replies / 20 background waiting).
+- Whether the summary prompt gives useful, accurately dated summaries with the real model, and whether banter calls `search_history_summaries` for questions about the past (watch the Agent runs page; banter now has 14 tools).
+- The retention hold's effect on disk use in busy groups.
+

@@ -532,6 +532,11 @@ The owner tested phases 3–4 in a test group, first on Lemonade (Gemma 4 31B), 
 - **Parallel requests** (Model → Parallel requests, default 1): a multi-slot server (Halogen has 4) can work on replies in different chats and background digest updates at once; replies still go first when every slot is busy, and runs in one chat still take turns. Not in the original plan; added because Halogen's slots sat idle while a digest update held up replies.
 - Not done: simulated streaming (the plan says to try it first; with progress messages in place it may not be needed), and persona tuning from real use (the persona is being reworked separately).
 
+### After phase 5 (2026-10-01)
+
+- Review fixes: a run stops before any tool once its chat is disabled; memory note IDs are never reused (migration 9); automatic notes off also stops automatic corrections; a digest update that finds the digest edited or deleted meanwhile is discarded; confirming a plan on a full board says it isn't on the board; the board is kept within one Telegram message; distillation parses exports off the event loop.
+- History digests and the shared model queue (branch `history_digests`): see `IMPORTED_HISTORY_DIGEST_PLAN.md` and `IMPORTED_HISTORY_DIGEST_TECH_PLAN.md`. Imports choose raw dates and summary dates separately; summaries of past months or weeks outlive the messages, live chat is summarized monthly, the bot can look them up, and every model request goes through one queue shown on the web admin's Queue page.
+
 ### Needs checking against live Telegram and Gufo
 
 - `/catchup`: a non-admin bot may only answer an ephemeral command within 15 seconds, and a catch-up with reasoning usually takes longer; check which fallback (DM or group) people get, or make the bot an admin.

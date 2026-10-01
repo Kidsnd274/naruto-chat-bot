@@ -232,9 +232,9 @@ class ScriptedLLM:
         self.in_flight = self.waiting = 0
 
     async def chat(self, messages, *, reasoning=None, max_tokens=None, tools=None,
-                   stream=False, background=False):
+                   stream=False, background=False, info=None):
         self.calls.append({"messages": [dict(m) for m in messages], "reasoning": reasoning,
-                           "tools": tools, "background": background})
+                           "tools": tools, "background": background, "info": info})
         item = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
         if isinstance(item, BaseException):
             raise item

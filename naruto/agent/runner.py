@@ -30,7 +30,8 @@ from naruto.agent.tools import RunState, ToolContext, ToolRegistry, default_regi
 from naruto.agent.tools.base import timed
 from naruto.db.chats import Chat
 from naruto.db.messages import StoredMessage
-from naruto.llm import ChatResult, LLMError
+from naruto.llm import ChatResult, LLMError, RequestNotRun
+from naruto.model_queue import REFUSED_BUSY, RequestInfo
 from naruto.services import BotIdentity, Services
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ LAST_CALL_NOTE = ("[No more tool calls are available in this response. Write you
                   "now with what you have.]")
 IMAGES_REFUSED_NOTE = "[The image can't be shown: the model server doesn't accept images.]"
 CHAT_DISABLED_ERROR = "Stopped: the chat was disabled while it ran."
+BUSY_TEXT = "Sorry, I'm handling too many requests right now. Please try again in a minute."
 TRACE_TEXT_CHARS = 20_000
 # How OpenAI-compatible servers word a refused image (Halogen without a
 # vision tower, llama.cpp without an mmproj, text-only models).
@@ -153,13 +155,12 @@ class AgentRunner:
         while True:
             state.model_requests += 1
             try:
-                result = await self._request(messages, tools, reasoning, state)
+                result = await self._request(request.chat, messages, tools, reasoning, state)
             except LLMError as exc:
                 logger.error("Model request failed: %s", exc)
                 state.steps.append({"type": "model", "request": state.model_requests,
                                     "error": str(exc)})
-                return self._finish(state, status="error", text=FAILURE_TEXT, fallback=True,
-                                    error=str(exc), result=result, totals=totals)
+                return self._failed(state, exc, result=result, totals=totals)
             self._add_totals(totals, result)
             state.steps.append(self._model_step(state.model_requests, result))
             self._save_progress(state)
@@ -235,11 +236,10 @@ class AgentRunner:
             logger.warning("The answer was internal JSON instead of a reply; asking again.")
             state.model_requests += 1
             try:
-                result = await self._request(messages, tools, reasoning, state)
+                result = await self._request(request.chat, messages, tools, reasoning, state)
             except LLMError as exc:
                 logger.error("Model request failed: %s", exc)
-                return self._finish(state, status="error", text=FAILURE_TEXT, fallback=True,
-                                    error=str(exc), result=result, totals=totals)
+                return self._failed(state, exc, result=result, totals=totals)
             self._add_totals(totals, result)
             step = self._model_step(state.model_requests, result)
             step["purpose"] = "asked again: the previous answer was internal JSON"
@@ -274,12 +274,14 @@ class AgentRunner:
                             threaded=should_reply or request.force_reply,
                             result=result, totals=totals)
 
-    async def _request(self, messages: list[dict], tools: list[dict], reasoning,
+    async def _request(self, chat: Chat, messages: list[dict], tools: list[dict], reasoning,
                        state: RunState) -> ChatResult:
         llm = self.llm or self.services.llm
+        info = RequestInfo(task="reply", chat_id=chat.chat_id, run_id=state.run_id,
+                           still_wanted=lambda: self._chat_enabled(chat))
         try:
             return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
-                                  stream=self.stream)
+                                  stream=self.stream, info=info)
         except LLMError as exc:
             if not (has_images(messages) and _IMAGES_REFUSED.search(str(exc))):
                 raise
@@ -290,7 +292,18 @@ class AgentRunner:
                                 "purpose": "refused the images; asked again without them"})
             messages[:] = without_images(messages, IMAGES_REFUSED_NOTE)
             return await llm.chat(messages, reasoning=reasoning, tools=tools or None,
-                                  stream=self.stream)
+                                  stream=self.stream, info=info)
+
+    def _failed(self, state: RunState, exc: LLMError, *, result: ChatResult | None,
+                totals: dict) -> RunOutcome:
+        """A model request failed or never ran. Cancelled (queue page) and
+        expired (the chat was disabled) runs send nothing."""
+        if isinstance(exc, RequestNotRun) and exc.reason != REFUSED_BUSY:
+            return self._finish(state, status="error", error=f"Not sent to the model: {exc}",
+                                result=result, totals=totals)
+        text = BUSY_TEXT if isinstance(exc, RequestNotRun) else FAILURE_TEXT
+        return self._finish(state, status="error", text=text, fallback=True, error=str(exc),
+                            result=result, totals=totals)
 
     def _chat_enabled(self, chat: Chat) -> bool:
         current = self.services.chats.get(chat.chat_id)

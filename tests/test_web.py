@@ -636,3 +636,39 @@ def test_import_page_shows_distillation(admin, importer, services):
     importer.repo.update(record.id, distill_status="done", notes_added=5)
     partial = admin.client.get(f"/import/{record.id}/distill").text
     assert "<strong>5</strong> new memory notes" in partial and "hx-get" not in partial
+
+
+# ------------------------------------------------------------------ queue
+
+def test_queue_page_shows_limits_history_and_controls(admin, chat, services):
+    from naruto.model_queue import RequestInfo
+
+    request_id = services.requests.queued(RequestInfo(task="digest", chat_id=CHAT, run_id=12),
+                                          "background", time.time() - 5)
+    services.requests.started(request_id, time.time() - 4)
+    services.requests.finished(request_id, "done", time.time() - 1, None)
+    html = admin.client.get("/queue").text
+    assert "Model queue" in html and "The model server is idle." in html
+    assert 'href="/runs/12"' in html and "BBQ crew" in html and ">digest<" in html
+    assert admin.client.get("/partials/queue").status_code == 200
+    assert admin.client.get("/queue?task=reply").text.count('href="/runs/12"') == 0
+
+    response = admin.post("/queue/limits", data={
+        "model.parallel_requests": "4", "model.background_requests": "2",
+        "model.foreground_reserved": "1"})
+    assert response.status_code == 303
+    assert (services.settings["model.parallel_requests"],
+            services.settings["model.background_requests"]) == (4, 2)
+    admin.post("/queue/limits", data={"model.parallel_requests": "0"})
+    assert services.settings["model.parallel_requests"] == 4  # rejected
+    assert "Not saved" in admin.client.get("/queue").text
+
+    admin.post("/queue/pause")
+    assert services.settings["model.background_paused"] is True
+    assert "background paused" in admin.client.get("/partials/status").text
+    admin.post("/queue/resume")
+    assert services.settings["model.background_paused"] is False
+
+    admin.post("/queue/999/cancel")
+    assert "waiting any more (running requests finish" in admin.client.get("/queue").text
+    assert admin.client.post("/queue/pause").status_code == 403  # CSRF

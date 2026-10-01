@@ -17,6 +17,7 @@ from naruto.db.imports import ImportRecord, ImportRepository
 from naruto.db.memory import IMPORT
 from naruto.importer.export_parser import ExportReader
 from naruto.llm import LLMError
+from naruto.model_queue import RequestInfo
 from naruto.markers import message_body
 from naruto.memory.keeper import fill
 from naruto.memory.notes import (
@@ -118,9 +119,11 @@ class Distiller:
                 raise DistillStopped
             prompt = self._prompt(chat_id, chunk, index, len(chunks))
             try:
-                result = await services.llm.chat(prompt, reasoning=settings["memory.reasoning"],
-                                                  max_tokens=settings["memory.max_output_tokens"],
-                                                  background=True)
+                result = await services.llm.chat(
+                    prompt, reasoning=settings["memory.reasoning"],
+                    max_tokens=settings["memory.max_output_tokens"], background=True,
+                    info=RequestInfo(task="distill", chat_id=chat_id, import_id=record.id,
+                                     chunk=index))
                 data = parse_json_object(result.text)
             except (LLMError, MemoryOutputError) as exc:
                 failures += 1

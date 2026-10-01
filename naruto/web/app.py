@@ -19,6 +19,7 @@ from naruto.web import (
     memory,
     pages,
     people,
+    queue,
     runs,
     settings_pages,
 )
@@ -83,6 +84,7 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app.include_router(people.router)
     app.include_router(imports.router)
     app.include_router(runs.router)
+    app.include_router(queue.router)
     app.include_router(settings_pages.router)
     app.include_router(logs_page.router)
     return app

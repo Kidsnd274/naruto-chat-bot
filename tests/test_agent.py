@@ -11,6 +11,7 @@ import fakes
 from fakes import ALICE, BOB, GROUP_ID, FakeBot, ScriptedLLM, context, message, tool_call, update
 from naruto.agent.context import ImageInput
 from naruto.agent.runner import (
+    BUSY_TEXT,
     DEADLINE_TEXT,
     FAILURE_TEXT,
     IMAGES_REFUSED_NOTE,
@@ -21,7 +22,13 @@ from naruto.agent.runner import (
 )
 from naruto.db.board import MAX_ITEMS_PER_SECTION, BoardFull
 from naruto.db.messages import IMPORT, NewMessage
-from naruto.llm import LLMClient, LLMError, request_completion, split_inline_tool_calls
+from naruto.llm import (
+    LLMClient,
+    LLMError,
+    RequestNotRun,
+    request_completion,
+    split_inline_tool_calls,
+)
 from naruto.tg.access import ChatAccess
 from naruto.tg.board import BoardPublisher, render_html, render_markdown
 from naruto.tg.plans import PlanButtons
@@ -265,6 +272,29 @@ async def test_model_failure_and_deadline(services, wired, bot, chat):
     assert bot.sent[-1]["text"] == DEADLINE_TEXT
     run = services.runs.recent()[0][0]
     assert run.status == "error" and run.error == "Deadline reached"
+
+
+async def test_requests_the_queue_never_ran(services, wired, bot, chat):
+    services.llm = ScriptedLLM(RequestNotRun("cancelled", "Cancelled from the queue page."))
+    await say(wired, bot, message(6, "@naruto_bot hi"))
+    assert bot.sent == []  # the owner cancelled it: nothing is posted
+    run = services.runs.recent()[0][0]
+    assert run.status == "error" and run.error.startswith("Not sent to the model")
+
+    services.llm = ScriptedLLM(RequestNotRun("busy", "Too many requests are waiting."))
+    await say(wired, bot, message(7, "@naruto_bot hi again"))
+    assert bot.sent[-1]["text"] == BUSY_TEXT
+
+
+async def test_replies_say_what_they_are_for(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Oi!")
+    await say(wired, bot, message(6, "@naruto_bot hi"))
+    info = services.llm.calls[0]["info"]
+    run = services.runs.recent()[0][0]
+    assert (info.task, info.chat_id, info.run_id) == ("reply", GROUP_ID, run.id)
+    assert info.still_wanted() is True
+    services.chats.set_status(GROUP_ID, "disabled")
+    assert info.still_wanted() is False
 
 
 async def test_runs_in_one_chat_take_turns(services, wired, bot, chat):

@@ -166,7 +166,7 @@ class TargetLLM:
         self.model = model
 
     async def chat(self, messages, *, reasoning=None, max_tokens=None, tools=None,
-                   stream=False, background=False) -> ChatResult:
+                   stream=False, background=False, info=None) -> ChatResult:
         kwargs = self.params.build_request(messages, model=self.model, reasoning=reasoning,
                                            max_tokens=max_tokens, tools=tools)
         return await request_completion(self.client, kwargs, stream=stream,

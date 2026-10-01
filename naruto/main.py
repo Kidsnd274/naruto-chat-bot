@@ -76,6 +76,9 @@ async def run() -> None:
     services.imports = ImportService(
         services, Path(bootstrap.database_path).resolve().parent / "imports")
     services.imports.recover()
+    interrupted = services.requests.interrupt_open()
+    if interrupted:
+        logger.info("%s model requests were interrupted by the restart", interrupted)
     set_level(services.settings["general.log_level"])
     services.settings.on_change(
         lambda key, value: set_level(value) if key == "general.log_level" else None)

@@ -462,6 +462,32 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('memory_notes', MAX(
 ALTER TABLE digests ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
 """
 
+_V10_MODEL_QUEUE = """
+-- Every model request, for the web admin's queue page: what it was for,
+-- its priority and how long it waited and ran. No prompts. Times are
+-- fractional seconds. Follows the agent-run retention.
+CREATE TABLE model_requests (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER,
+    task TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('foreground', 'background')),
+    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'retrying', 'done', 'failed',
+                                         'cancelled', 'expired', 'interrupted')),
+    run_id INTEGER,
+    import_id INTEGER,
+    period_id INTEGER,
+    chunk INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    queued_at REAL NOT NULL,
+    started_at REAL,
+    finished_at REAL,
+    error TEXT
+);
+CREATE INDEX model_requests_state ON model_requests (state);
+CREATE INDEX model_requests_chat ON model_requests (chat_id, id);
+CREATE INDEX model_requests_queued ON model_requests (queued_at);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -472,10 +498,11 @@ MIGRATIONS: list[str] = [
     _V7_REMINDER_RETRIES,
     _V8_CHAT_SETTINGS,
     _V9_STABLE_NOTE_IDS,
+    _V10_MODEL_QUEUE,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
 CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans",
                       "digests", "memory_notes", "memory_note_history", "reminders",
-                      "media_descriptions", "chat_settings")
+                      "media_descriptions", "chat_settings", "model_requests")

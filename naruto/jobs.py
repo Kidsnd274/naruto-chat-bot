@@ -43,6 +43,15 @@ def cleanup_agent_runs(services: Services) -> str | None:
     return f"{deleted} agent runs" if deleted else None
 
 
+def cleanup_model_requests(services: Services) -> str | None:
+    """The queue page's history follows the agent-run retention."""
+    days = services.settings["retention.agent_runs_days"]
+    if days <= 0:
+        return None
+    deleted = services.requests.delete_older_than(time.time() - days * DAY)
+    return f"{deleted} model request records" if deleted else None
+
+
 def _expire_messages(services: Services, source: str, days: int) -> int:
     """Delete ``source`` messages older than ``days``. Messages the digest
     hasn't read into memory yet get UNREAD_GRACE_DAYS more, so nothing is
@@ -118,7 +127,7 @@ async def refresh_rights(services: Services, *, older_than: float) -> None:
 
 async def run_maintenance(services: Services) -> None:
     done = []
-    for step in [cleanup_logs, cleanup_agent_runs, cleanup_live_messages,
+    for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests, cleanup_live_messages,
                  cleanup_imported_messages, cleanup_reminders, cleanup_import_previews,
                  *cleanup_steps]:
         try:

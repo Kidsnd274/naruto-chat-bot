@@ -239,11 +239,26 @@ SETTINGS: tuple[Setting, ...] = (
             "Upper limit on generated tokens per request, including reasoning.",
             "int", 2048, nullable=True, min=16, max=65536),
     Setting("model.parallel_requests", "model", "Parallel requests",
-            "How many requests the model server works on at once. 1 for a server with one "
-            "slot (llama-server without --parallel); Halogen lists its slots on /props (4 by "
-            "default). More lets replies in different chats and background digest updates run "
-            "side by side; replies still go first when every slot is busy.",
+            "How many requests the model server works on at once, in total. 1 for a server "
+            "with one slot (llama-server without --parallel); Halogen lists its slots on /props "
+            "(4 by default). This doesn't create slots on the server: match what it has. Replies "
+            "always start before waiting background work. The Model queue page shows what is "
+            "running and waiting.",
             "int", 1, min=1, max=16),
+    Setting("model.background_requests", "model", "Background parallel requests",
+            "At most this many background requests (digest upkeep, history summaries, import "
+            "memory) run at once. 0 holds them all.",
+            "int", 1, min=0, max=16),
+    Setting("model.foreground_reserved", "model", "Slots kept for replies",
+            "Background work never takes these slots, so a new reply can start straight away. "
+            "At most parallel requests − 1 applies, so background work still runs on a "
+            "one-slot server (a reply then waits for the request in progress, but goes ahead "
+            "of the next one).",
+            "int", 1, min=0, max=16),
+    Setting("model.background_paused", "model", "Pause background work",
+            "No new background request starts; running ones finish. Replies are not affected. "
+            "Imports and history summaries wait and continue when this is turned off.",
+            "bool", False),
     Setting("model.request_timeout_seconds", "model", "Request timeout (seconds)",
             "Give up on a model request after this long.",
             "int", 180, min=5, max=1800),

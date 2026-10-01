@@ -10,6 +10,7 @@ from naruto import media
 from naruto.agent.tools.base import Tool, ToolContext, ToolError, params
 from naruto.agent.tools.lookup import message_in_chat
 from naruto.llm import LLMError
+from naruto.model_queue import RequestInfo
 
 
 async def describe_image(ctx: ToolContext, args: dict) -> str:
@@ -47,7 +48,8 @@ async def describe_image(ctx: ToolContext, args: dict) -> str:
     ctx.state.model_requests += 1
     try:
         result = await services.llm.chat(
-            request, reasoning=False, max_tokens=services.settings["media.description_max_tokens"])
+            request, reasoning=False, max_tokens=services.settings["media.description_max_tokens"],
+            info=RequestInfo(task="image", chat_id=ctx.chat.chat_id, run_id=ctx.state.run_id))
     except LLMError as exc:
         raise ToolError(f"Looking at the image failed ({exc}).") from None
     description = " ".join(result.text.split())

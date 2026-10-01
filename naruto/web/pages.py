@@ -17,6 +17,7 @@ def _status_context(services: Services) -> dict:
         "llm": services.llm,
         "endpoint": services.settings["model.endpoint_url"],
         "model_name": services.settings["model.name"],
+        "settings_paused": services.settings["model.background_paused"],
     }
 
 

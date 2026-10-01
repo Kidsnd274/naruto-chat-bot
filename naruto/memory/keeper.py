@@ -19,6 +19,7 @@ from naruto.db.chats import ENABLED, Chat
 from naruto.db.memory import BOT
 from naruto.db.messages import StoredMessage
 from naruto.llm import LLMError
+from naruto.model_queue import RequestInfo
 from naruto.memory.notes import (
     MemoryOutputError,
     apply_note_actions,
@@ -176,9 +177,10 @@ class MemoryKeeper:
         services.runs.update(run_id, prompt=prompt, window_size=len(batch),
                              prompt_tokens=sum(estimate_text_tokens(m["content"]) for m in prompt))
         try:
-            result = await services.llm.chat(prompt, reasoning=settings["memory.reasoning"],
-                                              max_tokens=settings["memory.max_output_tokens"],
-                                              background=True)
+            result = await services.llm.chat(
+                prompt, reasoning=settings["memory.reasoning"],
+                max_tokens=settings["memory.max_output_tokens"], background=True,
+                info=RequestInfo(task="digest", chat_id=chat.chat_id, run_id=run_id))
         except LLMError as exc:
             logger.warning("Digest update failed: %s", exc, extra={"chat_id": chat.chat_id})
             services.digests.set_error(chat.chat_id, str(exc))

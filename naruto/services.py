@@ -16,6 +16,7 @@ from naruto.db.logs import LogRepository
 from naruto.db.members import MemberRepository
 from naruto.db.memory import NoteRepository
 from naruto.db.messages import MessageRepository
+from naruto.db.model_requests import ModelRequestRepository
 from naruto.db.people import PeopleRepository
 from naruto.db.plans import PlanRepository
 from naruto.db.reminders import ReminderRepository
@@ -68,6 +69,7 @@ class Services:
     notes: NoteRepository
     digests: DigestRepository
     reminders: ReminderRepository
+    requests: ModelRequestRepository
     llm: LLMClient
     seed: SeedData = field(default_factory=SeedData)
     status: RuntimeStatus = field(default_factory=RuntimeStatus)
@@ -80,6 +82,7 @@ class Services:
     def create(cls, bootstrap: Bootstrap, db: Database, seed: SeedData | None = None) -> "Services":
         settings = SettingsService(db)
         people = PeopleRepository(db)
+        requests = ModelRequestRepository(db)
         return cls(
             bootstrap=bootstrap,
             db=db,
@@ -95,7 +98,8 @@ class Services:
             notes=NoteRepository(db),
             digests=DigestRepository(db),
             reminders=ReminderRepository(db),
-            llm=LLMClient(settings, bootstrap.openai_api_key),
+            requests=requests,
+            llm=LLMClient(settings, bootstrap.openai_api_key, requests),
             seed=seed or SeedData(),
         )
 

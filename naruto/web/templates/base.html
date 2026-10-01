@@ -12,7 +12,7 @@
   <header class="topbar">
     <a class="brand" href="/"><span class="swirl" aria-hidden="true">🍥</span> Naruto admin</a>
     <nav>
-      {% for path, label in [("/", "Dashboard"), ("/chats", "Chats"), ("/people", "People"), ("/import", "Import"), ("/runs", "Agent runs"), ("/settings", "Settings"), ("/logs", "Logs")] %}
+      {% for path, label in [("/", "Dashboard"), ("/chats", "Chats"), ("/people", "People"), ("/import", "Import"), ("/runs", "Agent runs"), ("/queue", "Queue"), ("/settings", "Settings"), ("/logs", "Logs")] %}
         {% set active = nav_path == path or (path != "/" and nav_path.startswith(path)) %}
         <a href="{{ path }}" class="{{ 'active' if active else '' }}">{{ label }}</a>
       {% endfor %}

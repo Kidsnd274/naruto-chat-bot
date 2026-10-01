@@ -370,6 +370,65 @@ def test_import_estimate_follows_the_chosen_group(admin, importer, services):
     assert "Choose at least one" in nothing and "disabled" in nothing
 
 
+def test_import_summary_permissions_follow_preview(admin, importer, services):
+    services.chats.upsert_seen(CHAT, title="BBQ crew")
+    services.chats.upsert_seen(-777, title="Other")
+    location = upload(admin, FIXTURE.read_bytes()).headers["HX-Redirect"]
+    record = importer.repo.get(int(location.rsplit("/", 1)[1]))
+    fresh = admin.client.get(location).text
+    assert 'name="replace"' not in fresh and 'name="replace_edited"' not in fresh
+    advanced = re.search(r'<details class="summary-advanced"[^>]*>(.*?)</details>',
+                         fresh, re.S)
+    assert advanced and 'name="regenerate"' in advanced.group(1)
+    assert "open" not in advanced.group(0).split(">", 1)[0]
+
+    period = importer.plan(record, CHAT, importer.default_options(record)).active_periods[0]
+    digest = services.history.add(
+        chat_id=CHAT, status="active", source="export", grouping="month", timezone="UTC",
+        period_start=period.start, period_end=period.end, first_message_at=record.first_date,
+        last_message_at=record.last_date, message_count=period.count, import_id=None,
+        period_id=None, fingerprint=period.fingerprint, text="September plans",
+        limitations=[], actor="test")
+    services.history.edit(digest.id, "September plans, corrected by owner", actor="owner")
+    params = {"options": "1", "target": str(CHAT), "archive": "on",
+              "archive_from": "2026-09-01", "archive_to": "2026-09-02", "grouping": "month"}
+
+    def preview(**changes):
+        response = admin.client.get(f"{location}/estimate", params={**params, **changes},
+                                    headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        assert 'id="summary-replacement-options" hx-swap-oob="true"' in response.text
+        return response.text
+
+    # Identical summaries are reused, including owner edits, without replacement.
+    reused = preview()
+    assert "identical summary" in reused and 'name="replace"' not in reused
+    assert "disabled" not in reused
+
+    # Force rebuild exposes permission to replace, then the separate edit permission.
+    rebuilding = preview(regenerate="on")
+    assert 'name="replace"' in rebuilding and 'name="replace_edited"' not in rebuilding
+    assert "needs replacement" in rebuilding and "disabled" in rebuilding
+    replacing = preview(regenerate="on", replace="on")
+    assert 'name="replace" checked' in replacing and 'name="replace_edited"' in replacing
+    assert "edited by you" in replacing and "disabled" in replacing
+    allowed = preview(regenerate="on", replace="on", replace_edited="on")
+    assert 'name="replace_edited" checked' in allowed and "disabled" not in allowed
+
+    # A direct POST still cannot bypass the edited-summary permission.
+    response = admin.post(f"{location}/start", {**params, "regenerate": "on", "replace": "on"})
+    assert response.status_code == 303 and importer.repo.get(record.id).status == "preview"
+
+    # Removing replacement permission or moving away removes irrelevant controls.
+    unchecked = preview(regenerate="on", replace_edited="on")
+    assert 'name="replace_edited"' not in unchecked and "disabled" in unchecked
+    for changes in ({"target": "-777"},
+                    {"archive_from": "2026-09-03", "archive_to": "2026-09-04"},
+                    {"archive": ""}):
+        moved = preview(regenerate="on", replace="on", replace_edited="on", **changes)
+        assert 'name="replace"' not in moved and 'name="replace_edited"' not in moved
+
+
 def test_import_upload_errors(admin, importer, services):
     bad = upload(admin, b"{broken")
     assert bad.status_code == 400 and "not valid JSON" in bad.text

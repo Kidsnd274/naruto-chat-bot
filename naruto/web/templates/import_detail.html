@@ -36,7 +36,7 @@
 <section class="card">
   <form method="post" action="/import/{{ record.id }}/start" class="import-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div id="plan-inputs" hx-get="/import/{{ record.id }}/estimate" hx-trigger="change" hx-include="#plan-inputs" hx-target="#estimate">
+    <div id="plan-inputs" hx-get="/import/{{ record.id }}/estimate" hx-trigger="change" hx-include="#plan-inputs" hx-target="#estimate" hx-sync="this:replace">
       <input type="hidden" name="options" value="1">
       <h2>Import into</h2>
       {% if match.how == "id" %}
@@ -73,9 +73,12 @@
           </select>
         </label>
         <p class="muted small">Dated summaries of what went on, kept after the messages themselves are deleted, so the bot can answer “what were we planning in summer 2021?”. Older messages than the retention allows are summarized too.</p>
-        <label class="small"><input type="checkbox" name="replace" {{ 'checked' if options.replace else '' }}> Replace existing summaries these dates overlap</label>
-        <label class="small"><input type="checkbox" name="replace_edited" {{ 'checked' if options.replace_edited else '' }}> …including ones you edited</label>
-        <label class="small"><input type="checkbox" name="regenerate" {{ 'checked' if options.regenerate else '' }}> Rebuild summaries even when the messages haven't changed</label>
+        {% include "_import_summary_options.html" %}
+        <details class="summary-advanced" {{ 'open' if options.regenerate else '' }}>
+          <summary class="small muted">Advanced</summary>
+          <label class="small"><input type="checkbox" name="regenerate" {{ 'checked' if options.regenerate else '' }}> Force rebuild</label>
+          <p class="muted small">Generate fresh summaries instead of reusing matching ones. Replacing existing summaries still needs your permission.</p>
+        </details>
       </fieldset>
 
       <fieldset class="import-section">

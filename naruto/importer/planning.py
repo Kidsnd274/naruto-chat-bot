@@ -378,14 +378,14 @@ def _plan_periods(plan: ImportPlan, counts: Dates, days: list, preview: dict,
     if replaced and not options.replace:
         plan.errors.append(
             f"History summaries: {len(replaced)} existing "
-            f"summar{'ies' if len(replaced) != 1 else 'y'} overlap these dates with different "
-            "content. Tick “Replace them” to rebuild them, or change the dates.")
+            f"summar{'ies need' if len(replaced) != 1 else 'y needs'} replacement. "
+            "Select “Replace existing summaries” to continue, or change the dates.")
     edited = plan.edited_replaced
     if edited and options.replace and not options.replace_edited:
         plan.errors.append(
             f"History summaries: {len(edited)} of the summaries to replace "
-            f"{'were' if len(edited) != 1 else 'was'} edited by you. Tick “including edited "
-            "ones” to replace them too.")
+            f"{'were' if len(edited) != 1 else 'was'} edited by you. "
+            "Allow replacing summaries you edited to continue.")
     if options.grouping == RANGE and plan.archive_end - plan.archive_start > \
             LONG_RANGE_DAYS * 86400:
         months = round((plan.archive_end - plan.archive_start) / (30.4 * 86400))

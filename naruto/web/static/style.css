@@ -282,6 +282,9 @@ ol.steps li { margin: 0.2rem 0; }
 .import-section { border: 1px solid var(--border); border-radius: 8px; margin: 0.8rem 0; padding: 0.6rem 0.9rem; }
 .import-section legend { font-weight: 600; padding: 0 0.3rem; }
 .import-section > label { display: inline-flex; gap: 0.3rem; align-items: center; margin: 0.2rem 0.8rem 0.2rem 0; }
+.summary-replacements { border-top: 1px solid var(--border); margin-top: 0.6rem; padding-top: 0.4rem; }
+.summary-replacements label, .summary-advanced label { display: flex; gap: 0.3rem; align-items: center; margin: 0.4rem 0; }
+.summary-advanced { margin-top: 0.5rem; }
 .badge.paused, .badge.waiting, .badge.partial { background: var(--warn-soft); color: var(--warn); }
 .badge.cancelled, .badge.expired, .badge.skipped { background: var(--info-soft); color: var(--text); }
 .identities input { width: 100%; min-width: 10rem; }

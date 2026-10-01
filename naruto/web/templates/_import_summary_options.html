@@ -1,0 +1,11 @@
+<div id="summary-replacement-options"{% if summary_options_oob|default(false) %} hx-swap-oob="true"{% endif %}>
+  {% if options.archive and plan.replaced_digests %}
+    <div class="summary-replacements">
+      <p class="small">{{ plan.replaced_digests|length }} existing summar{{ 'ies cover' if plan.replaced_digests|length != 1 else 'y covers' }} these dates and {{ 'need' if plan.replaced_digests|length != 1 else 'needs' }} replacement to continue.</p>
+      <label class="small"><input type="checkbox" name="replace" {{ 'checked' if options.replace else '' }}> Replace existing summaries</label>
+      {% if options.replace and plan.edited_replaced %}
+        <label class="small"><input type="checkbox" name="replace_edited" {{ 'checked' if options.replace_edited else '' }}> Also replace {{ plan.edited_replaced|length }} summar{{ 'ies' if plan.edited_replaced|length != 1 else 'y' }} you edited</label>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>

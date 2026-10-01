@@ -221,7 +221,7 @@ async def test_replacing_summaries_needs_permission_and_is_all_at_once(services,
     services.settings.set("history.digest_max_chars", 2000, actor="t")  # changes every summary
     record = await upload(importer)
     plan = importer.plan(record, GROUP_ID, summaries_only(importer, record))
-    assert any("Tick “Replace them”" in e for e in plan.errors)
+    assert any("Select “Replace existing summaries”" in e for e in plan.errors)
     plan = importer.plan(record, GROUP_ID, summaries_only(importer, record, replace=True))
     assert any("edited by you" in e for e in plan.errors)
     weekly = summaries_only(importer, record, replace=True, replace_edited=True,

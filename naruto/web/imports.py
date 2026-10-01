@@ -143,7 +143,7 @@ async def import_estimate(request: Request, import_id: int):
         raise HTTPException(status_code=404, detail="Unknown import.")
     record = await importer.refresh_preview(record)
     return request.app.state.templates.TemplateResponse(
-        request, "_import_estimate.html",
+        request, "_import_preview.html",
         _plan_context(services, importer, record, request.query_params))
 
 

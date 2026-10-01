@@ -14,6 +14,8 @@ The owner should be able to give an objective such as:
 
 The agent can then test the current configuration, identify failures, try changes, compare the results and deliver a recommendation backed by examples. The owner should not have to relay prompts and answers manually between the agent and the bot.
 
+For tone and personality, improvement must be interactive. The agent generates example user messages or conversations, obtains Naruto's replies under candidate configurations, and asks the owner which replies they prefer. Those choices guide the next experiments, allowing the owner to shape Naruto's voice through examples without having to write the system prompt themselves.
+
 Here, **self-learning** means learning from evaluation results and changing the bot's configuration. It does not mean training model weights. A successful run may conclude that no tested change is an improvement.
 
 ## 2. Relationship to the bot rework
@@ -32,7 +34,7 @@ This document specifies observable behaviour. It deliberately leaves interfaces,
 
 ## 3. Who uses the loop
 
-**Owner:** sets the improvement objective, supplies preferences or examples, chooses the permitted scope and decides whether a candidate should become active.
+**Owner:** sets the improvement objective, supplies preferences or examples, chooses between candidate replies during interactive tuning, chooses the permitted scope and decides whether a candidate should become active.
 
 **Optimizing agent:** runs experiments, reviews responses and traces, proposes configuration changes, evaluates candidates and explains the outcome.
 
@@ -53,6 +55,7 @@ The owner or optimizing agent can specify:
 - Which persona, skill, template, reasoning and model settings may change.
 - Which scenarios and skills are in scope.
 - The experiment limits: attempts, model requests, elapsed time and any applicable cost budget.
+- Whether to run interactive preference rounds, and how many comparisons the owner wants to review at a time. Tone and personality tuning defaults to this interactive mode.
 - Whether the run ends with a recommendation or may activate a qualifying candidate.
 
 If the objective is underspecified, the agent should propose an explicit rubric before optimizing. Subjective preferences must remain visible as assumptions until the owner confirms or corrects them.
@@ -133,6 +136,27 @@ The evaluator must distinguish a wrong answer, an unsuccessful tool action, an i
 
 When repeated attempts produce inconsistent behaviour, the report must show the variation. One favourable response is not enough to claim that an intermittent failure has been fixed.
 
+### Interactive tone and preference rounds
+
+The owner can start with a broad request such as “Help me find a Naruto tone I like” or a specific preference such as “Make him more cheeky, but less repetitive.” The agent must support discovering preferences through examples instead of requiring a fully specified style rubric in advance.
+
+Each round follows this behaviour:
+
+1. **Generate a situation.** The agent writes a plausible user message or short group conversation for Naruto to respond to. The owner can also supply, edit or request a different situation. Generated scenarios are identified as synthetic and cover varied contexts such as casual banter, teasing, practical questions, planning and serious moments.
+2. **Try candidate configurations.** The agent prepares a small number of variations and submits the same situation under comparable conditions to the configured bot model. The displayed Naruto replies must be actual outputs from those tests. The optimizing agent must not write, polish or substitute the replies being judged.
+3. **Present a manageable comparison.** Show the relevant situation and usually two replies, labelled neutrally as A and B. Avoid describing one as the improved version or revealing an AI preference before the owner chooses. Vary the display order across rounds while preserving which output came from which candidate. Configuration details remain available if requested.
+4. **Ask for the owner's preference.** The owner can choose A or B, say both are good, reject both, express no preference, skip the situation, or describe a combination they would prefer. Optional feedback can be as simple as “A's humour, but B's brevity.” An explanation is helpful but not required.
+5. **Wait for the choice.** The agent must not infer a preference from silence or replace the owner's choice with its own judgment. Pausing and returning later preserves the pending comparison and prior feedback. Waiting for the owner is visible as a distinct state and does not generate further experiments automatically.
+6. **Refine and test again.** The agent uses the choice and any comments to revise the relevant persona, skill instructions or permitted parameters, then obtains fresh replies for the next round. The owner can steer the next scenario, request more examples of the same tone, correct an earlier choice or stop comparing.
+
+Each choice stays associated with the scenario, exact replies and candidate configurations that produced it. The agent maintains a readable summary of observed preferences, separating the owner's explicit statements from the agent's interpretation. The owner can correct that summary, and later corrections guide subsequent rounds.
+
+Preferences can depend on the situation. Enjoying exaggerated banter does not imply wanting the same style in a serious conversation or a structured summary. The agent must test its interpretation across relevant situations and show fresh examples before claiming that a configuration consistently matches the owner's taste. It must not select only flattering outputs or hide failed attempts.
+
+The owner's choices are the primary evidence for preferred tone. Automated checks still evaluate correctness, grounding and action behaviour, and AI style scores must not overrule an explicit preference. A preferred reply with a factual or behavioural defect should lead to a candidate that preserves the liked style while addressing the defect.
+
+Choosing a reply is feedback for tuning, not authorization to activate its configuration. At the end, show representative replies, the preferences learned, the changes made and regression results, then follow the run's activation policy.
+
 ## 10. Proposing and testing improvements
 
 The optimizing agent follows a bounded cycle:
@@ -141,7 +165,7 @@ The optimizing agent follows a bounded cycle:
 2. Identify specific failures and form a hypothesis about their cause.
 3. Create a candidate with a recorded description of what changed and why.
 4. Run the candidate under comparable conditions.
-5. Compare improvements, regressions and tradeoffs.
+5. Compare improvements, regressions and tradeoffs, including the owner's choices from interactive preference rounds when applicable.
 6. Keep, revise or discard the candidate, then repeat within the agreed budget.
 
 The adjustable scope includes the persona prompt, per-skill instructions, output templates, reasoning settings and supported model parameters. Additional settings may be included when explicitly within the run's scope. Code changes and model-weight training are outside this loop's default scope; suspected implementation defects should be reported separately.
@@ -166,6 +190,8 @@ The report should favour specific conclusions over a single aggregate score. For
 
 For subjective choices such as personality, the report presents representative baseline and candidate responses so that the owner can judge the tradeoff.
 
+Owner-reviewed comparisons are tuning evidence. Use fresh situations to validate the inferred preferences, and distinguish “the owner preferred this particular reply” from “this configuration reliably produces the preferred tone.”
+
 ## 12. Completion, activation and rollback
 
 A run stops when it meets its objective, exhausts its budget, fails to find further improvement, encounters a blocking condition or is cancelled. Its status and stop reason must be clear. Partial results remain available, and an interrupted run must not imply that its candidate passed validation.
@@ -176,6 +202,7 @@ The final report includes:
 - Candidates attempted and the selected candidate, if any.
 - Exact configuration changes and the rationale for them.
 - Results, representative responses, regressions and uncertainty.
+- For interactive runs, the comparisons reviewed, the owner's choices, the resulting preference summary and any unresolved or context-dependent preferences.
 - Test coverage, skipped cases and remaining live-verification needs.
 - Resources consumed and the stop reason.
 - A recommendation to activate, continue experimenting or keep the baseline.
@@ -198,7 +225,7 @@ The first version supports owner-initiated learning runs. Continuous background 
 
 ## 14. Required usage instructions
 
-**The agent implementing this plan must write and verify instructions for using the completed self-learning loop. Documentation is a required deliverable, not a follow-up suggestion.**
+**The agent implementing this plan must write and verify instructions for using the completed self-learning loop, and create a reusable prompt-testing skill for the external optimizing agent. Both are required deliverables, not follow-up suggestions.**
 
 Provide instructions for both the owner and an external optimizing agent. They must describe the interface actually implemented and use executable examples where applicable, rather than hypothetical commands or capabilities.
 
@@ -213,10 +240,23 @@ The instructions must cover:
 7. Handling unsupported features, failed requests, exhausted budgets, cancellation and any supported resume behaviour.
 8. Reviewing a completed run, activating an authorized candidate and reverting it.
 9. The handling of real chat data and the boundary between isolated tests and live actions.
+10. Running interactive preference rounds, recording choices and freeform feedback, correcting inferred preferences, and pausing or resuming a pending comparison.
+
+### Required prompt-testing skill for the external agent
+
+After the testing interface exists, the implementing agent must author a reusable skill that teaches an external agent how to use that actual interface to run this workflow. This is a skill for the agent operating the improvement loop; Naruto's own conversational skills remain the subjects being tested.
+
+The skill must guide the agent through discovering capabilities, establishing the baseline and scope, generating synthetic user prompts and follow-ups, creating candidate configurations, obtaining real Naruto outputs, presenting neutral comparisons, waiting for owner feedback, refining candidates and running regression checks. It must also explain how to preserve progress, respect experiment limits and follow the activation policy.
+
+Include example requests such as “Help me choose Naruto's tone” and “Test a cheekier version against the current prompt, then let me choose the replies I prefer.” The owner should be able to invoke this workflow without composing a detailed evaluation procedure themselves. Explain how agents such as Codex and Claude Code can discover and use the instructions, with any compatibility limitations stated explicitly.
+
+Verify the skill against the completed interface. Do not deliver a skill that refers to hypothetical commands, missing capabilities or untested steps as if they work.
 
 Include a reusable agent task example that states the objective, protected behaviours, allowed changes, budget, evaluation requirements and activation policy. Explain how to adapt it for different external agents without requiring product-specific features.
 
 Include one complete walkthrough using synthetic data: baseline failure → candidate change → retest → regression comparison → recommendation. Demonstrate the usage instructions against the implemented feature and report any steps that could not be verified.
+
+The walkthrough must also demonstrate an interactive round: generated user situation → actual Naruto replies → recorded preference → revised candidate → fresh comparison. Any feedback simulated for documentation or verification must be labelled as illustrative, never represented as an actual owner choice.
 
 Link these instructions from the project's main documentation so that a future agent can find and use the loop without reconstructing its operation from source code.
 
@@ -233,5 +273,9 @@ The feature is complete when the following can be demonstrated:
 - Experiment limits and cancellation work, and partial evidence remains inspectable.
 - An authorized candidate can be activated, intervening configuration changes are detected, and the prior configuration can be restored.
 - The owner and external-agent usage instructions are written, discoverable and verified with a synthetic end-to-end walkthrough.
+- The agent can generate user messages or conversations, obtain actual Naruto replies from candidate configurations, and present a manageable, neutral comparison for the owner.
+- The owner can choose, reject, skip or comment on replies, correct prior feedback, and pause or resume without the agent inventing a preference.
+- Feedback guides subsequent candidates, with a reviewable preference summary and fresh examples showing how the tone changed; choosing a reply alone does not activate it.
+- A reusable prompt-testing skill for the external agent is delivered, discoverable and verified against the implemented testing interface, including the interactive workflow.
 
 Acceptance must match the rework capabilities available at implementation time. The implementing agent must explicitly list deferred coverage for unfinished rework features rather than treating that coverage as complete.

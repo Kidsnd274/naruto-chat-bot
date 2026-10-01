@@ -420,6 +420,20 @@ def run_command(args, client: Client):
         if args.action == "show":
             return client.call("GET", f"/runs/{args.run}/preferences"), None
         return client.call("PUT", f"/runs/{args.run}/preferences", _read_json(args.file)), None
+    if command == "activate":
+        path = f"/runs/{args.run}/candidates/{args.candidate}"
+        if args.preview:
+            return client.call("GET", f"{path}/activation-plan", mode=args.mode), None
+        if not args.authorized_by:
+            raise ClientError("Say who authorized it: --authorized-by \"the owner, in the "
+                              "terminal: 'ship c2'\" (or use --preview).", 2)
+        return client.call("POST", f"{path}/activate",
+                           {"mode": args.mode, "authorized_by": args.authorized_by,
+                            "acknowledge_drift": args.acknowledge_drift}), None
+    if command == "activations":
+        return client.call("GET", "/activations"), None
+    if command == "revert":
+        return client.call("POST", f"/activations/{args.activation}/revert"), None
     if command == "export":
         out = Path(args.out).expanduser() if args.out else DEFAULT_EXPORT_DIR
         if _inside_repo(out):
@@ -643,6 +657,19 @@ def build_parser() -> argparse.ArgumentParser:
     prefs_set.add_argument("run", type=int)
     prefs_set.add_argument("--file", required=True,
                            help="JSON: owner_statements, interpretations, context")
+    activate = commands.add_parser(
+        "activate", help="put a candidate into the live bot (needs the owner's authorization)")
+    activate.add_argument("run", type=int)
+    activate.add_argument("candidate", help="c1, a candidate id, or baseline (with --mode full)")
+    activate.add_argument("--preview", action="store_true",
+                          help="only show what would change, conflicts and drift")
+    activate.add_argument("--mode", default="changes", choices=["changes", "full"])
+    activate.add_argument("--authorized-by", help="who authorized it and how")
+    activate.add_argument("--acknowledge-drift",
+                          help="why activating is fine although other settings changed")
+    commands.add_parser("activations", help="every activation, newest first")
+    revert = commands.add_parser("revert", help="undo an activation")
+    revert.add_argument("activation", type=int)
     export = commands.add_parser("export", help="write a run as a folder of readable files")
     export.add_argument("run", type=int)
     export.add_argument("--out", help=f"where (default {DEFAULT_EXPORT_DIR})")

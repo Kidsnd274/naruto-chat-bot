@@ -41,6 +41,21 @@
   {% endif %}
 </section>
 
+{% if activations %}
+<section class="card">
+  <h2>Activations, by model</h2>
+  {% for model, items in activations|groupby("model.name") %}
+    <h3 class="mono">{{ model or "(first listed)" }}</h3>
+    <ul class="plain">
+      {% for a in items %}
+        <li><a href="/lab/runs/{{ a.run }}#activations">run #{{ a.run }}</a> {{ a.candidate }} ({{ a.mode }}), {{ a.at|ts }}{% if a.reverted_at %} <span class="badge">reverted</span>{% endif %}
+          {% if not a.reverted_at %}<a class="small" href="/lab/runs/{{ a.run }}/activate/{{ a.ref }}?mode=full">apply its full configuration again</a>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% endfor %}
+</section>
+{% endif %}
+
 <section class="card" id="tokens">
   <h2>API tokens</h2>
   <p class="muted small">A token lets an agent run experiments. By default it can only use made-up (synthetic) scenarios: tick the chats whose real messages and traces it may read, and whether it may activate a candidate. Treat a token like the admin password.</p>

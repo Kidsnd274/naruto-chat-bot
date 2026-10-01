@@ -430,6 +430,7 @@ class LabService:
         view = {
             "id": candidate.id if candidate else None,
             "label": candidate.label if candidate else "baseline",
+            "ref": f"c{candidate.number}" if candidate else "baseline",
             "parent": (parent.label if parent else "baseline") if candidate else None,
             "hypothesis": candidate.hypothesis if candidate else "",
             "rationale": candidate.rationale if candidate else "",

@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from naruto.lab import preferences
+from naruto.lab import activation, preferences
 from naruto.lab.errors import LabError
 from naruto.lab.report import build_report, render_markdown
 from naruto.lab.service import LabService
@@ -43,6 +43,7 @@ def _page(request: Request, *, new_secret: str | None = None, new_token=None):
         "chat_titles": {c.chat_id: c.display_title for c in services.chats.list_all()},
         "new_secret": new_secret,
         "new_token": new_token,
+        "activations": [activation.view(lab, a) for a in lab.repo.activations()],
     })
 
 
@@ -107,7 +108,7 @@ async def run_page(request: Request, run_id: int):
         "answered": [c for c in comparisons if c["status"] != "pending"],
         "choices": preferences.CHOICES,
         "preferences": lab.repo.preferences(run.id),
-        "activations": lab.repo.activations(run_id=run.id),
+        "activations": [activation.view(lab, a) for a in lab.repo.activations(run_id=run.id)],
         "attempts": [lab.attempt_summary(a) for a in lab.repo.attempts(run_id=run.id)],
     })
 
@@ -166,3 +167,52 @@ async def stop_run(request: Request, run_id: int):
     else:
         flash(request, "Run stopped. Its results so far stay here.")
     return RedirectResponse(f"/lab/runs/{run_id}", status_code=303)
+
+
+# ------------------------------------------------------------ activation
+
+@router.get("/lab/runs/{run_id}/activate/{ref}")
+async def activation_page(request: Request, run_id: int, ref: str):
+    lab = _lab(request)
+    run = _run_or_404(lab, run_id)
+    mode = request.query_params.get("mode", "changes")
+    try:
+        candidate = lab.get_candidate(run, ref)
+        steps = activation.plan(lab, run, candidate, mode=mode)
+    except LabError as exc:
+        flash(request, str(exc), "error")
+        return RedirectResponse(f"/lab/runs/{run_id}", status_code=303)
+    return request.app.state.templates.TemplateResponse(request, "lab_activate.html", {
+        "run": run, "ref": ref, "plan": steps, "mode": mode,
+    })
+
+
+@router.post("/lab/runs/{run_id}/activate/{ref}")
+async def activate_candidate(request: Request, run_id: int, ref: str):
+    lab = _lab(request)
+    form = await request.form()
+    try:
+        result = activation.activate(
+            lab, run_id, ref, mode=str(form.get("mode") or "changes"),
+            authorized_by=OWNER, acknowledge_drift=str(form.get("acknowledge_drift") or ""),
+            actor=OWNER)
+    except LabError as exc:
+        flash(request, str(exc), "error")
+        return RedirectResponse(f"/lab/runs/{run_id}/activate/{ref}", status_code=303)
+    flash(request, f"Activated: {', '.join(sorted(result.applied))} changed. You can revert it "
+                   "below.")
+    return RedirectResponse(f"/lab/runs/{run_id}#activations", status_code=303)
+
+
+@router.post("/lab/activations/{activation_id}/revert")
+async def revert_activation(request: Request, activation_id: int):
+    lab = _lab(request)
+    try:
+        result = activation.revert(lab, activation_id, actor=OWNER)
+    except LabError as exc:
+        flash(request, str(exc), "error")
+        record = lab.repo.activation(activation_id)
+        return RedirectResponse(f"/lab/runs/{record.run_id}" if record else "/lab",
+                                status_code=303)
+    flash(request, "Reverted: the settings are back to what they were before.")
+    return RedirectResponse(f"/lab/runs/{result.run_id}#activations", status_code=303)

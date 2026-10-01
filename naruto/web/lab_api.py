@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from naruto.db.lab import LabRun, LabToken
-from naruto.lab import config, preferences
+from naruto.lab import activation, config, preferences
 from naruto.lab.capabilities import capabilities
 from naruto.lab.export import export_files, folder_name
 from naruto.lab.report import render_markdown
@@ -452,3 +452,35 @@ async def put_preferences(request: Request, run_id: int):
     prefs = preferences.set_summary(lab, run_id, data,
                                     edited_by=_actor(request.state.lab_token))
     return {"version": prefs.version, **prefs.body}
+
+
+# ------------------------------------------------------------ activation
+
+@router.get("/runs/{run_id}/candidates/{ref}/activation-plan")
+async def activation_plan(request: Request, run_id: int, ref: str, mode: str = "changes"):
+    lab = _lab(request)
+    run = lab.get_run(run_id)
+    return activation.plan(lab, run, lab.get_candidate(run, ref), mode=mode)
+
+
+@router.post("/runs/{run_id}/candidates/{ref}/activate")
+async def activate_candidate(request: Request, run_id: int, ref: str):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    result = activation.activate(lab, run_id, ref, mode=data.get("mode", "changes"),
+                                 authorized_by=str(data.get("authorized_by") or ""),
+                                 acknowledge_drift=data.get("acknowledge_drift"), token=token,
+                                 actor=_actor(token))
+    return JSONResponse(activation.view(lab, result), status_code=201)
+
+
+@router.get("/activations")
+async def list_activations(request: Request):
+    lab = _lab(request)
+    return {"activations": [activation.view(lab, a) for a in lab.repo.activations()]}
+
+
+@router.post("/activations/{activation_id}/revert")
+async def revert_activation(request: Request, activation_id: int):
+    lab, token = _lab(request), request.state.lab_token
+    result = activation.revert(lab, activation_id, token=token, actor=_actor(token))
+    return activation.view(lab, result)

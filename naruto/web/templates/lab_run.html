@@ -108,6 +108,7 @@
       <summary><strong>{{ c.label }}</strong> <span class="muted small">on {{ c.parent }} · changes {{ c.vs_parent|join(", ") }}</span>{% if c.hypothesis %} — {{ c.hypothesis }}{% endif %}</summary>
       {% if c.rationale %}<p class="small">{{ c.rationale }}</p>{% endif %}
       {% for effect in c.background_effects %}<p class="notice warn small">{{ effect }}</p>{% endfor %}
+      <p><a class="button small" href="/lab/runs/{{ run.id }}/activate/{{ c.ref }}">Activate…</a></p>
       {% for key, change in c.vs_baseline.items() %}
         <p class="small"><code>{{ key }}</code></p>
         <div class="grid two"><pre class="prompt">{{ change.from }}</pre><pre class="prompt">{{ change.to }}</pre></div>
@@ -115,6 +116,25 @@
     </details>
   {% else %}
     <p class="muted">No candidates yet.</p>
+  {% endfor %}
+</section>
+
+<section class="card" id="activations">
+  <h2>Activations</h2>
+  {% for a in activations %}
+    <div class="row-actions">
+      <span><strong>{{ a.candidate }}</strong> ({{ a.mode }}) on {{ a.at|ts }} by {{ a.by }} · authorized by {{ a.authorized_by }}
+        <span class="muted small">{{ a.applied|join(", ") }}</span>
+        {% if a.reverted_at %}<span class="badge">reverted {{ a.reverted_at|ts }}</span>{% endif %}</span>
+      {% if not a.reverted_at %}
+      <form method="post" action="/lab/activations/{{ a.id }}/revert">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="small danger">Revert</button>
+      </form>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="muted">Nothing from this run is live. Each candidate above has an Activate… link; you can also put the baseline back with <a href="/lab/runs/{{ run.id }}/activate/baseline?mode=full">its full configuration</a>.</p>
   {% endfor %}
 </section>
 

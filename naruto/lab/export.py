@@ -21,7 +21,7 @@ can be read without spoiling the choice.
 from datetime import datetime, timezone
 import json
 
-from naruto.lab import config
+from naruto.lab import config, report
 
 FOLDER_PREFIX = "run"
 
@@ -191,4 +191,6 @@ def export_files(lab, run) -> dict[str, str]:
             by_slug.setdefault(record.slug, []).append(attempt)
     for slug, attempts in sorted(by_slug.items()):
         files[f"replies/{slug}.md"] = replies_md(lab, run, slug, attempts, hidden)
+    if by_slug:
+        files["report.md"] = report.render_markdown(report.build_report(lab, run))
     return files

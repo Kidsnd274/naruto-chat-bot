@@ -80,6 +80,25 @@ FEATURES = ("vision",)  # besides tool names, what a scenario may require
 # failed, not the model's judgment.
 INFRA_TEXTS = (FAILURE_TEXT, BUSY_TEXT, DEADLINE_TEXT)
 
+# What the sandbox doesn't do (capabilities and reports list them).
+NOT_SIMULATED = [
+    "Digest upkeep and monthly history summaries don't run in a sandbox: seed state.digest "
+    "and state.history_summaries instead.",
+    "Progress messages (\"Reading back through the chat…\") aren't shown.",
+    "Pressing a plan's Confirm / Change buttons and voting in polls don't happen.",
+    "How Telegram renders Markdown, HTML and rich messages isn't checked.",
+    "/catchup's private (ephemeral) delivery is recorded, not sent.",
+    "/board (show the board again) isn't a scenario command.",
+    "Telegram rate limits and flaky networks only happen if a scenario simulates a failure.",
+]
+DEFERRED = [
+    "Web search (planned in plans/WEB_SEARCH_PLAN.md) doesn't exist yet: scenarios that require "
+    "\"web_search\" are skipped.",
+    "Simulated streaming isn't built.",
+    "Background tasks (digest updates, history summaries, import memory) aren't evaluated, though "
+    "model settings a candidate changes apply to them too.",
+]
+
 
 # ------------------------------------------------------------------- model
 
@@ -490,6 +509,18 @@ class Sandbox:
             case "document":
                 return {"document": Document(file_id, unique,
                                              file_name=message.file_name or "file")}
+            case "poll":
+                poll = message.poll or {}
+                return {"poll": Poll(
+                    id=f"lab-poll-{message.id}", question=poll.get("question", ""),
+                    options=[PollOption(str(text), int(count), persistent_id=f"o{i}")
+                             for i, (text, count) in enumerate(zip(
+                                 poll.get("options", []),
+                                 poll.get("counts") or [0] * len(poll.get("options", []))))],
+                    total_voter_count=sum(poll.get("counts") or []), is_closed=False,
+                    is_anonymous=bool(poll.get("anonymous", False)), type=Poll.REGULAR,
+                    allows_multiple_answers=bool(poll.get("multiple", False)),
+                    allows_revoting=True, members_only=False)}
         return {}
 
     def _tg(self, message: ScenarioMessage, *, reply_to: Message | None = None,

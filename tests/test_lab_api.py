@@ -259,3 +259,44 @@ def test_cli_errors_and_the_repository_warning(capsys, monkeypatch, tmp_path):
     assert not (target / "a").exists() and (target / "c.md").read_text() == "3"
     with pytest.raises(cli.ClientError, match="outside"):
         cli.write_export("run-1-x", {"../evil.md": "x"}, tmp_path)
+
+
+def test_the_cli_judges_compares_reports_and_saves_failures(http, secret, capsys, tmp_path,
+                                                            scripts):
+    spec = tmp_path / "run.json"
+    spec.write_text(json.dumps(RUN))
+    rid = json.loads(run_cli(http, secret, capsys, "run", "start", "--file", str(spec))[1])["id"]
+    scenario_file = tmp_path / "s.json"
+    scenario_file.write_text(json.dumps(SCENARIO))
+    run_cli(http, secret, capsys, "scenario", "add", "--file", str(scenario_file))
+    scripts.append(["Heh."])
+    code, out, _ = run_cli(http, secret, capsys, "try", str(rid), "--scenario", "hello",
+                           "--wait", "10", "--quiet")
+    attempt_id = json.loads(out)["attempts"][0]["id"]
+    assert json.loads(out)["attempts"][0]["outcome"] == "fail"
+
+    rubric = tmp_path / "rubric.json"
+    rubric.write_text(json.dumps([{"id": "relevance", "description": "Answers the question"}]))
+    assert run_cli(http, secret, capsys, "rubric", "set", str(rid), "--file", str(rubric))[0] == 0
+    code, _, err = run_cli(http, secret, capsys, "judge", str(attempt_id), "--criterion",
+                           "relevance", "--verdict", "fail", "--evidence", "made-up quote")
+    assert code == 2 and "aren't in that turn" in err
+    code, out, _ = run_cli(http, secret, capsys, "judge", str(attempt_id), "--criterion",
+                           "relevance", "--verdict", "fail", "--evidence", "Heh.")
+    assert code == 0 and json.loads(out)["rubric_version"] == 1
+    assert run_cli(http, secret, capsys, "note", str(rid), "--kind", "observation", "--text",
+                   "Banter ignores greetings")[0] == 0
+
+    code, out, _ = run_cli(http, secret, capsys, "compare", str(rid))
+    assert json.loads(out)["summary"]["baseline"]["outcomes"] == {"fail": 1}
+    code, out, _ = run_cli(http, secret, capsys, "scenario", "save-attempt", str(attempt_id),
+                           "--turn", "1", "--id", "hello-regression")
+    assert code == 0 and json.loads(out)["slug"] == "hello-regression"
+
+    code, out, _ = run_cli(http, secret, capsys, "report", str(rid), "--out", str(tmp_path / "r"))
+    assert code == 0 and "Wrote" in out
+    markdown = (tmp_path / "r" / "report.md").read_text()
+    assert "Banter ignores greetings" in markdown and "relevance" in markdown
+    assert json.loads((tmp_path / "r" / "report.json").read_text())["run"]["id"] == rid
+    code, out, _ = run_cli(http, secret, capsys, "--text", "report", str(rid), "--format", "md")
+    assert out.startswith(f"# Report: run {rid}")

@@ -6,13 +6,14 @@ response is JSON; errors are {"error": code, "message": ..., "details": ...}.
 docs/LAB.md describes each endpoint, and `python3 -m naruto.lab` wraps them.
 """
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from naruto.db.lab import LabRun, LabToken
 from naruto.lab import config
 from naruto.lab.capabilities import capabilities
 from naruto.lab.export import export_files, folder_name
+from naruto.lab.report import render_markdown
 from naruto.lab.service import LabError, LabService
 
 PREFIX = "/api/lab/v1"
@@ -290,3 +291,95 @@ async def get_attempt(request: Request, attempt_id: int, prompts: bool = False):
     record = lab.repo.scenario(attempt.scenario_id)
     _check_chat(token, record.chat_id if record else None)
     return lab.attempt_detail(attempt, prompts=prompts, viewer=_actor(token))
+
+
+# --------------------------------------------------------------- judging
+
+@router.post("/attempts/{attempt_id}/judgments")
+async def judge_attempt(request: Request, attempt_id: int):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    record = lab.repo.scenario(lab.get_attempt(attempt_id).scenario_id)
+    _check_chat(token, record.chat_id if record else None)
+    judgment = lab.add_judgment(
+        attempt_id, turn=data.get("turn", 1), kind=data.get("kind", "ai"),
+        criterion=data.get("criterion", ""), verdict=data.get("verdict", ""),
+        score=data.get("score"), evidence=data.get("evidence"), comment=data.get("comment"),
+        judge=str(data.get("judge") or _actor(token))[:100])
+    return JSONResponse({"id": judgment.id, "rubric_version": judgment.rubric_version},
+                        status_code=201)
+
+
+@router.get("/runs/{run_id}/rubric")
+async def get_rubric(request: Request, run_id: int):
+    lab = _lab(request)
+    lab.get_run(run_id)
+    rubric = lab.repo.rubric(run_id)
+    return {"rubric": None if rubric is None else {
+        "version": rubric.version, "status": rubric.status, "criteria": rubric.criteria,
+        "confirmation": rubric.confirmation, "reason": rubric.reason}}
+
+
+@router.put("/runs/{run_id}/rubric")
+async def put_rubric(request: Request, run_id: int):
+    lab, data = _lab(request), await _body(request)
+    rubric = lab.set_rubric(run_id, data.get("criteria"), status=data.get("status", "proposed"),
+                            confirmation=data.get("confirmation"), reason=data.get("reason"))
+    return {"version": rubric.version, "status": rubric.status, "criteria": rubric.criteria}
+
+
+@router.post("/runs/{run_id}/notes")
+async def add_note(request: Request, run_id: int):
+    lab, data = _lab(request), await _body(request)
+    note = lab.add_note(run_id, data.get("kind", ""), data.get("text", ""),
+                        evidence=data.get("evidence"), actor=_actor(request.state.lab_token))
+    return JSONResponse({"id": note.id}, status_code=201)
+
+
+@router.post("/scenarios/from-attempt")
+async def scenario_from_attempt(request: Request):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    attempt = lab.get_attempt(int(data.get("attempt", 0)))
+    record = lab.repo.scenario(attempt.scenario_id)
+    _check_chat(token, record.chat_id if record else None)
+    saved = await lab.scenario_from_attempt(
+        attempt.id, turn=int(data.get("turn", 1)), slug=data.get("id"),
+        expect=data.get("expect"), reason=data.get("reason"),
+        description=data.get("description"), actor=_actor(token))
+    return JSONResponse({"id": saved.id, "slug": saved.slug, "version": saved.version,
+                         "body": saved.body}, status_code=201)
+
+
+@router.post("/scenarios/from-agent-run")
+async def scenario_from_agent_run(request: Request):
+    lab, data, token = _lab(request), await _body(request), request.state.lab_token
+    saved = lab.scenario_from_agent_run(int(data.get("agent_run", 0)), slug=data.get("id"),
+                                        expect=data.get("expect"),
+                                        description=data.get("description"), token=token,
+                                        actor=_actor(token))
+    return JSONResponse({"id": saved.id, "slug": saved.slug, "version": saved.version,
+                         "body": saved.body}, status_code=201)
+
+
+def _list(value: str | None) -> list[str] | None:
+    return [item.strip() for item in value.split(",") if item.strip()] if value else None
+
+
+@router.get("/runs/{run_id}/compare")
+async def compare_run(request: Request, run_id: int, configs: str | None = None,
+                      set_ref: str | None = Query(None, alias="set"),
+                      scenarios: str | None = None):
+    lab = _lab(request)
+    return lab.compare(run_id, configs=_list(configs), set_ref=set_ref,
+                       scenarios=_list(scenarios))
+
+
+@router.get("/runs/{run_id}/report")
+async def run_report(request: Request, run_id: int, format: str = "json"):
+    lab = _lab(request)
+    for attempt in lab.repo.attempts(run_id=run_id):
+        record = lab.repo.scenario(attempt.scenario_id)
+        _check_chat(request.state.lab_token, record.chat_id if record else None)
+    data = lab.report(run_id)
+    if format == "md":
+        return PlainTextResponse(render_markdown(data), media_type="text/markdown")
+    return data

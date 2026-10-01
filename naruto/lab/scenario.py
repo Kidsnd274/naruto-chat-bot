@@ -30,9 +30,10 @@ still load. Everything else is optional::
 
 Message fields: ``id``, ``from``, ``from_id``, ``username``, ``text``,
 ``date`` (ISO 8601 or Unix seconds), ``reply_to`` (an earlier ``id``),
-``media`` (photo, sticker, animation, video, voice, document), ``emoji``
-(stickers), ``file_name`` (documents), ``image`` (a file next to the
-scenario file: the photo's content, for vision), ``bot`` (the bot's own
+``media`` (photo, sticker, animation, video, voice, document, poll), ``emoji``
+(stickers), ``file_name`` (documents), ``poll`` (``{"question": ...,
+"options": [...]}``), ``image`` (a file next to the scenario file, or a
+data: URI: the photo's content, for vision), ``bot`` (the bot's own
 message).
 
 A turn is a message that addresses the bot (a mention, or a reply to one of
@@ -65,7 +66,7 @@ from typing import Any
 CATEGORIES = ("focus", "summarize", "tool", "search", "character", "vision", "memory",
               "planning", "reminder", "other")
 ORIGINS = ("synthetic", "owner", "history")
-MEDIA_KINDS = ("photo", "sticker", "animation", "video", "voice", "document")
+MEDIA_KINDS = ("photo", "sticker", "animation", "video", "voice", "document", "poll")
 COMMANDS = ("summary", "plan", "questions", "remember", "remind", "catchup")
 STATE_KEYS = ("digest", "notes", "board", "reminders", "plans", "history_summaries")
 SIMULATED_METHODS = ("send_message", "send_poll", "pin_chat_message", "unpin_chat_message",
@@ -83,8 +84,8 @@ EXPECT_KEYS = {
 }
 STATE_CHECK_KEYS = ("reminders", "board", "notes", "polls", "plans", "pins")
 TURN_KEYS = {"id", "from", "from_id", "username", "text", "date", "after", "reply_to",
-             "reply_to_answer", "image", "media", "emoji", "file_name", "command", "messages",
-             "expect"}
+             "reply_to_answer", "image", "media", "emoji", "file_name", "poll", "command",
+             "messages", "expect"}
 SCENARIO_KEYS = {"id", "origin", "generated_by", "category", "description", "time", "timezone",
                  "chat", "bot", "members", "state", "messages", "trigger", "expect", "turns",
                  "simulate", "requires", "rubric", "settings", "skill", "provenance",
@@ -112,6 +113,7 @@ class ScenarioMessage:
     media: str | None = None
     emoji: str | None = None
     file_name: str | None = None
+    poll: dict | None = None
     from_bot: bool = False
     image: Path | None = None
     image_bytes: bytes | None = None  # an inline image (a data: URI in the JSON)
@@ -230,6 +232,12 @@ class _Builder:
             raise ScenarioError(f"{where}: unknown media {media!r} ({', '.join(MEDIA_KINDS)}).")
         if image and media != "photo":
             raise ScenarioError(f"{where}: 'image' goes with media 'photo'.")
+        poll = raw.get("poll")
+        if media == "poll" and not (isinstance(poll, dict) and poll.get("question")
+                                    and isinstance(poll.get("options"), list)
+                                    and len(poll["options"]) >= 2):
+            raise ScenarioError(f"{where}: a poll needs \"poll\": {{\"question\": ..., "
+                                "\"options\": [at least two]}.")
         image_path = image_bytes = None
         if isinstance(image, str) and image.startswith("data:"):
             try:
@@ -263,6 +271,7 @@ class _Builder:
             date=_date(raw.get("date"), where) or date or DEFAULT_START,
             sender_id=raw.get("from_id"), username=raw.get("username"), reply_to=reply_to,
             media=media, emoji=raw.get("emoji"), file_name=raw.get("file_name"),
+            poll=poll if media == "poll" else None,
             from_bot=from_bot, image=image_path, image_bytes=image_bytes)
         self.ids[message_id] = message
         self.next_id = max(self.next_id, message_id + 1)

@@ -6,6 +6,7 @@ simulated. An agent reads this first instead of the source code."""
 from naruto.agent.skills import DEFAULT_SKILL, ROUTABLE, SKILLS
 from naruto.agent.tools import default_registry
 from naruto.lab import checks, config, scenario
+from naruto.lab.sandbox import DEFERRED, NOT_SIMULATED
 from naruto.lab.service import MAX_BATCH, MAX_REPEAT
 from naruto.settings.registry import REGISTRY
 
@@ -33,24 +34,6 @@ OUTCOMES = {
     checks.CANCELLED: "stopped before it finished",
     checks.UNJUDGED: "ran, but has no deterministic checks (judge it)",
 }
-
-NOT_SIMULATED = [
-    "Digest upkeep and monthly history summaries don't run in a sandbox: seed state.digest "
-    "and state.history_summaries instead.",
-    "Progress messages (\"Reading back through the chat…\") aren't shown.",
-    "Pressing a plan's Confirm / Change buttons and voting in polls don't happen.",
-    "How Telegram renders Markdown, HTML and rich messages isn't checked.",
-    "/catchup's private (ephemeral) delivery is recorded, not sent.",
-    "/board (show the board again) isn't a scenario command.",
-    "Telegram rate limits and flaky networks only happen if a scenario simulates a failure.",
-]
-DEFERRED = [
-    "Web search (planned in plans/WEB_SEARCH_PLAN.md) doesn't exist yet: scenarios that require "
-    "\"web_search\" are skipped.",
-    "Simulated streaming isn't built.",
-    "Background tasks (digest updates, history summaries, import memory) aren't evaluated, though "
-    "model settings a candidate changes apply to them too.",
-]
 
 EXAMPLE = {
     "id": "banter-teasing-1",

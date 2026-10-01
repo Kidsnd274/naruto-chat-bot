@@ -308,6 +308,18 @@ def run_command(args, client: Client):
             return client.call("GET", "/scenarios", query=args.query), None
         if args.action == "show":
             return client.call("GET", f"/scenarios/{args.ref}"), None
+        if args.action == "save-attempt":
+            body = {"attempt": args.attempt, "turn": args.turn, "id": args.id,
+                    "reason": args.reason, "description": args.description}
+            if args.expect_file:
+                body["expect"] = _read_json(args.expect_file)
+            return client.call("POST", "/scenarios/from-attempt", body), None
+        if args.action == "from-run":
+            body = {"agent_run": args.agent_run, "id": args.id,
+                    "description": args.description}
+            if args.expect_file:
+                body["expect"] = _read_json(args.expect_file)
+            return client.call("POST", "/scenarios/from-agent-run", body), None
     if command == "set":
         if args.action == "add":
             return client.call("POST", f"/runs/{args.run}/sets",
@@ -339,6 +351,44 @@ def run_command(args, client: Client):
         return client.call("POST", f"/batches/{args.batch}/resume"), "batch"
     if command == "attempt":
         return client.call("GET", f"/attempts/{args.attempt}", prompts=args.prompts), None
+    if command == "judge":
+        body = {"turn": args.turn, "kind": args.kind, "criterion": args.criterion,
+                "verdict": args.verdict, "score": args.score, "evidence": args.evidence or [],
+                "comment": args.comment, "judge": args.judge}
+        return client.call("POST", f"/attempts/{args.attempt}/judgments", body), None
+    if command == "rubric":
+        if args.action == "show":
+            return client.call("GET", f"/runs/{args.run}/rubric"), None
+        data = _read_json(args.file)
+        criteria = data.get("criteria") if isinstance(data, dict) else data
+        return client.call("PUT", f"/runs/{args.run}/rubric",
+                           {"criteria": criteria, "status": args.status,
+                            "confirmation": args.confirmation, "reason": args.reason}), None
+    if command == "note":
+        return client.call("POST", f"/runs/{args.run}/notes",
+                           {"kind": args.kind, "text": args.text,
+                            "evidence": args.evidence or []}), None
+    if command == "compare":
+        return client.call("GET", f"/runs/{args.run}/compare",
+                           configs=",".join(args.candidate) if args.candidate else None,
+                           set=args.set,
+                           scenarios=",".join(args.scenario) if args.scenario else None), None
+    if command == "report":
+        if args.format == "md" or args.out:
+            text = _call_text(client, f"/runs/{args.run}/report", format="md")
+            if args.out:
+                out = Path(args.out).expanduser()
+                if _inside_repo(out):
+                    print(f"warning: {out} is inside the repository. Lab results can contain "
+                          "real chat content; keep them outside it.", file=sys.stderr)
+                out.mkdir(parents=True, exist_ok=True)
+                (out / "report.md").write_text(text, encoding="utf-8")
+                data = client.call("GET", f"/runs/{args.run}/report")
+                (out / "report.json").write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                                                 encoding="utf-8")
+                return f"Wrote {out / 'report.md'} and {out / 'report.json'}", None
+            return text, None
+        return client.call("GET", f"/runs/{args.run}/report"), None
     if command == "export":
         out = Path(args.out).expanduser() if args.out else DEFAULT_EXPORT_DIR
         if _inside_repo(out):
@@ -348,6 +398,20 @@ def run_command(args, client: Client):
         target = write_export(data["folder"], data["files"], out)
         return f"Wrote {len(data['files'])} files to {target}", None
     raise ClientError(f"Unknown command {command}.", 2)
+
+
+def _call_text(client: Client, path: str, **query) -> str:
+    """A text response (the Markdown report)."""
+    url = f"{client.url}{API}{path}?" + parse.urlencode(query)
+    status, raw = client._send("GET", url, None, {"Authorization": f"Bearer {client.token}"})
+    if status >= 400:
+        try:
+            message = json.loads(raw).get("message")
+        except ValueError:
+            message = None
+        raise ClientError(f"{status}: {message or 'request failed'}", 3 if status in (
+            401, 403, 409) else 2 if status < 500 else 1)
+    return raw.decode("utf-8")
 
 
 def _candidate(value: str):
@@ -414,6 +478,21 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_list.add_argument("--query")
     scenario_show = scenario_actions.add_parser("show")
     scenario_show.add_argument("ref", help="slug or id")
+    save = scenario_actions.add_parser(
+        "save-attempt", help="keep an attempt's conversation up to a turn as a new scenario")
+    save.add_argument("attempt", type=int)
+    save.add_argument("--turn", type=int, required=True, help="the turn to answer (1-based)")
+    save.add_argument("--id", help="the new scenario's slug")
+    save.add_argument("--expect-file", help="JSON expectations for that turn (default: the "
+                                            "original turn's)")
+    save.add_argument("--reason", help="why, if the slug already exists")
+    save.add_argument("--description")
+    from_run = scenario_actions.add_parser(
+        "from-run", help="a real conversation (an agent run) as a scenario; needs chat access")
+    from_run.add_argument("agent_run", type=int, help="the id on the web admin's Agent runs page")
+    from_run.add_argument("--id", help="the new scenario's slug")
+    from_run.add_argument("--expect-file")
+    from_run.add_argument("--description")
 
     sets = commands.add_parser("set", help="sets of scenarios: tuning, validation, regression")
     set_actions = sets.add_subparsers(dest="action", required=True)
@@ -462,6 +541,43 @@ def build_parser() -> argparse.ArgumentParser:
     attempt_show.add_argument("attempt", type=int)
     attempt_show.add_argument("--prompts", action="store_true",
                               help="include the exact prompts and every step")
+    judge = commands.add_parser("judge", help="record a judgment of one turn of an attempt")
+    judge.add_argument("attempt", type=int)
+    judge.add_argument("--turn", type=int, default=1)
+    judge.add_argument("--criterion", required=True, help="a criterion id from the run's rubric")
+    judge.add_argument("--verdict", required=True, choices=["pass", "fail", "score"])
+    judge.add_argument("--score", type=float)
+    judge.add_argument("--evidence", action="append",
+                       help="a quote from the reply or trace (repeat; required for AI judgments)")
+    judge.add_argument("--comment")
+    judge.add_argument("--kind", default="ai", choices=["ai", "owner"],
+                       help="owner: the owner's own judgment, relayed")
+    judge.add_argument("--judge", help="who judged (default: this token's agent)")
+    rubric = commands.add_parser("rubric", help="the run's rubric")
+    rubric_actions = rubric.add_subparsers(dest="action", required=True)
+    rubric_show = rubric_actions.add_parser("show")
+    rubric_show.add_argument("run", type=int)
+    rubric_set = rubric_actions.add_parser("set")
+    rubric_set.add_argument("run", type=int)
+    rubric_set.add_argument("--file", required=True,
+                            help="JSON: [{\"id\": ..., \"description\": ...}, ...]")
+    rubric_set.add_argument("--status", default="proposed", choices=["proposed", "confirmed"])
+    rubric_set.add_argument("--confirmation", help="the owner's words confirming it")
+    rubric_set.add_argument("--reason", help="why it changed")
+    note = commands.add_parser("note", help="a note for the report")
+    note.add_argument("run", type=int)
+    note.add_argument("--kind", required=True, choices=["defect", "observation", "assumption"])
+    note.add_argument("--text", required=True)
+    note.add_argument("--evidence", action="append", help="e.g. attempt:12 (repeat)")
+    compare = commands.add_parser("compare", help="compare configurations")
+    compare.add_argument("run", type=int)
+    compare.add_argument("--candidate", action="append", help="limit to these (repeat)")
+    compare.add_argument("--set")
+    compare.add_argument("--scenario", action="append")
+    report = commands.add_parser("report", help="the run's report")
+    report.add_argument("run", type=int)
+    report.add_argument("--format", default="json", choices=["json", "md"])
+    report.add_argument("--out", help="write report.md and report.json to this folder")
     export = commands.add_parser("export", help="write a run as a folder of readable files")
     export.add_argument("run", type=int)
     export.add_argument("--out", help=f"where (default {DEFAULT_EXPORT_DIR})")

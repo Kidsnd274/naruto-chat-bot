@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import logging
 from pathlib import Path
+import re
 import secrets
 from typing import Any
 
@@ -23,7 +24,7 @@ from naruto.db.lab import (
     LabSet,
     LabToken,
 )
-from naruto.lab import config
+from naruto.lab import config, report, snapshot
 from naruto.lab.executor import LabExecutor
 from naruto.lab.scenario import ScenarioError, parse_scenario
 from naruto.settings.registry import SettingError
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 POLICIES = ("recommend", "agent_may_activate")
 STOP_REASONS = ("objective_met", "budget_exhausted", "no_improvement", "blocked", "cancelled")
 PURPOSES = ("tuning", "validation", "regression")
+NOTE_KINDS = ("defect", "observation", "assumption")
+VERDICTS = ("pass", "fail", "score")
 MAX_BATCH = 500
 MAX_REPEAT = 10
 TOKEN_PREFIX = "nlab_"
@@ -67,6 +70,27 @@ def _text_list(value, name: str, limit: int = 50) -> list[str]:
     if len(value) > limit:
         raise LabError(f"{name} takes at most {limit} items.")
     return [v.strip() for v in value if v.strip()]
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _turn_text(turn: dict) -> str:
+    """What a judgment may quote: the reply, tool calls and results, the
+    model's returned reasoning, and the prompt."""
+    run = turn.get("run") or {}
+    parts = [turn.get("answer") or "", run.get("reasoning") or ""]
+    for step in run.get("steps") or []:
+        parts += [step.get("text") or "", step.get("result") or "",
+                  str(step.get("arguments") or "")]
+    for message in run.get("prompt") or []:
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts += [part.get("text", "") for part in content if isinstance(part, dict)]
+    return "\n".join(parts)
 
 
 class LabService:
@@ -675,6 +699,151 @@ class LabService:
              "comment": j.comment, "judge": j.judge, "rubric_version": j.rubric_version}
             for j in self.repo.judgments(attempt_id=attempt.id)]
         return view
+
+    # ============================================================ judging
+
+    def set_rubric(self, run_id: int, criteria: list, *, status: str = "proposed",
+                   confirmation: str | None = None, reason: str | None = None):
+        """A new rubric version. Confirming needs the owner's words; changing
+        criteria after judgments were made needs a reason (they go stale)."""
+        run = self.active_run(run_id)
+        if not isinstance(criteria, list) or not criteria:
+            raise LabError("A rubric is a list of criteria: [{\"id\": ..., \"description\": "
+                           "...}].")
+        cleaned = []
+        for item in criteria:
+            if not isinstance(item, dict) or not str(item.get("id", "")).strip() \
+                    or not str(item.get("description", "")).strip():
+                raise LabError("Each criterion needs an id and a description.")
+            entry = {"id": config.slugify(str(item["id"]), 40),
+                     "description": str(item["description"]).strip()}
+            for key in ("applies_to", "scale", "examples"):
+                if item.get(key) is not None:
+                    entry[key] = item[key]
+            cleaned.append(entry)
+        ids = [c["id"] for c in cleaned]
+        if len(ids) != len(set(ids)):
+            raise LabError("Criterion ids must be unique.")
+        if status not in ("proposed", "confirmed"):
+            raise LabError("A rubric's status is proposed or confirmed.")
+        if status == "confirmed" and not (confirmation or "").strip():
+            raise LabError("Only the owner confirms a rubric: pass confirmation with what they "
+                           "said.")
+        current = self.repo.rubric(run.id)
+        changed = current is not None and current.criteria != cleaned
+        if changed and self.repo.judgments(run_id=run.id) and not (reason or "").strip():
+            raise LabError("Judgments exist under the current rubric: changing it needs a "
+                           "reason, and they will need to be made again.", "conflict")
+        rubric = self.repo.add_rubric(run.id, cleaned, status=status,
+                                      confirmation=(confirmation or "").strip() or None,
+                                      reason=(reason or "").strip() or None)
+        if current is not None:
+            self.repo.add_event(run.id, "rubric_changed", version=rubric.version,
+                                status=status, reason=reason, criteria_changed=changed)
+        return rubric
+
+    def add_judgment(self, attempt_id: int, *, turn: int, kind: str, criterion: str,
+                     verdict: str, score: float | None = None, evidence: list | None = None,
+                     comment: str | None = None, judge: str):
+        attempt = self.get_attempt(attempt_id)
+        run = self.get_run(attempt.run_id)
+        rubric = self.repo.rubric(run.id)
+        if rubric is None:
+            raise LabError("Judgments are made against the run's rubric: set one first (PUT "
+                           f"/runs/{run.id}/rubric).", "conflict")
+        if criterion not in [c["id"] for c in rubric.criteria]:
+            raise LabError(f"{criterion!r} isn't in rubric v{rubric.version} "
+                           f"({', '.join(c['id'] for c in rubric.criteria)}).")
+        if kind not in ("ai", "owner"):
+            raise LabError("kind is ai (a model's judgment) or owner (the owner's own).")
+        if verdict not in VERDICTS:
+            raise LabError(f"verdict is one of: {', '.join(VERDICTS)}.")
+        if verdict == "score" and not isinstance(score, (int, float)):
+            raise LabError("A score verdict needs a number in score.")
+        turns = {t.get("index"): t for t in attempt.turns}
+        if turn not in turns:
+            raise LabError(f"Attempt {attempt.id} has turns {sorted(turns) or 'none'}.")
+        evidence = [str(e) for e in evidence or [] if str(e).strip()]
+        if kind == "ai" and not evidence:
+            raise LabError("An AI judgment must quote its evidence from the reply or trace.")
+        haystack = _normalize(_turn_text(turns[turn]))
+        missing = [quote for quote in evidence if _normalize(quote) not in haystack]
+        if missing:
+            raise LabError("These quotes aren't in that turn's reply or trace: "
+                           + "; ".join(repr(q[:80]) for q in missing), missing=missing)
+        return self.repo.add_judgment(attempt_id=attempt.id, run_id=run.id, turn=turn,
+                                      kind=kind, criterion=criterion, verdict=verdict,
+                                      score=float(score) if score is not None else None,
+                                      evidence=evidence, comment=(comment or "").strip() or None,
+                                      judge=judge, rubric_version=rubric.version)
+
+    def add_note(self, run_id: int, kind: str, text: str, *, evidence: list | None = None,
+                 actor: str):
+        run = self.get_run(run_id)
+        if kind not in NOTE_KINDS:
+            raise LabError(f"A note is one of: {', '.join(NOTE_KINDS)}.")
+        if not (text or "").strip():
+            raise LabError("A note needs text.")
+        return self.repo.add_note(run.id, kind, text.strip(), evidence=list(evidence or []),
+                                  created_by=actor)
+
+    def compare(self, run_id: int, **filters) -> dict:
+        return report.compare(self, self.get_run(run_id), **filters)
+
+    def report(self, run_id: int) -> dict:
+        return report.build_report(self, self.get_run(run_id))
+
+    # ===================================================== saved scenarios
+
+    async def scenario_from_attempt(self, attempt_id: int, *, turn: int, slug: str | None,
+                                    expect: dict | None, reason: str | None,
+                                    description: str | None, actor: str):
+        """Keep a discovered failure: the attempt's conversation just before
+        ``turn`` becomes a new scenario with that turn to answer."""
+        attempt = self.get_attempt(attempt_id)
+        if attempt.status != "done" or not attempt.turns:
+            raise LabError(f"Attempt {attempt.id} hasn't run any turns.", "conflict")
+        run = self.get_run(attempt.run_id)
+        record = self.repo.scenario(attempt.scenario_id)
+        previous = self.repo.attempt(attempt.continue_from) if attempt.continue_from else None
+        scenario = self.executor._scenario_for(attempt, previous)
+        candidate = self.repo.candidate(attempt.candidate_id) if attempt.candidate_id else None
+        restore = Path(previous.state_path) if previous and previous.state_path else None
+        slug = config.slugify(slug or f"{record.slug}-turn{turn}-a{attempt.id}", 60)
+        try:
+            body = await snapshot.scenario_from_attempt(
+                scenario, attempt.turns, self.effective_settings(run, candidate), index=turn,
+                slug=slug, expect=expect, description=description or "",
+                provenance={"attempt": attempt.id, "turn": turn, "scenario": record.slug,
+                            "version": record.version, "run": run.id,
+                            "configuration": self.label(run, attempt.candidate_id)},
+                restore=restore)
+        except (snapshot.ReplayError, ScenarioError) as exc:
+            raise LabError(str(exc), "conflict") from None
+        saved, _ = self.add_scenario(body, created_by=actor, reason=reason, run_id=run.id,
+                                     chat_id=record.chat_id)
+        return saved
+
+    def scenario_from_agent_run(self, agent_run_id: int, *, slug: str | None,
+                                expect: dict | None, description: str | None,
+                                token: LabToken | None, actor: str):
+        """A real conversation the bot answered, as a scenario (the token must
+        be allowed that chat)."""
+        agent_run = self.services.runs.get(agent_run_id)
+        if agent_run is None:
+            raise LabError(f"There is no agent run {agent_run_id} (retention may have "
+                           "deleted it).", "not_found")
+        if token is not None and agent_run.chat_id not in token.chats:
+            raise LabError(f"Agent run {agent_run_id} is in chat {agent_run.chat_id}, which "
+                           "this token may not read.", "forbidden")
+        slug = config.slugify(slug or f"chat-run-{agent_run_id}", 60)
+        try:
+            body = snapshot.scenario_from_chat(self.services, agent_run, slug=slug,
+                                               expect=expect, description=description or "")
+        except (snapshot.ReplayError, ScenarioError) as exc:
+            raise LabError(str(exc), "conflict") from None
+        saved, _ = self.add_scenario(body, created_by=actor, chat_id=agent_run.chat_id)
+        return saved
 
     # =========================================================== upkeep
 

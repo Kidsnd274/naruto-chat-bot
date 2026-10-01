@@ -14,6 +14,7 @@ from naruto.web import (
     board,
     chat_settings,
     chats,
+    history,
     imports,
     logs_page,
     memory,
@@ -44,7 +45,8 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = services
     app.state.templates = make_templates(services)
-    app.state.chat_detail_extras = [imports.chat_imports, board.chat_board, memory.chat_memory]
+    app.state.chat_detail_extras = [imports.chat_imports, board.chat_board, memory.chat_memory,
+                                     history.chat_history]
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -81,6 +83,7 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app.include_router(chat_settings.router)
     app.include_router(board.router)
     app.include_router(memory.router)
+    app.include_router(history.router)
     app.include_router(people.router)
     app.include_router(imports.router)
     app.include_router(runs.router)

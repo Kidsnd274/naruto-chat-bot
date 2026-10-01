@@ -19,15 +19,14 @@ import time
 
 from naruto.db.chats import Chat
 from naruto.db.history import GROUPINGS, MONTH, RANGE, HistoryDigest
-from naruto.memory.history import (
+from naruto.memory.history import fingerprint, settings_hash
+from naruto.periods import (
     calendar_period,
     day_start,
     describe_span,
-    fingerprint,
     local_date,
     period_label,
     plan_periods,
-    settings_hash,
 )
 from naruto.services import Services
 

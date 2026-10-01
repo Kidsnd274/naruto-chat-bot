@@ -259,7 +259,8 @@ async def delete_messages(request: Request, chat_id: int):
         return request.app.state.templates.TemplateResponse(request, "confirm.html", {
             "title": f"Delete {count} {what}{when}?",
             "message": f"This permanently deletes {count} {what}{when} from "
-                       f"{chat.display_title}. It cannot be undone.",
+                       f"{chat.display_title}. It cannot be undone. History summaries and "
+                       "memory notes made from them stay (delete them separately).",
             "action": f"/chats/{chat.chat_id}/delete-messages",
             "fields": {"scope": scope, "before": before_raw, "source": source or "",
                        "confirm": "yes"},

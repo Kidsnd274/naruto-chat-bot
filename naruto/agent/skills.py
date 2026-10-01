@@ -22,11 +22,11 @@ READ = ("search_chat", "get_messages_around")
 
 SKILLS: dict[str, Skill] = {skill.name: skill for skill in (
     Skill("banter", "Banter", READ + (
-        "search_memory", "remember", "forget", "describe_image", "set_reminder",
-        "cancel_reminder", "create_poll", "pin_message", "unpin_message", "update_board",
-        "use_skill")),
+        "search_history_summaries", "search_memory", "remember", "forget", "describe_image",
+        "set_reminder", "cancel_reminder", "create_poll", "pin_message", "unpin_message",
+        "update_board", "use_skill")),
     Skill("summarize", "Summarize", READ + (
-        "get_earlier_messages", "search_memory", "describe_image"),
+        "get_earlier_messages", "search_history_summaries", "search_memory", "describe_image"),
         "summarize a discussion or what was talked about (optionally since a time)"),
     Skill("catchup", "Catch-up", READ + ("get_earlier_messages", "search_memory")),
     Skill("plan", "Plan", READ + (

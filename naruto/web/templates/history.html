@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}History · {{ chat.display_title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/chats">Chats</a> / <a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a> /</p>
+<h1>History summaries</h1>
+{% set start, end, count = coverage %}
+<p class="muted">Dated summaries of {{ chat.display_title }}'s past, kept after the messages themselves are deleted. The bot looks them up when someone asks about an earlier time; they are summaries, so they can miss details or be wrong — correct them here.{% if count %} {{ count }} active, covering {{ start|ts("%d %b %Y") }} – {{ (end - 1)|ts("%d %b %Y") }}.{% endif %}</p>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Live recording</h2>
+    <form method="post" action="/chats/{{ chat.chat_id }}/recording-since" class="filters">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="small">Recorded live since <input type="date" name="recording_since" value="{{ recording_since|ts('%Y-%m-%d') if recording_since else '' }}"></label>
+      <button type="submit" class="small">Save</button>
+    </form>
+    <p class="muted small">Imports and their summaries stop at this date so nothing is counted twice; from it on, live chat is summarized{% if live_archive %} once each month is over{% else %} — monthly live summaries are off for this chat (Settings → History){% endif %}. It was set when the bot was enabled; correct it if you know better.</p>
+  </section>
+  <section class="card">
+    <h2>Live months</h2>
+    {% if live_periods %}
+      <ul class="plain small">
+        {% for p in live_periods %}
+          <li>{{ p.period_start|ts("%d %b %Y") }} – {{ (p.period_end - 1)|ts("%d %b %Y") }}: <span class="badge {{ 'failed' if p.status == 'failed' else 'pending' }}">{{ 'missed' if p.status == 'failed' else p.status }}</span>{% if p.chunks_done %} <span class="muted">{{ p.chunks_done }} parts read</span>{% endif %}{% if p.error %} <span class="muted">{{ p.error }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted small">Nothing waiting. Finished months show up in the list below.</p>
+    {% endif %}
+  </section>
+</div>
+
+<form class="filters" method="get" action="/chats/{{ chat.chat_id }}/history">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search summaries">
+  <label class="small">From <input type="date" name="since" value="{{ filters.since }}"></label>
+  <label class="small">To <input type="date" name="until" value="{{ filters.until }}"></label>
+  <select name="status" aria-label="Status">
+    <option value="">In use</option>
+    <option value="replaced" {{ 'selected' if filters.status == 'replaced' else '' }}>Replaced</option>
+    <option value="staged" {{ 'selected' if filters.status == 'staged' else '' }}>Waiting to replace others</option>
+    <option value="all" {{ 'selected' if filters.status == 'all' else '' }}>All</option>
+  </select>
+  {% if filters.import %}<input type="hidden" name="import" value="{{ filters.import }}"><span class="small">From <a href="/import/{{ filters.import }}">import #{{ filters.import }}</a> · <a href="/chats/{{ chat.chat_id }}/history">all</a></span>{% endif %}
+  <button type="submit">Filter</button>
+</form>
+
+{% if digests %}
+  {% for d in digests %}
+  <section class="card" id="h{{ d.id }}">
+    <div class="title-row">
+      <h2>{{ labels[d.id] }}{% if labels[d.id] != spans[d.id] %} <span class="muted small">{{ spans[d.id] }}</span>{% endif %}</h2>
+      <div class="actions small">
+        {% if d.status != "active" %}<span class="badge pending">{{ d.status }}</span>{% endif %}
+        {% if d.edited %}<span class="badge custom">edited</span>{% endif %}
+        <span class="muted">{{ d.message_count }} messages{% if d.first_message_at %}, {{ d.first_message_at|ts("%d %b") }} – {{ d.last_message_at|ts("%d %b %Y") }}{% endif %} · {% if d.source == "live" %}live chat{% elif d.import_id %}<a href="/import/{{ d.import_id }}">import #{{ d.import_id }}</a>{% else %}export{% endif %} · {{ d.updated_at|ago }}</span>
+      </div>
+    </div>
+    {% for note in d.limitations %}<p class="small warn-text">{{ note }}</p>{% endfor %}
+    <form method="post" action="/chats/{{ chat.chat_id }}/history/{{ d.id }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <textarea name="text" rows="{{ [d.text.count('\n') + 2, 14]|min }}" aria-label="Summary of {{ spans[d.id] }}">{{ d.text }}</textarea>
+      <div class="actions">
+        <button type="submit" class="small">Save</button>
+      </div>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/history/{{ d.id }}/delete">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="link small">Delete…</button>
+    </form>
+    {% if edits.get(d.id) %}
+      <details>
+        <summary class="small muted">Earlier versions ({{ edits[d.id]|length }})</summary>
+        {% for edit in edits[d.id] %}
+          <p class="small muted">Before {{ edit.changed_by }} changed it on {{ edit.changed_at|ts }}:</p>
+          <pre class="small">{{ edit.text }}</pre>
+        {% endfor %}
+      </details>
+    {% endif %}
+  </section>
+  {% endfor %}
+  {% if not filters.import %}
+  <div class="pager">
+    {% set query = "q=" ~ filters.q|urlencode ~ "&since=" ~ filters.since ~ "&until=" ~ filters.until ~ "&status=" ~ filters.status %}
+    {% if offset > 0 %}<a class="button small" href="?{{ query }}&offset={{ [offset - limit, 0]|max }}">← Earlier</a>{% endif %}
+    {% if offset + digests|length < total %}<a class="button small" href="?{{ query }}&offset={{ offset + limit }}">Later →</a>{% endif %}
+  </div>
+  {% endif %}
+{% else %}
+  <p class="card muted">No summaries{% if filters.q or filters.since or filters.until %} match{% else %} yet. <a href="/import">Import an export</a> and choose “Make history summaries”, or wait for a month of live chat to end{% endif %}.</p>
+{% endif %}
+{% endblock %}

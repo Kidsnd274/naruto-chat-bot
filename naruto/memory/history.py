@@ -19,7 +19,7 @@ import asyncio
 import bisect
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time as dtime, timedelta, tzinfo
+from datetime import datetime, tzinfo
 import hashlib
 import json
 import logging
@@ -34,11 +34,9 @@ from naruto.db.history import (
     FAILED,
     LIVE,
     MONTH,
-    RANGE,
     RUNNING,
     STAGED,
     WAITING,
-    WEEK,
     HistoryPeriod,
 )
 from naruto.db.messages import LIVE as LIVE_SOURCE, StoredMessage
@@ -47,6 +45,14 @@ from naruto.llm import LLMError, RequestNotRun
 from naruto.markers import message_body
 from naruto.memory.keeper import fill
 from naruto.model_queue import REFUSED_CANCELLED, RequestInfo
+from naruto.periods import (
+    day_start,
+    day_text,
+    describe_span,
+    local_date,
+    period_label,
+    plan_periods,
+)
 from naruto.services import BotIdentity, Services
 
 logger = logging.getLogger(__name__)
@@ -68,76 +74,6 @@ class HistoryFailed(Exception):
 
 class SourceStopped(Exception):
     """Reading an export was interrupted (shutting down)."""
-
-
-# ---------------------------------------------------------------- periods
-
-def local_date(ts: int, tz: tzinfo) -> date:
-    return datetime.fromtimestamp(ts, tz).date()
-
-
-def day_start(day: date, tz: tzinfo) -> int:
-    return int(datetime.combine(day, dtime.min, tz).timestamp())
-
-
-def _next_month(day: date) -> date:
-    return date(day.year + (day.month == 12), day.month % 12 + 1, 1)
-
-
-def plan_periods(start: int, end: int, grouping: str, tz: tzinfo) -> list[tuple[int, int]]:
-    """[start, end) cut into calendar months, weeks starting on Monday, or
-    left as one range. The first and last periods are clipped to it."""
-    if end <= start:
-        return []
-    if grouping == RANGE:
-        return [(start, end)]
-    first = local_date(start, tz)
-    cursor = first.replace(day=1) if grouping == MONTH else first - timedelta(days=first.weekday())
-    periods = []
-    while True:
-        following = _next_month(cursor) if grouping == MONTH else cursor + timedelta(days=7)
-        period_start, period_end = day_start(cursor, tz), day_start(following, tz)
-        if period_start >= end:
-            return periods
-        periods.append((max(period_start, start), min(period_end, end)))
-        cursor = following
-
-
-def day_text(day: date, *, year: bool = True) -> str:
-    """"14 Mar 2021"."""
-    return f"{day.day} {day.strftime('%b %Y' if year else '%b')}"
-
-
-def calendar_period(ts: int, grouping: str, tz: tzinfo) -> tuple[int, int]:
-    """The whole month or week (Monday to Sunday) around ``ts``."""
-    day = local_date(ts, tz)
-    if grouping == MONTH:
-        first = day.replace(day=1)
-        return day_start(first, tz), day_start(_next_month(first), tz)
-    first = day - timedelta(days=day.weekday())
-    return day_start(first, tz), day_start(first + timedelta(days=7), tz)
-
-
-def describe_span(start: int, end: int, tz: tzinfo) -> str:
-    """"1–31 Mar 2021" style, with the end day inclusive."""
-    first, last = local_date(start, tz), local_date(end - 1, tz)
-    if first == last:
-        return day_text(first)
-    if (first.year, first.month) == (last.year, last.month):
-        return f"{first.day}–{day_text(last)}"
-    if first.year == last.year:
-        return f"{day_text(first, year=False)} – {day_text(last)}"
-    return f"{day_text(first)} – {day_text(last)}"
-
-
-def period_label(start: int, end: int, grouping: str, tz: tzinfo) -> str:
-    first, last = local_date(start, tz), local_date(end - 1, tz)
-    whole_month = first.day == 1 and _next_month(first) - timedelta(days=1) == last
-    if grouping == MONTH and whole_month:
-        return first.strftime("%B %Y")
-    if grouping == WEEK and last - first == timedelta(days=6):
-        return f"Week of {day_text(first)}"
-    return describe_span(start, end, tz)
 
 
 # --------------------------------------------------------------- hashing

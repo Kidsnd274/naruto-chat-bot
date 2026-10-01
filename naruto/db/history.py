@@ -14,6 +14,7 @@ import sqlite3
 
 from naruto.db.database import Database, now_ts
 from naruto.db.messages import fts_query
+from naruto.periods import MONTH, RANGE, WEEK
 
 ACTIVE = "active"
 STAGED = "staged"
@@ -22,9 +23,6 @@ REPLACED = "replaced"
 EXPORT = "export"
 LIVE = "live"
 
-MONTH = "month"
-WEEK = "week"
-RANGE = "range"
 GROUPINGS = (MONTH, WEEK, RANGE)
 
 # Period statuses.

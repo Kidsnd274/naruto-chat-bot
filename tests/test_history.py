@@ -15,7 +15,7 @@ from naruto.db.history import MONTH, RANGE, WEEK
 from naruto.importer.service import ImportService
 from naruto.llm import ChatResult, LLMError
 from naruto.memory import history as history_module
-from naruto.memory.history import describe_span, period_label, plan_periods
+from naruto.periods import describe_span, period_label, plan_periods
 
 UTC = timezone.utc
 
@@ -365,3 +365,82 @@ def test_history_moves_with_a_group_upgrade_and_outlives_retention(services):
     moved = services.history.get(digest.id)
     assert moved.chat_id == -1004001 and moved.status == "active"
     assert services.history.search(-1004001, query="January")[1] == 1
+
+
+# ------------------------------------------------------------------ lookup
+
+def add_digest(services, chat_id, start, end, text, *, edited=False, **extra):
+    digest = services.history.add(
+        chat_id=chat_id, status="active", source="export", grouping=MONTH, timezone="UTC",
+        period_start=start, period_end=end, first_message_at=start + 3600,
+        last_message_at=end - 3600, message_count=10, import_id=None, period_id=None,
+        fingerprint="x", text=text, limitations=extra.get("limitations", []), actor="t")
+    if edited:
+        services.history.edit(digest.id, text + " (fixed)", actor="owner")
+    return digest
+
+
+@pytest.fixture
+def archive(services):
+    services.chats.upsert_seen(GROUP_ID, title="BBQ crew")
+    services.chats.set_status(GROUP_ID, "enabled")
+    for month, text in ((6, "- Planned a camping trip to Pulau Ubin"),
+                        (7, "- The camping trip happened; Wei forgot the tent"),
+                        (8, "- Talked about the National Day BBQ")):
+        add_digest(services, GROUP_ID, ts(2021, month, 1), ts(2021, month + 1, 1), text,
+                   limitations=["The export starts on 3 Jun 2021."] if month == 6 else [])
+    add_digest(services, -999, ts(2021, 7, 1), ts(2021, 8, 1), "- Another group's camping")
+
+
+async def lookup(services, **args):
+    from fakes import FakeBot, ScriptedLLM, tool_call
+    from naruto.agent.runner import AgentRunner, RunRequest
+    from naruto.db.messages import LIVE, NewMessage
+
+    trigger = services.messages.insert_live(NewMessage(
+        chat_id=GROUP_ID, origin_chat_id=GROUP_ID, source=LIVE, message_id=99, sender_id=7,
+        sender_name="Alice", date=ts(2026, 9, 1), text="@naruto_bot what happened in 2021?"))
+    llm = ScriptedLLM([tool_call("search_history_summaries", args)], "Here's what I found.")
+    runner = AgentRunner(services, FakeBot(), llm=llm)
+    await runner.run(RunRequest(chat=services.chats.get(GROUP_ID), trigger=trigger,
+                                bot=services.status.bot))
+    return llm, [m["content"] for m in llm.calls[1]["messages"] if m["role"] == "tool"][0]
+
+
+async def test_the_bot_looks_up_old_summaries_of_its_own_chat(services, archive):
+    llm, result = await lookup(services, query="camping trip")
+    assert "search_history_summaries" in [t["function"]["name"] for t in llm.calls[0]["tools"]]
+    assert "not the original messages" in result
+    assert "### July 2021" in result and "Wei forgot the tent" in result
+    assert "### June 2021" in result and "Note: The export starts on 3 Jun 2021." in result
+    assert "Another group" not in result  # another chat's archive stays out
+    background = llm.calls[0]["messages"][1]["content"]
+    assert "Summaries of earlier history: 1 Jun – 31 Aug 2021 (3 periods)" in background
+
+    _, by_date = await lookup(services, since="2021-08", until="2021-08")
+    assert "National Day" in by_date and "camping" not in by_date
+    services.settings.set("history.lookup_results", 1, actor="t")
+    _, paged = await lookup(services, since="2021")
+    assert "### June 2021" in paged and "Page 1 of 3. Ask for page 2" in paged
+    _, second = await lookup(services, since="2021", page=2)
+    assert "### July 2021" in second
+    _, nothing = await lookup(services, query="skiing")
+    assert "No history summaries about 'skiing'" in nothing
+    assert "Summaries cover 1 Jun – 31 Aug 2021 (3 periods)" in nothing
+    _, bad = await lookup(services, since="summer")
+    assert bad.startswith("Error: since must look like 2021")
+
+
+async def test_skills_without_the_tool_dont_hear_about_it(services, archive):
+    from naruto.agent.context import ContextBuilder
+    from naruto.db.messages import LIVE, NewMessage
+
+    trigger = services.messages.insert_live(NewMessage(
+        chat_id=GROUP_ID, origin_chat_id=GROUP_ID, source=LIVE, message_id=99, sender_id=7,
+        sender_name="Alice", date=ts(2026, 9, 1), text="/plan"))
+    chat = services.chats.get(GROUP_ID)
+    plan_prompt = ContextBuilder(services).build(chat, trigger, bot=services.status.bot,
+                                                 skill="plan")
+    assert "Summaries of earlier history" not in plan_prompt.messages[1]["content"]
+    banter = ContextBuilder(services).build(chat, trigger, bot=services.status.bot)
+    assert "Summaries of earlier history" in banter.messages[1]["content"]

@@ -87,6 +87,7 @@
 
 {% block extra_sections %}
   {% if digest is defined %}{% include "_chat_memory.html" %}{% endif %}
+  {% if history_count is defined %}{% include "_chat_history.html" %}{% endif %}
   {% if board is defined %}{% include "_chat_board.html" %}{% endif %}
   {% if imports is defined %}{% include "_chat_imports.html" %}{% endif %}
 {% endblock %}
@@ -115,7 +116,7 @@
 
 <section class="card danger-zone">
   <h2>Delete data</h2>
-  <p class="muted">Deletion is permanent. You'll see what is affected before anything is deleted.</p>
+  <p class="muted">Deletion is permanent. You'll see what is affected before anything is deleted. Deleting messages leaves the digest, memory notes and history summaries made from them; delete those separately.</p>
   <form method="post" action="/chats/{{ chat.chat_id }}/delete-messages" class="filters">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <select name="scope">
@@ -142,6 +143,10 @@
     <form method="post" action="/chats/{{ chat.chat_id }}/memory-clear">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="danger">Delete all memory notes…</button>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/history-clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Delete all history summaries…</button>
     </form>
   </div>
 </section>

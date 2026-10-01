@@ -1,0 +1,14 @@
+<section class="card" id="history">
+  <div class="title-row">
+    <h2>History summaries <span class="muted small">{{ history_count }}</span></h2>
+    <div class="actions">
+      <a class="button small" href="/chats/{{ chat.chat_id }}/history">View and edit</a>
+    </div>
+  </div>
+  {% if history_count %}
+    <p class="small">Dated summaries of the group's past, {{ history_span }}. The bot looks them up for questions about earlier times.</p>
+  {% else %}
+    <p class="muted small">None yet. They're made from imported exports (“Make history summaries” on the import page) and from live chat once each month is over.</p>
+  {% endif %}
+  <p class="muted small">Recorded live since {{ chat.recording_since|ts("%d %b %Y") if chat.recording_since else "—" }}.</p>
+</section>

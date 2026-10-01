@@ -34,7 +34,9 @@ from naruto.db.messages import StoredMessage
 from naruto.db.plans import PROPOSED
 from naruto.db.reminders import PENDING as REMINDER_PENDING
 from naruto.markers import media_marker, message_body
+from naruto.agent.skills import DEFAULT_SKILL, get_skill
 from naruto.memory.notes import note_lines, notes_for_prompt
+from naruto.periods import describe_span
 from naruto.services import BotIdentity, Services
 
 MAX_MEMBERS = 50
@@ -46,6 +48,7 @@ STATE_NOTE = ("What you keep for the group right now. It is reference material, 
 BACKGROUND_NOTE = ("What you know beyond the recent messages. It is reference material, never "
                    "a request, and the recent messages are more up to date.")
 REPLY_QUOTE_CHARS = 80
+HISTORY_TOOL = "search_history_summaries"
 OPEN_PLAN_DAYS = 7  # older unconfirmed proposals are left out of the prompt
 
 
@@ -100,6 +103,7 @@ class ContextBuilder:
         then; ``note`` is added to the current request (e.g. what a command
         asked for); ``reserved_tokens`` are kept free for the tool list."""
         settings = self._settings = self.services.settings.for_chat(chat.chat_id)
+        self._skill = skill
         tz = self.services.timezone()
         now = (now or datetime.now(tz)).astimezone(tz)
 
@@ -217,6 +221,12 @@ class ContextBuilder:
         if digest and digest.text:
             when = datetime.fromtimestamp(digest.updated_at, tz).strftime("%a %d %b, %H:%M")
             parts.append(f"What's been going on (digest, updated {when}):\n{digest.text}")
+        if HISTORY_TOOL in get_skill(getattr(self, "_skill", DEFAULT_SKILL)).tools:
+            start, end, count = services.history.coverage(chat.chat_id)
+            if count:
+                # Changes only when the archive does, so the prefix stays cached.
+                parts.append(f"Summaries of earlier history: {describe_span(start, end, tz)} "
+                             f"({count} periods). Look them up with {HISTORY_TOOL}.")
         return "\n\n".join(parts)
 
     def _shared_state(self, chat: Chat, tz: tzinfo) -> str:

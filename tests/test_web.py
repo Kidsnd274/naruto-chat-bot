@@ -1,5 +1,6 @@
 """Web admin: authentication, CSRF, pages and actions."""
 
+import calendar
 from pathlib import Path
 import re
 import time
@@ -708,3 +709,45 @@ def test_queue_page_shows_limits_history_and_controls(admin, chat, services):
     admin.post("/queue/999/cancel")
     assert "waiting any more (running requests finish" in admin.client.get("/queue").text
     assert admin.client.post("/queue/pause").status_code == 403  # CSRF
+
+
+# ----------------------------------------------------------------- history
+
+def test_history_page_lists_edits_and_deletes_summaries(admin, chat, services):
+    def add(month, text):
+        start = calendar.timegm((2021, month, 1, 0, 0, 0))
+        end = calendar.timegm((2021, month + 1, 1, 0, 0, 0))
+        return services.history.add(
+            chat_id=CHAT, status="active", source="export", grouping="month", timezone="UTC",
+            period_start=start, period_end=end, first_message_at=start, last_message_at=end - 1,
+            message_count=12, import_id=3, period_id=None, fingerprint="x", text=text,
+            limitations=["The export starts on 3 Jun 2021."] if month == 6 else [], actor="t")
+
+    june, july = add(6, "- Planned camping"), add(7, "- Went camping")
+    page = admin.client.get(f"/chats/{CHAT}").text
+    assert "History summaries" in page and "1 Jun – 31 Jul 2021" in page
+    assert "Delete all history summaries" in page
+    history = admin.client.get(f"/chats/{CHAT}/history").text
+    assert "June 2021" in history and "July 2021" in history and "Planned camping" in history
+    assert "The export starts on 3 Jun 2021." in history and 'href="/import/3"' in history
+    found = admin.client.get(f"/chats/{CHAT}/history", params={"q": "went"}).text
+    assert "Went camping" in found and "Planned camping" not in found
+    dated = admin.client.get(f"/chats/{CHAT}/history", params={"since": "2021-07-01"}).text
+    assert "Planned camping" not in dated and "Went camping" in dated
+
+    admin.post(f"/chats/{CHAT}/history/{june.id}", {"text": "- Planned camping at Ubin"})
+    edited = services.history.get(june.id)
+    assert edited.text == "- Planned camping at Ubin" and edited.edited
+    assert edited.period_start == june.period_start  # coverage stays
+    assert "Earlier versions (1)" in admin.client.get(f"/chats/{CHAT}/history").text
+
+    confirm = admin.post(f"/chats/{CHAT}/history/{july.id}/delete")
+    assert "Delete the summary of 1–31 Jul 2021?" in confirm.text
+    admin.post(f"/chats/{CHAT}/history/{july.id}/delete", {"confirm": "yes"})
+    assert services.history.get(july.id) is None
+    assert admin.post(f"/chats/-999/history/{june.id}/delete").status_code == 404
+
+    admin.post(f"/chats/{CHAT}/recording-since", {"recording_since": "2021-08-01"})
+    assert services.chats.get(CHAT).recording_since == 1627776000
+    admin.post(f"/chats/{CHAT}/history-clear", {"confirm": "yes"})
+    assert services.history.coverage(CHAT)[2] == 0

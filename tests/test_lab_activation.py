@@ -181,3 +181,14 @@ async def test_the_lab_page_and_the_cli_activate_and_revert(lab, services, monke
         assert "apply its full configuration again" in http.get("/lab").text
         http.post(f"/lab/activations/{latest.id}/revert", data={"csrf_token": csrf})
         assert services.settings["persona.prompt"].startswith("You are Naruto")
+
+
+async def test_endpoint_passwords_stay_out_of_previews_and_records(lab, services):
+    services.settings.set("lab.model_servers", {"secure": "http://user:secret@gpu:8081/v1"},
+                          actor="owner")
+    run, _ = await evaluated(lab, model={"server": "secure", "name": "m"})
+    preview = activation.public_plan(activation.plan(lab, run, lab.get_candidate(run, "c1")))
+    assert "secret" not in str(preview)
+    done = activation.activate(lab, run.id, "c1", authorized_by="owner", actor="owner")
+    assert "secret" not in str(activation.view(lab, done))
+    assert services.settings["model.endpoint_url"] == "http://user:secret@gpu:8081/v1"

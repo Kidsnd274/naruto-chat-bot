@@ -642,12 +642,14 @@ class LabService:
         record = self.repo.scenario(attempt.scenario_id)
         run = self.repo.run(attempt.run_id)
         answers = [t.get("answer", "") for t in attempt.turns]
+        failed = [f"turn {t.get('index')}: {c['name']} ({c['detail']})" for t in attempt.turns
+                  for c in t.get("checks") or [] if not c["passed"]]
         return {"id": attempt.id, "scenario": record.slug if record else None,
                 "scenario_version": record.version if record else None,
                 "candidate": self.label(run, attempt.candidate_id), "repeat": attempt.repeat,
                 "continues": attempt.continue_from, "status": attempt.status,
                 "outcome": attempt.outcome, "reason": attempt.reason,
-                "model_requests": attempt.model_requests, "model_ms": attempt.model_ms,
+                "failed_checks": failed, "model_requests": attempt.model_requests, "model_ms": attempt.model_ms,
                 "wait_ms": attempt.wait_ms, "answers": answers}
 
     def attempt_detail(self, attempt: LabAttempt, *, prompts: bool = False,
@@ -836,6 +838,14 @@ class LabService:
             raise LabError(str(exc), "conflict") from None
         saved, _ = self.add_scenario(body, created_by=actor, chat_id=agent_run.chat_id)
         return saved
+
+    def delete_scenario(self, slug: str) -> None:
+        """A scenario and everything that ran it (real chat content goes with
+        it: the attempts' prompts contain the same messages)."""
+        self.get_scenario(slug)
+        for path in self.repo.delete_scenario(slug):
+            Path(path).unlink(missing_ok=True)
+        logger.info("Lab scenario %s deleted with its attempts", slug)
 
     # =========================================================== upkeep
 

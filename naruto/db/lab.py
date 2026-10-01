@@ -438,9 +438,29 @@ class LabRepository:
         sql += " ORDER BY slug LIMIT ?"
         return self._many(LabScenario, sql, (*params, limit))
 
-    def delete_scenarios_from_chat(self, chat_id: int) -> int:
-        return self.db.execute("DELETE FROM lab_scenarios WHERE chat_id = ?",
-                               (chat_id,)).rowcount
+    def from_chats(self) -> list[LabScenario]:
+        """The latest version of every scenario made from a real chat."""
+        return [s for s in self.scenarios(limit=10_000) if s.chat_id is not None]
+
+    def delete_scenario(self, slug: str) -> list[str]:
+        """Every version of a scenario, with the attempts that ran it and
+        their judgments. Returns the attempts' saved state files."""
+        with self.db.transaction():
+            ids = [row[0] for row in self.db.query(
+                "SELECT id FROM lab_scenarios WHERE slug = ?", (slug,))]
+            if not ids:
+                return []
+            marks = ", ".join("?" for _ in ids)
+            states = [row[0] for row in self.db.query(
+                f"SELECT state_path FROM lab_attempts WHERE scenario_id IN ({marks}) "
+                "AND state_path IS NOT NULL", ids)]
+            self.db.execute(f"DELETE FROM lab_judgments WHERE attempt_id IN (SELECT id FROM "
+                            f"lab_attempts WHERE scenario_id IN ({marks}))", ids)
+            self.db.execute(f"DELETE FROM lab_attempts WHERE scenario_id IN ({marks})", ids)
+            self.db.execute(f"DELETE FROM lab_comparisons WHERE scenario_id IN ({marks})", ids)
+            self.db.execute("DELETE FROM lab_set_items WHERE slug = ?", (slug,))
+            self.db.execute(f"DELETE FROM lab_scenarios WHERE id IN ({marks})", ids)
+        return states
 
     # ----------------------------------------------------------------- sets
 

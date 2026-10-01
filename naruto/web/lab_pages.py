@@ -44,6 +44,7 @@ def _page(request: Request, *, new_secret: str | None = None, new_token=None):
         "new_secret": new_secret,
         "new_token": new_token,
         "activations": [activation.view(lab, a) for a in lab.repo.activations()],
+        "real_scenarios": lab.repo.from_chats(),
     })
 
 
@@ -178,7 +179,7 @@ async def activation_page(request: Request, run_id: int, ref: str):
     mode = request.query_params.get("mode", "changes")
     try:
         candidate = lab.get_candidate(run, ref)
-        steps = activation.plan(lab, run, candidate, mode=mode)
+        steps = activation.public_plan(activation.plan(lab, run, candidate, mode=mode))
     except LabError as exc:
         flash(request, str(exc), "error")
         return RedirectResponse(f"/lab/runs/{run_id}", status_code=303)
@@ -216,3 +217,15 @@ async def revert_activation(request: Request, activation_id: int):
                                 status_code=303)
     flash(request, "Reverted: the settings are back to what they were before.")
     return RedirectResponse(f"/lab/runs/{result.run_id}#activations", status_code=303)
+
+
+@router.post("/lab/scenarios/{slug}/delete")
+async def delete_scenario(request: Request, slug: str):
+    lab = _lab(request)
+    try:
+        lab.delete_scenario(slug)
+    except LabError as exc:
+        flash(request, str(exc), "error")
+    else:
+        flash(request, f"Deleted scenario {slug}, with the attempts that ran it.")
+    return RedirectResponse("/lab#scenarios", status_code=303)

@@ -56,6 +56,22 @@
 </section>
 {% endif %}
 
+{% if real_scenarios %}
+<section class="card" id="scenarios">
+  <h2>Scenarios from real chats</h2>
+  <p class="muted small">Made from conversations in your groups. Deleting one also deletes the attempts that ran it (their prompts contain the same messages).</p>
+  <ul class="plain">
+    {% for s in real_scenarios %}
+      <li class="row-actions"><span><code>{{ s.slug }}</code> v{{ s.version }} · {{ chat_titles.get(s.chat_id, s.chat_id) }} · {{ s.created_at|ts }}</span>
+        <form method="post" action="/lab/scenarios/{{ s.slug }}/delete">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="small danger">Delete</button>
+        </form></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <section class="card" id="tokens">
   <h2>API tokens</h2>
   <p class="muted small">A token lets an agent run experiments. By default it can only use made-up (synthetic) scenarios: tick the chats whose real messages and traces it may read, and whether it may activate a candidate. Treat a token like the admin password.</p>

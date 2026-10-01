@@ -197,6 +197,8 @@ def _text_batch(view: dict) -> str:
                      f"{attempt['scenario_version']}  {attempt['candidate']}  try "
                      f"{attempt['repeat']}: {attempt['outcome'] or attempt['status']}"
                      + (f" ({attempt['reason']})" if attempt.get("reason") else ""))
+        for failed in attempt.get("failed_checks") or []:
+            lines.append(f"      failed {failed}")
         for index, answer in enumerate(attempt.get("answers") or [], start=1):
             short = " ".join((answer or "(nothing sent)").split())
             lines.append(f"      turn {index}: {short[:200]}")

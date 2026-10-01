@@ -175,6 +175,23 @@ def revert(lab, activation_id: int, *, token=None, actor: str):
     return lab.repo.activation(activation.id)
 
 
+def _redacted(values: dict | None) -> dict | None:
+    if not values or "model.endpoint_url" not in values:
+        return values
+    return {**values, "model.endpoint_url": config.redact_endpoint(values["model.endpoint_url"])}
+
+
+def public_plan(steps: dict) -> dict:
+    """A plan as shown to agents and the owner: no endpoint passwords."""
+    shown = dict(steps, apply=_redacted(steps["apply"]), previous=_redacted(steps["previous"]))
+    if "model.endpoint_url" in steps["diffs"]:
+        shown["diffs"] = {**steps["diffs"], "model.endpoint_url": config.text_diff(
+            config.redact_endpoint(steps["previous"]["model.endpoint_url"] or ""),
+            config.redact_endpoint(steps["apply"]["model.endpoint_url"] or ""),
+            "model.endpoint_url")}
+    return shown
+
+
 def view(lab, activation) -> dict:
     run = lab.repo.run(activation.run_id)
     candidate = lab.repo.candidate(activation.candidate_id) if activation.candidate_id else None
@@ -183,8 +200,8 @@ def view(lab, activation) -> dict:
             "ref": f"c{candidate.number}" if candidate else "baseline",
             "model": {"endpoint": config.redact_endpoint(activation.model_endpoint),
                       "name": activation.model_name},
-            "mode": activation.mode, "applied": activation.applied,
-            "previous": activation.previous, "drift": activation.drift,
+            "mode": activation.mode, "applied": _redacted(activation.applied),
+            "previous": _redacted(activation.previous), "drift": activation.drift,
             "evidence": activation.evidence, "authorized_by": activation.authorized_by,
             "by": activation.actor, "at": activation.created_at,
             "reverted_at": activation.reverted_at, "reverted_by": activation.reverted_by,

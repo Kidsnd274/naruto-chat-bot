@@ -460,7 +460,8 @@ async def put_preferences(request: Request, run_id: int):
 async def activation_plan(request: Request, run_id: int, ref: str, mode: str = "changes"):
     lab = _lab(request)
     run = lab.get_run(run_id)
-    return activation.plan(lab, run, lab.get_candidate(run, ref), mode=mode)
+    return activation.public_plan(activation.plan(lab, run, lab.get_candidate(run, ref),
+                                                  mode=mode))
 
 
 @router.post("/runs/{run_id}/candidates/{ref}/activate")

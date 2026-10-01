@@ -149,10 +149,9 @@ def text_diff(old: Any, new: Any, name: str) -> str:
     """A unified diff for a prompt, or one line for other values."""
     if isinstance(old, str) and isinstance(new, str) and ("\n" in old or "\n" in new
                                                           or len(old) > 80):
-        lines = difflib.unified_diff(old.splitlines(keepends=True),
-                                     new.splitlines(keepends=True),
+        lines = difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="",
                                      fromfile=f"{name} (before)", tofile=f"{name} (after)")
-        return "".join(line if line.endswith("\n") else line + "\n" for line in lines)
+        return "\n".join(lines) + "\n"
     return f"{name}: {json.dumps(old, ensure_ascii=False)} → {json.dumps(new, ensure_ascii=False)}\n"
 
 
@@ -185,8 +184,12 @@ def code_fingerprint() -> str:
 
 
 def slugify(text: str, limit: int = 40) -> str:
+    """Lower-case words joined by hyphens, cut at a word boundary."""
     slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
-    return (slug[:limit].rstrip("-") or "run")
+    if len(slug) > limit:
+        cut = slug[:limit + 1]
+        slug = cut[:cut.rfind("-")] if "-" in cut[:limit + 1] else slug[:limit]
+    return slug.strip("-") or "run"
 
 
 # ----------------------------------------------------- configuration files

@@ -287,6 +287,8 @@ def build_report(lab, run) -> dict:
                        "code_fingerprint": run.code_fingerprint,
                        "schema_version": run.schema_version, "warnings": run.warnings},
         "validity": ("" if validated else
+                     "The run is still going: nothing in it is validated yet."
+                     if not finished else
                      "This run didn't finish normally: nothing in it was validated."),
         "candidates": candidates,
         "rubric": ({"version": rubric.version, "status": rubric.status,

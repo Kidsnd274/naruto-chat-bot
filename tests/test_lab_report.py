@@ -175,7 +175,7 @@ async def test_the_report(lab):
                                  actor="test"))
     lab.add_note(run.id, "defect", "describe_image can't run on imported photos", actor="agent")
     markdown = render_markdown(lab.report(run.id))
-    assert "didn't finish normally" in markdown
+    assert "still going: nothing in it is validated yet" in markdown
     for heading in ("## Recommendation", "## Results", "### By scenario",
                     "### Representative replies", "## Judgments", "## Validation",
                     "## Coverage and live checks", "## Resources", "## Agent's notes"):
@@ -187,7 +187,7 @@ async def test_the_report(lab):
                                    "text": "Same results, shorter replies."},
                    summary="Done.", actor="agent")
     final = render_markdown(lab.report(run.id))
-    assert "didn't finish normally" not in final and "**activate c1**" in final
+    assert "validated yet" not in final and "**activate c1**" in final
 
 
 # ---------------------------------------------------------- saved scenarios
@@ -258,3 +258,16 @@ async def test_a_real_conversation_becomes_a_scenario_for_allowed_tokens(lab, se
     assert body["turns"][0]["text"] == "@naruto_bot when is it?"
     assert body["state"]["notes"][0]["text"] == "Alice hosts"
     assert "not as of the original run" in body["provenance"]["approximate"][0]
+
+
+async def test_deleting_a_real_chat_scenario_takes_its_attempts(lab, services):
+    run = lab.start_run({"objective": "x"}, created_by="test")
+    body = scenario("from-chat", "hi", {}, origin="history")
+    record = lab.repo.add_scenario("from-chat", body, origin="history", focused=False,
+                                   chat_id=-5, reason=None, created_by="owner")
+    use(lab, ScriptedLLM("hi"))
+    attempt = (await finish(lab, lab.submit(run.id, scenarios=["from-chat"], actor="t")))[0]
+    assert attempt.state_path and lab.repo.from_chats()[0].id == record.id
+    lab.delete_scenario("from-chat")
+    assert lab.repo.attempt(attempt.id) is None and lab.repo.from_chats() == []
+    assert not __import__("pathlib").Path(attempt.state_path).exists()

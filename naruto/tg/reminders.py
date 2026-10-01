@@ -7,7 +7,6 @@ else (the bot was removed, the chat is gone) fails it for good.
 
 from datetime import datetime, timedelta
 import logging
-import time
 import warnings
 
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError
@@ -49,7 +48,7 @@ class ReminderSender:
         if telegram is None:
             return 0
         sent_count = 0
-        now = int(time.time())
+        now = int(services.time())
         for reminder in services.reminders.due(now):
             chat = services.chats.get(reminder.chat_id)
             if chat is None or not chat.enabled:

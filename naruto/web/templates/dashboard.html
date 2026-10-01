@@ -10,6 +10,10 @@
   <p class="notice warn">Group Privacy is on, so the bot only sees mentions. Turn it off in BotFather, then remove and re-add the bot to each group.</p>
 {% endif %}
 
+{% for run_id in lab_waiting %}
+  <p class="notice info">Lab run #{{ run_id }} is waiting for your choice between replies: <a href="/lab/runs/{{ run_id }}#comparisons">choose</a>.</p>
+{% endfor %}
+
 {% include "_status.html" %}
 
 <div class="grid two">

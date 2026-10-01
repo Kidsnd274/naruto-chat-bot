@@ -647,6 +647,255 @@ CREATE INDEX history_periods_import ON history_periods (import_id, period_start)
 CREATE INDEX history_periods_chat ON history_periods (chat_id, source, period_start);
 """
 
+_V12_LAB = """
+-- The prompt lab (plans/SELF_LEARNING_LOOP_TECH_PLAN.md). Runs test
+-- candidate configurations on scenarios in sandboxes; nothing here changes
+-- the live bot until a candidate is activated. Times are Unix seconds.
+
+-- Which lab attempt a model request belongs to (task 'lab').
+ALTER TABLE model_requests ADD COLUMN lab_attempt_id INTEGER;
+
+-- API tokens for external agents. Only a hash is kept. chats: the chats
+-- whose real messages and traces the token may read (JSON list).
+CREATE TABLE lab_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    chats TEXT NOT NULL DEFAULT '[]',
+    may_activate INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    revoked_at INTEGER
+);
+
+-- One tuning run: an objective, its scope and budget, the model it tests
+-- and a frozen copy of every setting when it started (the baseline).
+CREATE TABLE lab_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    model_endpoint TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    model_reported TEXT,
+    baseline TEXT NOT NULL,
+    baseline_history_id INTEGER NOT NULL DEFAULT 0,
+    code_fingerprint TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'finished')),
+    stop_reason TEXT,
+    recommendation TEXT,
+    summary TEXT,
+    warnings TEXT NOT NULL DEFAULT '[]',
+    token_id INTEGER,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+
+-- A candidate configuration: changes on top of its parent (NULL: the
+-- baseline). Never edited; a revision is a new candidate.
+CREATE TABLE lab_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    number INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    parent_id INTEGER,
+    changes TEXT NOT NULL,
+    hypothesis TEXT NOT NULL DEFAULT '',
+    rationale TEXT NOT NULL DEFAULT '',
+    settings_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, number)
+);
+
+-- Scenarios, versioned: an edit adds a version with a reason. chat_id is
+-- the chat a scenario was made from (real chat content), if any.
+CREATE TABLE lab_scenarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    focused INTEGER NOT NULL DEFAULT 0,
+    chat_id INTEGER,
+    reason TEXT,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (slug, version)
+);
+
+-- Sets of scenarios with a purpose. Removing one keeps the row (removed_at,
+-- reason), so reports can show what changed.
+CREATE TABLE lab_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('tuning', 'validation', 'regression')),
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, name)
+);
+CREATE TABLE lab_set_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    set_id INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    reason TEXT
+);
+CREATE INDEX lab_set_items_set ON lab_set_items (set_id);
+
+-- A batch of attempts started together (a suite, or one request).
+CREATE TABLE lab_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    spec TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'cancelled',
+                                           'interrupted', 'budget_exhausted')),
+    owner_request TEXT,
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+
+-- One scenario under one configuration (candidate_id NULL: the baseline).
+CREATE TABLE lab_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    batch_id INTEGER,
+    scenario_id INTEGER NOT NULL,
+    candidate_id INTEGER,
+    repeat INTEGER NOT NULL DEFAULT 1,
+    continue_from INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'cancelled',
+                                           'interrupted', 'skipped')),
+    outcome TEXT,
+    reason TEXT,
+    result TEXT,
+    conditions TEXT,
+    model_requests INTEGER NOT NULL DEFAULT 0,
+    model_ms INTEGER NOT NULL DEFAULT 0,
+    wait_ms INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    queued_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    first_viewed_at INTEGER,
+    state_path TEXT
+);
+CREATE INDEX lab_attempts_run ON lab_attempts (run_id, id);
+CREATE INDEX lab_attempts_batch ON lab_attempts (batch_id);
+
+-- AI and owner judgments of one turn of an attempt, against a rubric
+-- criterion. evidence: quotes from the attempt (JSON list).
+CREATE TABLE lab_judgments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id INTEGER NOT NULL,
+    run_id INTEGER NOT NULL,
+    turn INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('ai', 'owner')),
+    criterion TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'score')),
+    score REAL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    comment TEXT,
+    judge TEXT NOT NULL,
+    rubric_version INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX lab_judgments_attempt ON lab_judgments (attempt_id);
+
+-- The run's rubric, versioned; proposed until the owner confirms it.
+CREATE TABLE lab_rubrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    criteria TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('proposed', 'confirmed')),
+    confirmation TEXT,
+    reason TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, version)
+);
+
+-- A/B comparisons for the owner. mapping: label -> attempt id, chosen at
+-- random by the server.
+CREATE TABLE lab_comparisons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    scenario_id INTEGER NOT NULL,
+    turn INTEGER NOT NULL,
+    mapping TEXT NOT NULL,
+    presentation TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'answered', 'withdrawn')),
+    revealed_before_answer INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER
+);
+CREATE TABLE lab_choices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comparison_id INTEGER NOT NULL,
+    choice TEXT NOT NULL CHECK (choice IN ('A', 'B', 'C', 'D', 'both_good', 'both_bad',
+                                           'no_preference', 'skip', 'combination')),
+    comment TEXT,
+    channel TEXT NOT NULL,
+    supersedes INTEGER,
+    created_at INTEGER NOT NULL
+);
+
+-- The owner's preferences as understood so far, versioned.
+CREATE TABLE lab_preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    edited_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, version)
+);
+
+-- Notes the agent files for the report: suspected defects, observations,
+-- assumptions.
+CREATE TABLE lab_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('defect', 'observation', 'assumption')),
+    text TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- A candidate applied to the live settings, and its undoing.
+CREATE TABLE lab_activations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    candidate_id INTEGER NOT NULL,
+    model_endpoint TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('changes', 'full')),
+    previous TEXT NOT NULL,
+    applied TEXT NOT NULL,
+    drift TEXT,
+    evidence TEXT,
+    authorized_by TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    reverted_at INTEGER,
+    reverted_by TEXT
+);
+
+-- What happened in a run, for the report: budget hits, refused calls,
+-- reveals, scenario and rubric changes, drift.
+CREATE TABLE lab_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX lab_events_run ON lab_events (run_id, id);
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -659,6 +908,7 @@ MIGRATIONS: list[str] = [
     _V9_STABLE_NOTE_IDS,
     _V10_MODEL_QUEUE,
     _V11_HISTORY,
+    _V12_LAB,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

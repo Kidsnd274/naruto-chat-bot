@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 PENDING = "pending"
 SENT = "sent"
@@ -42,7 +42,7 @@ class ReminderRepository:
         reminder_id = self.db.execute(
             "INSERT INTO reminders (chat_id, text, due_at, created_by, created_by_user_id, "
             "run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, text, due_at, created_by, created_by_user_id, run_id, now_ts())).lastrowid
+            (chat_id, text, due_at, created_by, created_by_user_id, run_id, self.db.now())).lastrowid
         return self.get(reminder_id)
 
     def get(self, reminder_id: int) -> Reminder | None:
@@ -70,7 +70,7 @@ class ReminderRepository:
     def due(self, now: int | None = None, limit: int = 20) -> list[Reminder]:
         """Pending reminders whose time has come, except those waiting to be
         tried again after a passing failure."""
-        now = now or now_ts()
+        now = now or self.db.now()
         rows = self.db.query(
             "SELECT * FROM reminders WHERE status = 'pending' AND due_at <= ? "
             "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
@@ -85,7 +85,7 @@ class ReminderRepository:
     def mark_sent(self, reminder_id: int, message_id: int | None) -> None:
         self.db.execute(
             "UPDATE reminders SET status = 'sent', sent_at = ?, sent_message_id = ?, error = NULL, "
-            "next_attempt_at = NULL WHERE id = ?", (now_ts(), message_id, reminder_id))
+            "next_attempt_at = NULL WHERE id = ?", (self.db.now(), message_id, reminder_id))
 
     def mark_failed(self, reminder_id: int, error: str) -> None:
         self.db.execute("UPDATE reminders SET status = 'failed', error = ?, "

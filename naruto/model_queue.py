@@ -64,12 +64,13 @@ class QueueRefused(Exception):
 @dataclass
 class RequestInfo:
     """What a request is for, shown on the queue page."""
-    task: str  # reply | image | digest | history | distill | live_archive
+    task: str  # reply | image | digest | history | distill | live_archive | lab
     chat_id: int | None = None
     run_id: int | None = None
     import_id: int | None = None
     period_id: int | None = None
     chunk: int | None = None  # 1-based part of a history period
+    lab_attempt_id: int | None = None  # a prompt-lab attempt (task lab)
     # Checked just before the request starts; False expires it (for example
     # the chat was disabled while the reply waited).
     still_wanted: Callable[[], bool] | None = field(default=None, repr=False)

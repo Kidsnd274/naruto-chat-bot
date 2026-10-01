@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 PROPOSED = "proposed"
 CONFIRMED = "confirmed"
@@ -50,7 +50,7 @@ class PlanRepository:
             "INSERT INTO plans (chat_id, title, items, run_id, proposed_for_user_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (chat_id, title, json.dumps(items, ensure_ascii=False), run_id,
-             proposed_for_user_id, now_ts())).lastrowid
+             proposed_for_user_id, self.db.now())).lastrowid
         return self.get(plan_id)
 
     def get(self, plan_id: int) -> Plan | None:
@@ -67,7 +67,7 @@ class PlanRepository:
         return self.db.execute(
             "UPDATE plans SET status = ?, decided_at = ?, decided_by_user_id = ?, "
             "decided_by_name = ? WHERE id = ? AND status = 'proposed'",
-            (status, now_ts(), user_id, name, plan_id)).rowcount > 0
+            (status, self.db.now(), user_id, name, plan_id)).rowcount > 0
 
     def for_chat(self, chat_id: int, *, status: str | None = None, limit: int = 20) -> list[Plan]:
         sql = "SELECT * FROM plans WHERE chat_id = ?"

@@ -78,8 +78,7 @@ class RunOutcome:
 class AgentRunner:
     def __init__(self, services: Services, telegram, *, record_sent=None,
                  registry: ToolRegistry | None = None, llm=None, stream: bool = False):
-        """``llm`` defaults to services.llm; the evaluation passes its own
-        client for the model under test."""
+        """``llm`` defaults to services.llm (tests pass a scripted one)."""
         self.services = services
         self.telegram = telegram
         self.record_sent = record_sent

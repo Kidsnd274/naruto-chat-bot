@@ -28,6 +28,7 @@ class ModelRequest:
     import_id: int | None
     period_id: int | None
     chunk: int | None
+    lab_attempt_id: int | None
     attempts: int
     queued_at: float
     started_at: float | None
@@ -58,9 +59,10 @@ class ModelRequestRepository:
     def queued(self, info: "RequestInfo", priority: str, at: float) -> int:
         return self.db.execute(
             "INSERT INTO model_requests (chat_id, task, priority, state, run_id, import_id, "
-            "period_id, chunk, queued_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+            "period_id, chunk, lab_attempt_id, queued_at) "
+            "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
             (info.chat_id, info.task, priority, info.run_id, info.import_id, info.period_id,
-             info.chunk, at)).lastrowid
+             info.chunk, info.lab_attempt_id, at)).lastrowid
 
     def requeued(self, request_id: int, attempts: int, at: float) -> None:
         self.db.execute(

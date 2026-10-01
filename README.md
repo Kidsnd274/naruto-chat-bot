@@ -116,6 +116,7 @@ Commands (each goes straight to a focused skill):
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
+| Lab | Tuning runs (budget, your A/B choices, configurations, attempts, the report), activating and reverting a tested configuration, and the API tokens agents use. See [docs/LAB.md](docs/LAB.md). |
 | Queue | Every model request running and waiting (replies first, then background work such as digests, history summaries and import memory), the capacity limits, pausing background work, cancelling a waiting request, and a history of recent requests with waiting and model time. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. Some (persona, digest frequency, automatic notes, board, images, recent window, progress message) can also be set for one chat on that chat's **Settings for this chat** page. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
@@ -152,21 +153,14 @@ If the group has no digest yet, it starts from imported messages of the last two
 - **History summaries take time:** every period is at least one request; a busy month takes several. The import preview estimates the requests and tokens. On Halogen (about 160 tokens/s for an uncached prompt), a 50,000-message export takes a couple of hours per pass, and memory notes are a second pass. Pause background work on the Queue page if the server is needed for something else; replies are not affected.
 - **Progress messages:** when a summary, plan or list of open questions takes longer than 8 seconds, the bot posts “Reading back through the chat…” and then replaces it with the answer (Settings → Behaviour; 0 turns it off).
 
-### Evaluating models
+### Tuning the bot (prompt lab)
 
-`python -m naruto.evaluation` runs a set of cases against one or more models through the same prompt builder the bot uses, and reports the pass rate of automatic checks, time to first token and total latency, plus every answer for review by hand. Cases come from real chats, so keep them and the reports **outside the repository** (the tool warns if you don't).
+The bot learns from experiments, not training. An agent such as Claude Code or Codex can run the lab for you. It tries changes to the persona, the skills' instructions and the model parameters on made-up chats, and compares them with the current configuration. It shows you real replies side by side so you can pick the tone you like, and recommends what to keep. Experiments run in sandboxes through the bot's real reply code and its configured model, behind replies to people in the model queue. Nothing changes the live bot until you (or an agent you allow) activate a tested configuration, which can be reverted.
 
-```bash
-# Make a case skeleton from an export: the 60 messages before message 1234567 become the chat.
-.venv/bin/python -m naruto.evaluation extract --export ~/Downloads/ChatExport/result.json \
-    --trigger 1234567 --out ~/naruto-eval/cases/bbq-plan.json
-# ...merge cases into one file and fill in "expect", then compare models:
-.venv/bin/python -m naruto.evaluation run ~/naruto-eval/cases.json \
-    --model qwen3.8-27b@http://localhost:8080/v1 --model qwen3.8-flash-next@http://localhost:8081/v1 \
-    --settings-db data/naruto.db --repeat 3 --out ~/naruto-eval/reports/2026-10-01
-```
+1. On the web admin's **Lab** page, create a token and save it in `~/.config/naruto-lab/token`.
+2. Start Claude Code or Codex in this repository and ask, for example, "Help me choose Naruto's tone". The `naruto-lab` skill (in `.claude/skills/` and `.agents/skills/`) tells it how. The client is `python3 -m naruto.lab`.
 
-See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the case format (synthetic examples, one per category) and `naruto/evaluation/cases.py` for every field. Checks: `contains_any`, `contains_all`, `not_contains`, `regex`, `min_chars`, `max_chars`, `reply_threaded`; `manual` describes what to judge by hand. `--settings-db` uses the prompts and sampling settings from the bot's database. Every case runs through the bot's agent loop with its tools (Telegram actions such as polls are only recorded), so `tool_calls` checks that the right tools were called, e.g. `[{"name": "create_poll", "arguments": {"options": "saturday"}}]`; `[]` means no tool may be called.
+The manual, for you and for agents: **[docs/LAB.md](docs/LAB.md)**. It also covers tuning for another model before switching to it, keeping real chat data out unless you allow it, and a walkthrough.
 
 ## Development
 
@@ -175,7 +169,7 @@ See [`tests/fixtures/eval_cases.json`](tests/fixtures/eval_cases.json) for the c
 .venv/bin/python -m pytest
 ```
 
-The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls, commands, reminders), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `memory/` (digest and notes upkeep, import distillation), `web/` (FastAPI admin), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
+The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls, commands, reminders), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `memory/` (digest and notes upkeep, import distillation), `web/` (FastAPI admin), `lab/` (the prompt lab: scenarios run in sandboxes), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
 
 ### Upgrading from the Redis version
 

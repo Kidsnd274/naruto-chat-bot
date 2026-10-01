@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.db.messages import StoredMessage
 
 ANY = object()  # save(): no revision check (owner edits)
@@ -43,7 +43,7 @@ class DigestRepository:
         A background update passes ``expected_revision``: the revision it
         read (None if there was no digest). If the digest changed or was
         deleted since, nothing is saved and None is returned."""
-        ts = now_ts()
+        ts = self.db.now()
         current = self.get(chat_id)
         last_row_id = last.id if last else (current.last_row_id if current else None)
         last_date = last.date if last else (current.last_message_date if current else None)
@@ -78,7 +78,7 @@ class DigestRepository:
         return self.get(chat_id)
 
     def set_error(self, chat_id: int, error: str) -> None:
-        ts = now_ts()
+        ts = self.db.now()
         self.db.execute(
             "INSERT INTO digests (chat_id, text, updated_at, updated_by, error, failed_at) "
             "VALUES (?, '', ?, 'bot', ?, ?) ON CONFLICT(chat_id) DO UPDATE SET "

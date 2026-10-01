@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 LIVE = "live"
 IMPORT = "import"
@@ -141,7 +141,7 @@ class MessageRepository:
             self.db.execute(
                 f"INSERT OR IGNORE INTO messages ({', '.join(_INSERT_COLUMNS)}) "
                 f"VALUES ({placeholders})",
-                self._row_values(message, reply_row, now_ts()),
+                self._row_values(message, reply_row, self.db.now()),
             )
             stored = self.get_live(message.origin_chat_id, message.message_id)
         return stored
@@ -151,7 +151,7 @@ class MessageRepository:
         resolved afterwards with resolve_import_replies()."""
         if not messages:
             return
-        ts = now_ts()
+        ts = self.db.now()
         placeholders = ", ".join("?" for _ in _INSERT_COLUMNS)
         with self.db.transaction():
             self.db.executemany(
@@ -207,7 +207,7 @@ class MessageRepository:
         cursor = self.db.execute(
             "UPDATE messages SET text = ?, edit_date = ? "
             "WHERE source = 'live' AND origin_chat_id = ? AND message_id = ?",
-            (text, edit_date or now_ts(), origin_chat_id, message_id),
+            (text, edit_date or self.db.now(), origin_chat_id, message_id),
         )
         return cursor.rowcount > 0
 
@@ -457,7 +457,7 @@ class MessageRepository:
             "created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET "
             "description = excluded.description, model = excluded.model, "
             "created_at = excluded.created_at",
-            (message.id, message.chat_id, description, model, now_ts()))
+            (message.id, message.chat_id, description, model, self.db.now()))
 
     def update_media_meta(self, row_id: int, meta: dict) -> None:
         self.db.execute("UPDATE messages SET media_meta = ? WHERE id = ?",

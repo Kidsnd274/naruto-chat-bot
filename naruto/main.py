@@ -15,6 +15,7 @@ from naruto.bootstrap import Bootstrap, load_bootstrap
 from naruto.db import open_database
 from naruto.importer.service import ImportService
 from naruto.jobs import start_background_jobs
+from naruto.lab.service import LabService
 from naruto.logs import flush_periodically, set_level, setup_logging
 from naruto.memory.history import LiveArchiver
 from naruto.memory.keeper import MemoryKeeper
@@ -78,6 +79,10 @@ async def run() -> None:
     services.imports = ImportService(
         services, Path(bootstrap.database_path).resolve().parent / "imports")
     services.imports.recover()
+    services.lab = LabService(services, Path(bootstrap.database_path).resolve().parent / "lab")
+    interrupted_lab = services.lab.recover()
+    if interrupted_lab:
+        logger.info("%s lab attempts were interrupted by the restart", interrupted_lab)
     interrupted = services.requests.interrupt_open()
     if interrupted:
         logger.info("%s model requests were interrupted by the restart", interrupted)
@@ -109,6 +114,7 @@ async def run() -> None:
             logger.exception("Error while stopping the bot")
         services.archiver.stop()
         await services.imports.shutdown()
+        await services.lab.shutdown()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

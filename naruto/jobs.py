@@ -44,6 +44,15 @@ def cleanup_agent_runs(services: Services) -> str | None:
     return f"{deleted} agent runs" if deleted else None
 
 
+def cleanup_lab_runs(services: Services) -> str | None:
+    """Finished lab runs (with their attempts and saved states) follow
+    retention.lab_days; activations are kept."""
+    if services.lab is None:
+        return None
+    deleted = services.lab.cleanup(services.settings["retention.lab_days"])
+    return f"{deleted} lab runs" if deleted else None
+
+
 def cleanup_model_requests(services: Services) -> str | None:
     """The queue page's history follows the agent-run retention."""
     days = services.settings["retention.agent_runs_days"]
@@ -149,7 +158,7 @@ async def refresh_rights(services: Services, *, older_than: float) -> None:
 
 async def run_maintenance(services: Services) -> None:
     done = []
-    for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests,
+    for step in [cleanup_logs, cleanup_agent_runs, cleanup_model_requests, cleanup_lab_runs,
                  mark_missed_live_months, cleanup_live_messages,
                  cleanup_imported_messages, cleanup_reminders, cleanup_import_previews,
                  expire_paused_imports,

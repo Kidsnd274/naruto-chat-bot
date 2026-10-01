@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 _JSON_FIELDS = ("preview", "options", "limitations")
 
@@ -115,7 +115,7 @@ class ImportRepository:
         cursor = self.db.execute(
             "INSERT INTO imports (status, file_name, file_path, file_size, created_at) "
             "VALUES ('preview', ?, ?, ?, ?)",
-            (file_name, file_path, file_size, now_ts()),
+            (file_name, file_path, file_size, self.db.now()),
         )
         return self.get(cursor.lastrowid)
 

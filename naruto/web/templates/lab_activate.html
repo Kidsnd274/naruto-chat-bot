@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Activate {{ plan.candidate }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/lab">Lab</a> / <a href="/lab/runs/{{ run.id }}">Run #{{ run.id }}</a> /</p>
+<h1>Activate {{ plan.candidate }}</h1>
+<p class="muted">This changes the live bot's settings. Everything below is applied together, and can be reverted while nobody changes these settings again.{% if plan.mode == "full" %} Mode <strong>full</strong>: the candidate's whole configuration, not just its changes.{% endif %}</p>
+
+{% if plan.conflicts %}
+<section class="card notice error">
+  <h2>Conflicts</h2>
+  <p>These settings were changed by someone else since the run started. Nothing can be applied until they are merged by hand on the Settings page.</p>
+  <ul>{% for c in plan.conflicts %}<li><code>{{ c.key }}</code> changed by {{ c.changed_by or "?" }}{% if c.changed_at %} on {{ c.changed_at|ts }}{% endif %}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>What changes</h2>
+  {% for key, diff in plan.diffs.items() %}
+    <p><code>{{ key }}</code></p>
+    <pre class="prompt">{{ diff }}</pre>
+  {% else %}
+    <p class="muted">Nothing: the live settings already match.</p>
+  {% endfor %}
+  {% if plan.model_switch %}<p class="notice warn">This switches the model the bot uses.</p>{% endif %}
+  {% if plan.background_effects %}<p class="notice warn">{{ plan.background_effects|join(", ") }} also change digest updates, history summaries, import memory and image descriptions, which the lab didn't evaluate.</p>{% endif %}
+  {% for key, chats in plan.per_chat_overrides.items() %}<p class="notice info">{{ chats|length }} chat(s) set their own <code>{{ key }}</code>; they won't see this change.</p>{% endfor %}
+</section>
+
+{% if not plan.conflicts and plan.apply %}
+<section class="card">
+  <form method="post" action="/lab/runs/{{ run.id }}/activate/{{ ref }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mode" value="{{ plan.mode }}">
+    {% if plan.drift %}
+      <h2>Changed since the run started</h2>
+      <p>The evaluation used the earlier values of these settings, so its results may not hold:</p>
+      <ul>{% for d in plan.drift %}<li><code>{{ d.key }}</code> (changed by {{ d.changed_by or "?" }})</li>{% endfor %}</ul>
+      <label>Why it's fine to activate anyway <textarea name="acknowledge_drift" rows="2" required></textarea></label>
+    {% endif %}
+    <button type="submit" class="primary">Activate</button>
+    <a class="button" href="/lab/runs/{{ run.id }}">Cancel</a>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

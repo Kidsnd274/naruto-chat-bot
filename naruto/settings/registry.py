@@ -180,6 +180,10 @@ SECTIONS: tuple[Section, ...] = (
     Section("history", "History",
             "Dated summaries of past months or weeks (history digests). They outlive raw "
             "messages: made from imported exports, and from live chat once each month is over."),
+    Section("lab", "Lab",
+            "The prompt lab: experiments with the bot's prompts and model parameters, run in "
+            "sandboxes by you or an external agent (docs/LAB.md). Nothing changes the live bot "
+            "until a candidate is activated."),
     Section("board", "Board", "The pinned board of plans, decisions and open questions."),
     Section("import", "Import", "Telegram Desktop history import."),
     Section("media", "Media", "Photos, stickers and other visual media."),
@@ -432,6 +436,22 @@ SETTINGS: tuple[Setting, ...] = (
             "this many days after the month ends (so the start of a month can outlive the "
             "retention period by up to about five weeks). 0 doesn't hold them.",
             "int", 7, min=0, max=30),
+    # ----------------------------------------------------------------- lab
+    Setting("lab.parallel_attempts", "lab", "Parallel attempts",
+            "How many lab attempts run at once. Their model requests wait behind replies to "
+            "people, and count against Background parallel requests.",
+            "int", 1, min=1, max=4),
+    Setting("lab.model_servers", "lab", "Other model servers",
+            "Other local model servers a run may test, besides the configured one, as a JSON "
+            "object: name → endpoint URL, e.g. {\"gufo-27b\": \"http://localhost:8081/v1\"}. "
+            "An agent can't point the lab at a server that isn't here.",
+            "json", {}),
+    Setting("lab.max_attempts_per_run", "lab", "Most attempts per run",
+            "No run's budget can allow more attempts than this.",
+            "int", 500, min=10, max=5000),
+    Setting("lab.default_budget", "lab", "Default budget",
+            "The budget of a run that doesn't set its own: attempts, model requests and hours.",
+            "json", {"attempts": 60, "model_requests": 300, "hours": 4}),
     # --------------------------------------------------------------- board
     Setting("board.format", "board", "Board format",
             "rich: a Telegram rich message (headings and lists). html: a plain "
@@ -488,6 +508,10 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("retention.agent_runs_days", "retention", "Agent runs (days)",
             "Agent traces contain full prompts, so they are cleaned up daily.",
             "int", 30, min=0, max=36500),
+    Setting("retention.lab_days", "retention", "Lab runs (days)",
+            "Finished lab runs, their attempts and traces are deleted this long after they "
+            "finish. Activations are kept.",
+            "int", 90, min=0, max=36500),
     Setting("retention.logs_days", "retention", "Logs (days)",
             "Stored application logs are cleaned up daily.",
             "int", 30, min=0, max=36500),

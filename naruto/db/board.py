@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import json
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 # (key, heading). The order is the order on the board.
 SECTIONS: tuple[tuple[str, str], ...] = (
@@ -185,7 +185,7 @@ class BoardRepository:
     def _save_sections(self, board: Board, actor: str) -> None:
         payload = json.dumps({key: [item.as_dict() for item in board.items(key)]
                               for key in SECTION_KEYS}, ensure_ascii=False)
-        ts = now_ts()
+        ts = self.db.now()
         self.db.execute(
             "INSERT INTO boards (chat_id, sections, updated_at, updated_by) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(chat_id) DO UPDATE SET sections = excluded.sections, "
@@ -197,7 +197,7 @@ class BoardRepository:
         self.db.execute(
             "UPDATE boards SET message_id = ?, message_chat_id = ?, format = ?, pinned = ?, "
             "published_at = ?, publish_error = NULL WHERE chat_id = ?",
-            (message_id, message_chat_id, format, int(pinned), now_ts(), chat_id))
+            (message_id, message_chat_id, format, int(pinned), self.db.now(), chat_id))
 
     def set_publish_error(self, chat_id: int, error: str | None) -> None:
         self.db.execute("UPDATE boards SET publish_error = ? WHERE chat_id = ?",

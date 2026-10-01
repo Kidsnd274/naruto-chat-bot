@@ -116,6 +116,7 @@ Commands (each goes straight to a focused skill):
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |
 | Import | Upload a Telegram Desktop export to add history from before the bot joined (see below). |
 | Agent runs | One row per bot response: the exact prompt sent, every model request and tool call (arguments and results), the answer, timing and errors. |
+| Lab | Tuning runs (budget, your A/B choices, configurations, attempts, the report), activating and reverting a tested configuration, and the API tokens agents use. See [docs/LAB.md](docs/LAB.md). |
 | Queue | Every model request running and waiting (replies first, then background work such as digests, history summaries and import memory), the capacity limits, pausing background work, cancelling a waiting request, and a history of recent requests with waiting and model time. |
 | Settings | Every setting with validation, history, revert and reset. Changes apply immediately. Some (persona, digest frequency, automatic notes, board, images, recent window, progress message) can also be set for one chat on that chat's **Settings for this chat** page. |
 | Logs | Application logs with level, chat and logger filters, and a live tail |
@@ -151,6 +152,15 @@ If the group has no digest yet, it starts from imported messages of the last two
 - **Parallel requests** (Model settings or the Queue page, default 1): raise it to the server's number of slots (Halogen: 4, see its `/props`) so replies in different chats and background work don't wait for each other. Replies always start before waiting background work. Background work may use at most **Background parallel requests** (default 1) and never the **Slots kept for replies** (default 1; on a one-slot server a reply waits for the request in progress, then goes first). Each slot of a llama-server-style server gets part of its context, so check that a reply (Context → Input token budget) and a history summary (History → Messages per request, plus about 3,000 tokens) fit one slot.
 - **History summaries take time:** every period is at least one request; a busy month takes several. The import preview estimates the requests and tokens. On Halogen (about 160 tokens/s for an uncached prompt), a 50,000-message export takes a couple of hours per pass, and memory notes are a second pass. Pause background work on the Queue page if the server is needed for something else; replies are not affected.
 - **Progress messages:** when a summary, plan or list of open questions takes longer than 8 seconds, the bot posts “Reading back through the chat…” and then replaces it with the answer (Settings → Behaviour; 0 turns it off).
+
+### Tuning the bot (prompt lab)
+
+The bot learns from experiments, not training. An agent such as Claude Code or Codex can run the lab for you. It tries changes to the persona, the skills' instructions and the model parameters on made-up chats, and compares them with the current configuration. It shows you real replies side by side so you can pick the tone you like, and recommends what to keep. Experiments run in sandboxes through the bot's real reply code and its configured model, behind replies to people in the model queue. Nothing changes the live bot until you (or an agent you allow) activate a tested configuration, which can be reverted.
+
+1. On the web admin's **Lab** page, create a token and save it in `~/.config/naruto-lab/token`.
+2. Start Claude Code or Codex in this repository and ask, for example, "Help me choose Naruto's tone". The `naruto-lab` skill (in `.claude/skills/` and `.agents/skills/`) tells it how. The client is `python3 -m naruto.lab`.
+
+The manual, for you and for agents: **[docs/LAB.md](docs/LAB.md)**. It also covers tuning for another model before switching to it, keeping real chat data out unless you allow it, and a walkthrough.
 
 ## Development
 

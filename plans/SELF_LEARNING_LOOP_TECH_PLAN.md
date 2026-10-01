@@ -2,7 +2,7 @@
 
 Implements `plans/SELF_LEARNING_LOOP_PLAN.md` (the feature plan). It also replaces the model evaluation harness (`naruto/evaluation`). On 2026-10-01 the owner said they don't need that harness and would rather tune the bot for each model through this loop.
 
-Status: proposed; nothing is implemented yet.
+Status: implemented on branch `self_learning_loop` (2026-10-02). See "Implementation notes" at the end for deviations and what still needs checking against the real model server.
 
 ## Context
 
@@ -528,3 +528,43 @@ Coverage deferred until the rework features exist, to be listed in `docs/LAB.md`
 - web search (a simulated `web_search` with scenario-provided results);
 - simulated streaming, if it is ever built;
 - evaluating background tasks (digest, history summaries, distillation) under a candidate's model parameters.
+
+## Implementation notes (2026-10-02)
+
+The work was built on branch `self_learning_loop`, created from `history_digests`, with one or two commits per stage. 552 tests pass: 478 on `history_digests`' last commit, minus the 21 evaluation tests (their cases moved into the lab's), plus 95 lab tests.
+
+The walkthrough in `docs/LAB.md` §14 was checked twice:
+- `tests/test_lab_walkthrough.py` runs it as written.
+- It also ran over real HTTP: uvicorn serving the web admin, the system `python3` client, and the bot's own model client and queue, pointed at a fake OpenAI-compatible server. All 37 commands passed. The 20 model requests all went through the queue at background priority, as task `lab`, each linked to its attempt.
+
+### Deviations
+
+- **Budget:** there's no up-front reservation per attempt. An attempt starts while the run has room, and a running one may finish slightly past the limit, by its own requests. That's simpler, and the manual says so.
+- **Scenarios from real chats:**
+  - Only the "snapshot" mode was built: exact messages, and today's notes, digest and board, marked approximate. The "replay the recorded prompt" mode wasn't built.
+  - Kept failures (`scenario save-attempt`) are exact instead: the attempt is replayed with the model's recorded answers, and a test checks that the new scenario's prompt is identical to the one that failed.
+- **Scenario format additions:**
+  - `continues` (turns that follow an earlier attempt, run with `continue_from`);
+  - inline images as `data:` URIs (the API can't read files on the agent's machine; the CLI turns local image paths into data URIs);
+  - poll messages;
+  - `"answers": false` for turns that test the bot staying quiet.
+- **Comparisons** take 2 to 4 replies (A to D). The owner can also answer on the run's Lab page, and the dashboard says when a run waits for a choice.
+- **The Settings page** has no separate notice for keys set by an activation. The settings history entry names it instead: "lab run N cM (authorized by …)".
+- **Cold and warm latency:** the report splits each configuration's first try from its later tries. It doesn't use cached-token counts, which the servers report inconsistently.
+- **Real-chat scenarios** are deleted on the Lab page, together with the attempts that ran them, whose prompts hold the same messages. The chat page's data deletion doesn't remove them, and a group upgrade doesn't move them: their `chat_id` records where they came from.
+- **Code moved out of `LabService`:**
+  - `LabError` lives in `naruto/lab/errors.py`;
+  - the "not simulated" lists live in `naruto/lab/sandbox.py`;
+  - both moves avoid import cycles.
+- **Found while writing the walkthrough:** a reply that says "I'll remind you…" with no reminder set makes the bot ask the model again. That is production behaviour (`agent/claims.py`), and real models can trigger it in lab attempts too; it shows as "Asked again" in the steps.
+
+### Still to check on the real setup
+
+- **Part A on the real model server** (Halogen or Gufo). Check:
+  - the time per attempt;
+  - that the Queue page shows `lab` requests behind replies;
+  - the effect on a busy group's reply latency while a suite runs (prompt-cache eviction on a one-slot server).
+- **The real model's replies** in a tone round, and whether 3 repeats are enough to separate configurations.
+- **The skill:** that Claude Code (`.claude/skills/naruto-lab`) and Codex (`.agents/skills/naruto-lab`) find it when started in the repository, and follow the tone-round rules (verbatim presentation, waiting).
+- **Docker:** running the client inside the container (`docker compose exec naruto-chat-bot python -m naruto.lab …`), and from the host through the published port.
+

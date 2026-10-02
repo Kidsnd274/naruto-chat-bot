@@ -12,7 +12,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from naruto.db.migrations import MIGRATIONS
 
@@ -24,8 +24,11 @@ def now_ts() -> int:
 
 
 class Database:
-    def __init__(self, path: str):
+    def __init__(self, path: str, *, clock: Callable[[], float] | None = None):
+        """``clock`` gives the time stored in the rows (default: the wall
+        clock). The prompt lab's sandboxes run on a scenario's fixed time."""
         self.path = path
+        self._clock = clock
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -41,6 +44,15 @@ class Database:
         if path != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
             self._conn.execute("PRAGMA synchronous = NORMAL")
+
+    @property
+    def clock(self) -> Callable[[], float]:
+        # time.time is looked up on each use, so tests can patch it.
+        return self._clock or time.time
+
+    def now(self) -> int:
+        """The current Unix time by this database's clock."""
+        return int(self.clock())
 
     # ------------------------------------------------------------------ core
 
@@ -118,6 +130,26 @@ class Database:
         if current < len(MIGRATIONS):
             logger.info("Database schema is at version %s", len(MIGRATIONS))
 
+    # ------------------------------------------------------------- snapshots
+
+    def backup_to(self, path: str | Path) -> None:
+        """Copy the whole database to a file (a prompt-lab sandbox's state)."""
+        target = sqlite3.connect(str(path))
+        try:
+            with self._lock:
+                self._conn.backup(target)
+        finally:
+            target.close()
+
+    def restore_from(self, path: str | Path) -> None:
+        """Replace this database's contents with a backup_to() copy."""
+        source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            with self._lock:
+                source.backup(self._conn)
+        finally:
+            source.close()
+
     # ------------------------------------------------------------------ meta
 
     def get_meta(self, key: str) -> str | None:
@@ -131,7 +163,7 @@ class Database:
         )
 
 
-def open_database(path: str) -> Database:
-    db = Database(path)
+def open_database(path: str, *, clock: Callable[[], float] | None = None) -> Database:
+    db = Database(path, clock=clock)
     db.migrate()
     return db

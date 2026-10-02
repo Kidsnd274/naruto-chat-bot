@@ -15,7 +15,9 @@ from naruto.bootstrap import Bootstrap, load_bootstrap
 from naruto.db import open_database
 from naruto.importer.service import ImportService
 from naruto.jobs import start_background_jobs
+from naruto.lab.service import LabService
 from naruto.logs import flush_periodically, set_level, setup_logging
+from naruto.memory.history import LiveArchiver
 from naruto.memory.keeper import MemoryKeeper
 from naruto.services import Services
 from naruto.settings.seed import apply_seed_if_needed, collect_seed
@@ -73,9 +75,17 @@ async def run() -> None:
     services = Services.create(bootstrap, db, seed)
     apply_seed_if_needed(db, services.settings, services.chats, seed)
     services.keeper = MemoryKeeper(services)
+    services.archiver = LiveArchiver(services)
     services.imports = ImportService(
         services, Path(bootstrap.database_path).resolve().parent / "imports")
     services.imports.recover()
+    services.lab = LabService(services, Path(bootstrap.database_path).resolve().parent / "lab")
+    interrupted_lab = services.lab.recover()
+    if interrupted_lab:
+        logger.info("%s lab attempts were interrupted by the restart", interrupted_lab)
+    interrupted = services.requests.interrupt_open()
+    if interrupted:
+        logger.info("%s model requests were interrupted by the restart", interrupted)
     set_level(services.settings["general.log_level"])
     services.settings.on_change(
         lambda key, value: set_level(value) if key == "general.log_level" else None)
@@ -87,6 +97,9 @@ async def run() -> None:
     try:
         await bot.start()
         tasks.extend(start_background_jobs(services, reminders=bot.reminders))
+        resumed = services.imports.resume_interrupted()
+        if resumed:
+            logger.info("Resuming %s interrupted imports", resumed)
         logger.info("Bot started")
         if bootstrap.web_enabled:
             logger.info("Web admin on http://%s:%s/", bootstrap.web_host, bootstrap.web_port)
@@ -99,7 +112,9 @@ async def run() -> None:
             await bot.stop()
         except Exception:
             logger.exception("Error while stopping the bot")
+        services.archiver.stop()
         await services.imports.shutdown()
+        await services.lab.shutdown()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

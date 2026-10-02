@@ -175,6 +175,7 @@ tr.level-error td, tr.level-critical td { background: var(--bad-soft); }
 .small { font-size: 0.85rem; }
 .ok-text { color: var(--ok); }
 .error-text { color: var(--bad); }
+.warn-text { color: var(--warn); }
 
 .model-name { overflow-wrap: anywhere; }
 .served-models {
@@ -277,7 +278,15 @@ details summary { cursor: pointer; padding: 0.3rem 0; }
 ol.steps { margin: 0.3rem 0 0.6rem; padding-left: 1.3rem; }
 ol.steps li { margin: 0.2rem 0; }
 .estimate { margin: 0.6rem 0; }
-.import-form > select { margin-right: 0.4rem; }
+.import-form select[name=target] { margin-right: 0.4rem; }
+.import-section { border: 1px solid var(--border); border-radius: 8px; margin: 0.8rem 0; padding: 0.6rem 0.9rem; }
+.import-section legend { font-weight: 600; padding: 0 0.3rem; }
+.import-section > label { display: inline-flex; gap: 0.3rem; align-items: center; margin: 0.2rem 0.8rem 0.2rem 0; }
+.summary-replacements { border-top: 1px solid var(--border); margin-top: 0.6rem; padding-top: 0.4rem; }
+.summary-replacements label, .summary-advanced label { display: flex; gap: 0.3rem; align-items: center; margin: 0.4rem 0; }
+.summary-advanced { margin-top: 0.5rem; }
+.badge.paused, .badge.waiting, .badge.partial { background: var(--warn-soft); color: var(--warn); }
+.badge.cancelled, .badge.expired, .badge.skipped { background: var(--info-soft); color: var(--text); }
 .identities input { width: 100%; min-width: 10rem; }
 
 /* --------------------------------------------------------------- progress */
@@ -303,3 +312,6 @@ progress { width: 100%; height: 0.8rem; accent-color: var(--accent); }
 /* ----------------------------------------------------------------- memory */
 
 .filters input.grow { flex: 1; min-width: 16rem; }
+
+/* Lab */
+input.wide { flex: 1; min-width: 16rem; }

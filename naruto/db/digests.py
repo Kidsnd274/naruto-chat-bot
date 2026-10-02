@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.db.messages import StoredMessage
 
 ANY = object()  # save(): no revision check (owner edits)
@@ -43,7 +43,7 @@ class DigestRepository:
         A background update passes ``expected_revision``: the revision it
         read (None if there was no digest). If the digest changed or was
         deleted since, nothing is saved and None is returned."""
-        ts = now_ts()
+        ts = self.db.now()
         current = self.get(chat_id)
         last_row_id = last.id if last else (current.last_row_id if current else None)
         last_date = last.date if last else (current.last_message_date if current else None)
@@ -78,7 +78,7 @@ class DigestRepository:
         return self.get(chat_id)
 
     def set_error(self, chat_id: int, error: str) -> None:
-        ts = now_ts()
+        ts = self.db.now()
         self.db.execute(
             "INSERT INTO digests (chat_id, text, updated_at, updated_by, error, failed_at) "
             "VALUES (?, '', ?, 'bot', ?, ?) ON CONFLICT(chat_id) DO UPDATE SET "
@@ -88,29 +88,28 @@ class DigestRepository:
     def clear(self, chat_id: int) -> bool:
         return self.db.execute("DELETE FROM digests WHERE chat_id = ?", (chat_id,)).rowcount > 0
 
-    def unread(self, chat_id: int, digest: Digest | None, *, limit: int) -> list[StoredMessage]:
-        """Messages the digest hasn't read yet, oldest first."""
-        if digest is None or digest.last_message_date is None:
-            rows = self.db.query(
-                "SELECT * FROM messages WHERE chat_id = ? ORDER BY date, id LIMIT ?",
-                (chat_id, limit))
-        else:
-            rows = self.db.query(
-                "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?)) "
-                "ORDER BY date, id LIMIT ?",
-                (chat_id, digest.last_message_date, digest.last_message_date,
-                 digest.last_row_id or 0, limit))
+    def unread(self, chat_id: int, digest: Digest | None, *,
+               limit: int) -> list[StoredMessage]:
+        """Live messages the digest hasn't read yet, oldest first. Imported
+        messages never go into the digest (or the notes it proposes): an
+        export's history goes into history summaries, and stays searchable."""
+        sql, params = self._unread_where(chat_id, digest)
+        rows = self.db.query(f"SELECT * FROM messages WHERE {sql} ORDER BY date, id LIMIT ?",
+                             (*params, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
     def unread_count(self, chat_id: int, digest: Digest | None) -> tuple[int, int | None]:
-        """(messages not read yet, date of the newest one)."""
+        """(live messages not read yet, date of the newest one)."""
+        sql, params = self._unread_where(chat_id, digest)
+        row = self.db.query_one(f"SELECT COUNT(*), MAX(date) FROM messages WHERE {sql}", params)
+        return int(row[0] or 0), row[1]
+
+    @staticmethod
+    def _unread_where(chat_id: int, digest: Digest | None) -> tuple[str, tuple]:
+        """The cursor is stored by value (date, row ID), so deleting the row
+        it points at doesn't move it."""
         if digest is None or digest.last_message_date is None:
-            row = self.db.query_one(
-                "SELECT COUNT(*), MAX(date) FROM messages WHERE chat_id = ?", (chat_id,))
-        else:
-            row = self.db.query_one(
-                "SELECT COUNT(*), MAX(date) FROM messages WHERE chat_id = ? "
-                "AND (date > ? OR (date = ? AND id > ?))",
+            return "chat_id = ? AND source = 'live'", (chat_id,)
+        return ("chat_id = ? AND source = 'live' AND (date > ? OR (date = ? AND id > ?))",
                 (chat_id, digest.last_message_date, digest.last_message_date,
                  digest.last_row_id or 0))
-        return int(row[0] or 0), row[1]

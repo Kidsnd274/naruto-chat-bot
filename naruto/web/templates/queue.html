@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Model queue{% endblock %}
+{% block content %}
+<h1>Model queue</h1>
+<p class="muted">Every request to the model server goes through this queue. Replies to people start before waiting background work (digest upkeep, history summaries, import memory); within each, first come, first served.</p>
+
+{% include "_queue_live.html" %}
+
+<section class="card">
+  <h2>Limits</h2>
+  <form method="post" action="/queue/limits" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Parallel requests <input type="number" name="model.parallel_requests" min="1" max="16" value="{{ settings['model.parallel_requests'] }}"></label>
+    <label>Background parallel requests <input type="number" name="model.background_requests" min="0" max="16" value="{{ settings['model.background_requests'] }}"></label>
+    <label>Slots kept for replies <input type="number" name="model.foreground_reserved" min="0" max="16" value="{{ settings['model.foreground_reserved'] }}"></label>
+    <button type="submit" class="primary">Save</button>
+  </form>
+  <p class="muted small">Set parallel requests to the number of slots your model server has; this page doesn't create them. Background work may use at most parallel − kept slots (kept is capped at parallel − 1, so a one-slot server still runs it). Lowering a limit lets running requests finish. These are also on the <a href="/settings#model">Settings</a> page, with their history.</p>
+</section>
+
+<section class="card">
+  <h2>Recent requests</h2>
+  <form class="filters" method="get" action="/queue">
+    <select name="chat">
+      <option value="">All chats</option>
+      {% for chat in chats %}<option value="{{ chat.chat_id }}" {{ 'selected' if filters.chat == chat.chat_id else '' }}>{{ chat.display_title }}</option>{% endfor %}
+    </select>
+    <select name="task">
+      <option value="">Any task</option>
+      {% for task in tasks %}<option value="{{ task }}" {{ 'selected' if filters.task == task else '' }}>{{ task }}</option>{% endfor %}
+    </select>
+    <select name="priority">
+      <option value="">Any priority</option>
+      {% for priority in priorities %}<option value="{{ priority }}" {{ 'selected' if filters.priority == priority else '' }}>{{ priority }}</option>{% endfor %}
+    </select>
+    <select name="state">
+      <option value="">Any state</option>
+      {% for state in states %}<option value="{{ state }}" {{ 'selected' if filters.state == state else '' }}>{{ state }}</option>{% endfor %}
+    </select>
+    <button type="submit">Apply</button>
+  </form>
+  {% if history %}
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th>#</th><th>Queued</th><th>State</th><th>Priority</th><th>Chat</th><th>Task</th><th>For</th><th class="num">Waited</th><th class="num">Ran</th><th>Error</th></tr></thead>
+    <tbody>
+    {% for r in history %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td class="small nowrap">{{ r.queued_at|ts("%d %b %H:%M:%S") }}</td>
+        <td><span class="badge {{ 'done' if r.state == 'done' else 'failed' if r.state in ('failed', 'interrupted') else 'pending' }}">{{ r.state }}</span>{% if r.attempts > 1 %} <span class="muted small">{{ r.attempts }} tries</span>{% endif %}</td>
+        <td class="small">{{ r.priority }}</td>
+        <td class="small">{{ chat_titles.get(r.chat_id, r.chat_id or "—") }}</td>
+        <td class="small">{{ r.task }}</td>
+        <td class="small">
+          {% if r.run_id %}<a href="/runs/{{ r.run_id }}">run {{ r.run_id }}</a>{% endif %}
+          {% if r.import_id %}<a href="/import/{{ r.import_id }}">import {{ r.import_id }}</a>{% endif %}
+          {% if r.period_id %}<span class="muted">period {{ r.period_id }}{% if r.chunk %}, part {{ r.chunk }}{% endif %}</span>{% elif r.chunk %}<span class="muted">part {{ r.chunk }}</span>{% endif %}
+        </td>
+        <td class="num small">{{ "%.1f s"|format(r.wait_seconds) if r.wait_seconds is not none else "" }}</td>
+        <td class="num small">{{ "%.1f s"|format(r.run_seconds) if r.run_seconds is not none else "" }}</td>
+        <td class="small">{{ (r.error or "")[:120] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">The last {{ history|length }} requests. Waiting time and model time are shown separately; prompts are on the run's page.</p>
+  {% else %}
+    <p class="muted">No requests yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

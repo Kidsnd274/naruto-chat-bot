@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import logging
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.db.migrations import CHAT_SCOPED_TABLES
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class Chat:
     updated_at: int
     status_changed_at: int | None
     last_activity_at: int | None
+    recording_since: int | None = None  # when live recording started (imports stop here)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Chat":
@@ -48,7 +49,8 @@ class Chat:
         for key in ("can_pin", "can_delete"):
             if data[key] is not None:
                 data[key] = bool(data[key])
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        # Columns added by later migrations have defaults here.
+        return cls(**{k: data[k] for k in cls.__dataclass_fields__ if k in data})
 
     @property
     def enabled(self) -> bool:
@@ -166,7 +168,7 @@ class ChatRepository:
         Returns ``(chat, created)``. Titles and types are refreshed when given.
         """
         chat_id = self.resolve(chat_id)
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             existing = self.get(chat_id, resolve=False)
             if existing is None:
@@ -188,7 +190,7 @@ class ChatRepository:
             return self.get(chat_id, resolve=False), created
 
     def _update(self, chat_id: int, **fields) -> None:
-        fields["updated_at"] = now_ts()
+        fields["updated_at"] = self.db.now()
         assignments = ", ".join(f"{name} = ?" for name in fields)
         self.db.execute(
             f"UPDATE chats SET {assignments} WHERE chat_id = ?",
@@ -203,9 +205,17 @@ class ChatRepository:
         if chat is None:
             return None
         if chat.status != status:
-            self._update(chat_id, status=status, status_changed_at=now_ts())
+            ts = self.db.now()
+            fields: dict = {"status": status, "status_changed_at": ts}
+            if status == ENABLED and chat.recording_since is None:
+                fields["recording_since"] = ts  # the recorder starts now
+            self._update(chat_id, **fields)
             logger.info("Chat %s status %s -> %s", chat_id, chat.status, status)
         return self.get(chat_id, resolve=False)
+
+    def set_recording_since(self, chat_id: int, ts: int | None) -> None:
+        """The owner's correction of when live recording began."""
+        self._update(self.resolve(chat_id), recording_since=ts)
 
     def set_membership(
         self,
@@ -226,16 +236,16 @@ class ChatRepository:
             self.resolve(chat_id),
             can_pin=None if can_pin is None else int(can_pin),
             can_delete=None if can_delete is None else int(can_delete),
-            rights_checked_at=now_ts(),
+            rights_checked_at=self.db.now(),
         )
 
     def mark_owner_notified(self, chat_id: int) -> None:
-        self._update(self.resolve(chat_id), owner_notified_at=now_ts())
+        self._update(self.resolve(chat_id), owner_notified_at=self.db.now())
 
     def touch_activity(self, chat_id: int, ts: int | None = None) -> None:
         self.db.execute(
             "UPDATE chats SET last_activity_at = ? WHERE chat_id = ?",
-            (ts or now_ts(), self.resolve(chat_id)),
+            (ts or self.db.now(), self.resolve(chat_id)),
         )
 
     def seed_enabled(self, chat_id: int) -> bool:
@@ -259,7 +269,7 @@ class ChatRepository:
         """
         if old_chat_id == new_chat_id:
             return self.get(new_chat_id)
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             old = self.get(old_chat_id, resolve=False)
             new = self.get(new_chat_id, resolve=False)
@@ -285,6 +295,9 @@ class ChatRepository:
                     added_by_user_id=new.added_by_user_id or old.added_by_user_id,
                     added_by_name=new.added_by_name or old.added_by_name,
                     created_at=min(old.created_at, new.created_at),
+                    recording_since=min((ts for ts in (old.recording_since,
+                                                       new.recording_since) if ts is not None),
+                                        default=None),
                 )
                 self.db.execute("DELETE FROM chats WHERE chat_id = ?", (old_chat_id,))
             for table in CHAT_SCOPED_TABLES:

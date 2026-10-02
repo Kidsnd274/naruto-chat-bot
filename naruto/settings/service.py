@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.settings.registry import REGISTRY, Setting, SettingError
 
 logger = logging.getLogger(__name__)
@@ -142,33 +142,60 @@ class SettingsService:
             self.set(key, last.old_value, actor=actor)
         return True
 
+    def set_many(self, values: dict[str, Any], *, actor: str) -> list[str]:
+        """Validate every value first, then store them all in one
+        transaction (a lab activation: all of a candidate's changes or none).
+        Returns the keys that changed."""
+        checked = {key: self.definition(key).validate(value) for key, value in values.items()}
+        with self.db.transaction():
+            changed = [key for key, value in checked.items()
+                       if self._write_row(key, actor, value=value,
+                                          reset=value == self.registry[key].default)]
+        if changed:
+            self.reload()
+            for key in changed:
+                logger.info("Setting %s changed by %s", key, actor)
+                self._notify(key)
+        return changed
+
     def _write(self, key: str, actor: str, *, value: Any = None, reset: bool = False) -> None:
         """Store ``value`` (which may be None for nullable settings), or
         delete the override when ``reset``."""
+        with self.db.transaction():
+            changed = self._write_row(key, actor, value=value, reset=reset)
+        if not changed:
+            return
+        self.reload()
+        logger.info("Setting %s changed by %s", key, actor)
+        self._notify(key)
+
+    def _write_row(self, key: str, actor: str, *, value: Any, reset: bool) -> bool:
+        """The row and its history entry, inside the caller's transaction.
+        False when nothing changes."""
         old_row = self.db.query_one("SELECT value FROM settings WHERE key = ?", (key,))
         old_json = old_row["value"] if old_row else None
         new_json = None if reset else _dump(value)
         if old_json == new_json:
-            return
-        ts = now_ts()
-        with self.db.transaction():
-            if new_json is None:
-                self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
-            else:
-                self.db.execute(
-                    "INSERT INTO settings (key, value, updated_at, updated_by) "
-                    "VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
-                    "value = excluded.value, updated_at = excluded.updated_at, "
-                    "updated_by = excluded.updated_by",
-                    (key, new_json, ts, actor),
-                )
+            return False
+        ts = self.db.now()
+        if new_json is None:
+            self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
+        else:
             self.db.execute(
-                "INSERT INTO settings_history (key, old_value, new_value, changed_at, changed_by) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (key, old_json, new_json, ts, actor),
+                "INSERT INTO settings (key, value, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
+                "value = excluded.value, updated_at = excluded.updated_at, "
+                "updated_by = excluded.updated_by",
+                (key, new_json, ts, actor),
             )
-        self.reload()
-        logger.info("Setting %s changed by %s", key, actor)
+        self.db.execute(
+            "INSERT INTO settings_history (key, old_value, new_value, changed_at, changed_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (key, old_json, new_json, ts, actor),
+        )
+        return True
+
+    def _notify(self, key: str) -> None:
         new_value = self.get(key)
         for listener in list(self._listeners):
             try:
@@ -210,7 +237,7 @@ class SettingsService:
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, key) DO UPDATE SET "
             "value = excluded.value, updated_at = excluded.updated_at, "
             "updated_by = excluded.updated_by",
-            (chat_id, key, _dump(value), now_ts(), actor))
+            (chat_id, key, _dump(value), self.db.now(), actor))
         logger.info("Setting %s for chat %s changed by %s", key, chat_id, actor,
                     extra={"chat_id": chat_id})
         return value

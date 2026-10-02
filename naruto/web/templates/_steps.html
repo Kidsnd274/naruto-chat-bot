@@ -1,0 +1,37 @@
+{# Every model request and tool call of an agent run, in order (expects `steps`). #}
+<ol class="steps">
+  {% for step in steps %}
+    <li>
+      {% if step.type == "switch" %}
+        <strong>Handed over to the {{ step.skill }} skill</strong> <span class="muted small">(new prompt and tools)</span>
+      {% elif step.type == "check" %}
+        <strong>Asked again</strong> <span class="muted small">— the answer skipped a tool the request needs</span>
+        <pre class="prompt">{{ step.note }}</pre>
+      {% elif step.type == "fit" %}
+        <strong>Fitted request {{ step.request }} to the input budget</strong> <span class="muted small">— about {{ step.tokens }} of {{ step.budget }} tokens{% if step.dropped %}; {{ step.dropped }} recent messages dropped{% endif %}{% if step.shortened %}; tool results shortened {{ step.shortened }} times{% endif %}</span>
+      {% elif step.type == "model" %}
+        <strong>Model request {{ step.request }}</strong>{% if step.purpose is defined %} <span class="small">— {{ step.purpose }}</span>{% endif %}
+        <span class="muted small">
+          {% if step.latency_ms is defined %}{{ "%.2f s"|format(step.latency_ms / 1000) }}{% endif %}
+          {% if step.ttft_ms is defined %} · first token {{ "%.2f s"|format(step.ttft_ms / 1000) }}{% endif %}
+          {% if step.finish_reason %} · {{ step.finish_reason }}{% endif %}
+          {% if step.usage is defined %} · {% for key, value in step.usage.items() %}{{ key }}={{ value }} {% endfor %}{% endif %}
+        </span>
+        {% if step.error is defined %}<p class="error-text small">{{ step.error }}</p>{% endif %}
+        {% if step.tool_calls %}
+          <p class="small">Calls: {% for call in step.tool_calls %}<code>{{ call.name }}</code>{{ ", " if not loop.last else "" }}{% endfor %}</p>
+        {% endif %}
+        {% if step.text %}<pre class="prompt">{{ step.text }}</pre>{% endif %}
+        {% if step.reasoning is defined %}
+          <details><summary class="small muted">Reasoning ({{ step.reasoning|length }} characters)</summary><pre class="prompt">{{ step.reasoning }}</pre></details>
+        {% endif %}
+      {% else %}
+        <strong>Tool <code>{{ step.name }}</code></strong>
+        {% if step.error %}<span class="badge error">error</span>{% endif %}
+        <span class="muted small">{{ step.duration_ms }} ms</span>
+        <pre class="prompt">{{ step.arguments|tojson(indent=2) }}</pre>
+        <details {{ 'open' if step.error else '' }}><summary class="small muted">Result ({{ step.result|length }} characters)</summary><pre class="prompt">{{ step.result }}</pre></details>
+      {% endif %}
+    </li>
+  {% endfor %}
+</ol>

@@ -40,7 +40,7 @@ def parse_day(ctx: ToolContext, value: str, *, name: str = "date") -> int:
     """YYYY-MM-DD (or "today" / "yesterday") -> local midnight as Unix time."""
     tz = ctx.services.timezone()
     text = (value or "").strip().lower()
-    today = datetime.now(tz).date()
+    today = ctx.services.now().date()
     if text == "today":
         day = today
     elif text == "yesterday":

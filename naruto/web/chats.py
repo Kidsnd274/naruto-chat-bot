@@ -238,38 +238,104 @@ async def remove_alias(request: Request, chat_id: int, user_id: int):
 
 # ------------------------------------------------------------------ delete
 
+DELETE_SCOPES = ("all", "older", "age")
+DELETE_SOURCES = {"": None, LIVE: LIVE, IMPORT: IMPORT}
+MAX_AGE_DAYS = 36500
+DAY = 86400
+
+
+def _age_days(raw) -> int | None:
+    """A whole number of days, 1 or more (not "-1", "1.5", "nan" or "1e3")."""
+    raw = str(raw or "").strip()
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 6:
+        return None
+    days = int(raw)
+    return days if 1 <= days <= MAX_AGE_DAYS else None
+
+
+def _busy_reason(services: Services, chat: Chat) -> str | None:
+    """Why messages can't be deleted right now: something is reading them
+    and could store or summarize them again."""
+    busy = services.imports.busy_import(chat.chat_id) if services.imports else None
+    if busy is not None:
+        return (f"Import #{busy.id} of this group is {busy.status}. Let it finish, or cancel "
+                "the rest of it, before deleting messages.")
+    if services.history_locks[chat.chat_id].locked():
+        return ("A history summary of this group is being written. Try again in a few "
+                "minutes.")
+    return None
+
+
 @router.post("/chats/{chat_id}/delete-messages")
 async def delete_messages(request: Request, chat_id: int):
     """Two steps: the first POST shows how many messages would go; the
-    second (confirm=yes) deletes them."""
+    second (confirm=yes) deletes them. Everything, before a calendar date,
+    or older than N days: N × 24 hours before the review, and the
+    confirmation deletes up to that same moment."""
     services = _services(request)
     chat = _chat_or_404(services, chat_id)
     form = await request.form()
-    scope = form.get("scope") or "all"
+    scope = form.get("scope")
+    if scope not in DELETE_SCOPES:
+        raise HTTPException(status_code=400, detail="Choose which messages to delete.")
+    if (form.get("source") or "") not in DELETE_SOURCES:
+        raise HTTPException(status_code=400, detail="Unknown message source.")
+    source = DELETE_SOURCES[form.get("source") or ""]
+    confirmed = form.get("confirm") == "yes"
     before_raw = form.get("before") or ""
-    source = form.get("source") if form.get("source") in (LIVE, IMPORT) else None
-    before = _day_start(services, before_raw) if scope == "older" else None
-    if scope == "older" and before is None:
-        raise HTTPException(status_code=400, detail="Choose a date.")
+    days = None
+    before = None
+    when = ""
+    if scope == "older":
+        before = _day_start(services, before_raw)
+        if before is None:
+            raise HTTPException(status_code=400, detail="Choose a date.")
+        when = f" from before {before_raw}"
+    elif scope == "age":
+        days = _age_days(form.get("days"))
+        if days is None:
+            raise HTTPException(status_code=400,
+                                detail="Enter a whole number of days, 1 or more.")
+        now = int(services.time())
+        if confirmed:
+            raw = str(form.get("cutoff") or "")
+            before = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 12 else None
+            if before is None or before > now:
+                raise HTTPException(status_code=400, detail="Review the deletion again.")
+        else:
+            before = now - days * DAY
+        stamp = datetime.fromtimestamp(before, services.timezone()).strftime(
+            "%d %b %Y, %H:%M %Z")
+        when = f" older than {days} day{'s' if days != 1 else ''} (sent before {stamp})"
 
-    if form.get("confirm") != "yes":
+    busy = _busy_reason(services, chat)
+    if busy:
+        flash(request, busy, "error")
+        return _back(chat.chat_id)
+    what = {None: "messages", LIVE: "live messages", IMPORT: "imported messages"}[source]
+    if not confirmed:
         count = services.messages.count_for_delete(chat.chat_id, before=before, source=source)
-        what = {None: "messages", LIVE: "live messages", IMPORT: "imported messages"}[source]
-        when = f" from before {before_raw}" if before is not None else ""
         return request.app.state.templates.TemplateResponse(request, "confirm.html", {
             "title": f"Delete {count} {what}{when}?",
-            "message": f"This permanently deletes {count} {what}{when} from "
-                       f"{chat.display_title}. It cannot be undone.",
+            "message": f"This permanently deletes the bot's stored copies of {count} {what}"
+                       f"{when} from {chat.display_title}; the messages in Telegram aren't "
+                       "touched. It cannot be undone. Summaries and memory notes may still "
+                       "contain information from these messages. Delete them separately if "
+                       "needed.",
             "action": f"/chats/{chat.chat_id}/delete-messages",
-            "fields": {"scope": scope, "before": before_raw, "source": source or "",
+            "fields": {"scope": scope, "before": before_raw, "days": days or "",
+                       "cutoff": before if scope == "age" else "", "source": source or "",
                        "confirm": "yes"},
             "confirm_label": "Delete",
             "cancel": f"/chats/{chat.chat_id}",
         })
 
-    deleted = services.messages.delete_for_chat(chat.chat_id, before=before, source=source)
-    flash(request, f"Deleted {deleted} messages.")
+    async with services.history_locks[chat.chat_id]:
+        deleted = services.messages.delete_for_chat(chat.chat_id, before=before, source=source)
+        if deleted:
+            services.history.note_deleted_messages(chat.chat_id, before=before, source=source)
+    flash(request, f"Deleted {deleted} {what}.")
     logger.info("Deleted %s messages (%s, before=%s, source=%s) from the web admin",
-                deleted, scope, before_raw or "-", source or "all",
+                deleted, scope, before if before is not None else "-", source or "all",
                 extra={"chat_id": chat.chat_id})
     return _back(chat.chat_id)

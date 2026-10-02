@@ -8,7 +8,7 @@ once, merge two accounts into one person, or split them again.
 from dataclasses import dataclass, field
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 
 @dataclass
@@ -90,7 +90,7 @@ class PeopleRepository:
         person_id = self.person_id_for(user_id)
         if person_id is not None:
             return person_id
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             person_id = self.db.execute(
                 "INSERT INTO people (name, created_at, updated_at) VALUES (NULL, ?, ?)",
@@ -104,7 +104,7 @@ class PeopleRepository:
     def touch_live(self, user_id: int, telegram_name: str | None, username: str | None, *,
                    is_bot: bool = False, seen_at: int | None = None) -> int:
         """Record what Telegram currently calls this account."""
-        seen_at = seen_at or now_ts()
+        seen_at = seen_at or self.db.now()
         person_id = self._ensure_account(user_id, seen_at)
         self.db.execute(
             "UPDATE accounts SET telegram_name = COALESCE(?, telegram_name), username = ?, "
@@ -230,12 +230,12 @@ class PeopleRepository:
     # --------------------------------------------------------------- writes
 
     def _touch_person(self, person_id: int) -> None:
-        self.db.execute("UPDATE people SET updated_at = ? WHERE id = ?", (now_ts(), person_id))
+        self.db.execute("UPDATE people SET updated_at = ? WHERE id = ?", (self.db.now(), person_id))
 
     def set_name(self, person_id: int, name: str | None) -> None:
         name = (name or "").strip() or None
         self.db.execute("UPDATE people SET name = ?, updated_at = ? WHERE id = ?",
-                        (name, now_ts(), person_id))
+                        (name, self.db.now(), person_id))
 
     def add_alias(self, person_id: int, alias: str) -> bool:
         alias = alias.strip()
@@ -243,7 +243,7 @@ class PeopleRepository:
             return False
         self.db.execute(
             "INSERT OR IGNORE INTO person_aliases (person_id, alias, created_at) VALUES (?, ?, ?)",
-            (person_id, alias, now_ts()))
+            (person_id, alias, self.db.now()))
         return True
 
     def remove_alias(self, person_id: int, alias: str) -> bool:
@@ -315,7 +315,7 @@ class PeopleRepository:
             "SELECT COUNT(*) FROM accounts WHERE person_id = ? AND user_id != ?", (old_id, user_id))
         if not others:
             raise ValueError("That account is already a person of its own.")
-        ts = now_ts()
+        ts = self.db.now()
         with self.db.transaction():
             new_id = self.db.execute(
                 "INSERT INTO people (name, created_at, updated_at) VALUES (NULL, ?, ?)",

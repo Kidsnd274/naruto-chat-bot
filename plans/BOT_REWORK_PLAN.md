@@ -1,6 +1,6 @@
 # Bot rework plan
 
-Status: phases 1–4 implemented on branch `bot_rework` (phases 3–4 on 2026-10-01); phase 5 partly done (per-chat overrides, progress messages, parallel requests; not simulated streaming or persona tuning). See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
+Status: phases 1–4 implemented on branch `bot_rework` (phases 3–4 on 2026-10-01); phase 5 partly done (per-chat overrides, progress messages, parallel requests; not simulated streaming or persona tuning). See §18 for what was built, deviations from this plan and what still needs checking against live Telegram and Gufo. Replaces `done/OLD_AGENTIC_FEATURE_PLAN.md`; parts of that plan (context layout, bounded agent loop, image descriptions) are carried forward where noted.
 
 ## 1. Goal
 
@@ -532,6 +532,13 @@ The owner tested phases 3–4 in a test group, first on Lemonade (Gemma 4 31B), 
 - **Parallel requests** (Model → Parallel requests, default 1): a multi-slot server (Halogen has 4) can work on replies in different chats and background digest updates at once; replies still go first when every slot is busy, and runs in one chat still take turns. Not in the original plan; added because Halogen's slots sat idle while a digest update held up replies.
 - Not done: simulated streaming (the plan says to try it first; with progress messages in place it may not be needed), and persona tuning from real use (the persona is being reworked separately).
 
+### After phase 5 (2026-10-01)
+
+- Review fixes: a run stops before any tool once its chat is disabled; memory note IDs are never reused (migration 9); automatic notes off also stops automatic corrections; a digest update that finds the digest edited or deleted meanwhile is discarded; confirming a plan on a full board says it isn't on the board; the board is kept within one Telegram message; distillation parses exports off the event loop.
+- History digests and the shared model queue (branch `history_digests`): see `done/IMPORTED_HISTORY_DIGEST_PLAN.md` and `done/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md`, simplified by `done/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md`. Imports choose raw dates and summary dates separately; summaries of past months or weeks outlive the messages, live chat is summarized monthly, the bot can look them up, and every model request goes through one queue shown on the web admin's Queue page.
+
+- The self-learning loop (branch `self_learning_loop`, `done/SELF_LEARNING_LOOP_TECH_PLAN.md`) replaces the evaluation harness with the prompt lab: scenarios run through the production reply path in sandboxes, and the owner tunes the configuration for each model.
+
 ### Needs checking against live Telegram and Gufo
 
 - `/catchup`: a non-admin bot may only answer an ephemeral command within 15 seconds, and a catch-up with reasoning usually takes longer; check which fallback (DM or group) people get, or make the bot an admin.
@@ -548,7 +555,7 @@ The owner tested phases 3–4 in a test group, first on Lemonade (Gemma 4 31B), 
 
 ### Next
 
-1. Deploy Gufo with Qwen3.8 27B, build ~20 cases from real exports with `python -m naruto.evaluation extract`, run them against 27B and Flash-Next, and settle the model (§11).
+1. Deploy Gufo with Qwen3.8 27B and settle the model (§11) with the prompt lab: one tuning run per model. The evaluation harness (`python -m naruto.evaluation`) was replaced by the lab; see `done/SELF_LEARNING_LOOP_TECH_PLAN.md`.
 2. Try phases 3–4 live in a test group: a board update, a plan, a poll, `/summary`, `/catchup`, `/remember`, `/remind`, a question about an older photo; then check the Agent runs, Memory and chat pages. Re-import an export to see distillation.
 3. Tune the persona and skill prompts from real use (phase 5), and decide on progress placeholders and per-chat overrides.
 

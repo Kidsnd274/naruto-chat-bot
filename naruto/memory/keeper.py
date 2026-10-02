@@ -1,9 +1,10 @@
 """Keeps each chat's digest and group memory up to date in the background.
 
 A chat's digest is updated once enough new messages arrived, after a quiet
-gap, or on request (/summary). One update reads the messages the digest
+gap, or on request (/summary). One update reads the live messages the digest
 hasn't seen yet (bounded by tokens), rewrites the digest and applies the
-note changes the model proposes. Model requests run at background priority,
+note changes the model proposes. Imported messages never go in: an export's
+facts don't flow into the digest or automatic notes. Model requests run at background priority,
 so replies to people go first. Each update is traced as an agent run.
 """
 
@@ -19,6 +20,7 @@ from naruto.db.chats import ENABLED, Chat
 from naruto.db.memory import BOT
 from naruto.db.messages import StoredMessage
 from naruto.llm import LLMError
+from naruto.model_queue import RequestInfo
 from naruto.memory.notes import (
     MemoryOutputError,
     apply_note_actions,
@@ -33,6 +35,7 @@ CHECK_INTERVAL_SECONDS = 60
 RETRY_AFTER_SECONDS = 15 * 60
 QUIET_MIN_MESSAGES = 10
 MAX_UNREAD_BATCH = 2000
+MIN_MESSAGE_TOKENS = 300  # what an update must leave for new messages
 DIGEST_CHANGED = "Not saved: the digest was edited or deleted while this update ran."
 AUTO_NOTES_OFF = "\n\nAutomatic notes are turned off: always answer with an empty notes list."
 
@@ -101,13 +104,29 @@ class MemoryKeeper:
 
     # --------------------------------------------------------------- update
 
+    def message_budget(self, chat: Chat) -> int:
+        """Tokens of an update left for new messages: the instructions, the
+        digest and the notes come out of memory.digest_input_tokens. Raises
+        MemoryOutputError when they leave too little."""
+        total = self.services.settings["memory.digest_input_tokens"]
+        fixed = sum(estimate_text_tokens(m["content"])
+                    for m in self.build_prompt(chat, [], more=True))
+        if total - fixed < MIN_MESSAGE_TOKENS:
+            raise MemoryOutputError(
+                f"The instructions, digest and notes take about {fixed} of the {total} tokens "
+                "per update, leaving no room for new messages. Raise Memory → Tokens per "
+                "update, or keep fewer notes.")
+        return total - fixed
+
     def _batch(self, chat: Chat, messages: list[StoredMessage] | None) -> tuple[list, bool]:
-        """The unread messages that fit the token budget, and whether more
-        are waiting."""
+        """The unread live messages that fit the token budget, and whether
+        more are waiting."""
         if messages is None:
             digest = self.services.digests.get(chat.chat_id)
             messages = self.services.digests.unread(chat.chat_id, digest, limit=MAX_UNREAD_BATCH)
-        budget = self.services.settings["memory.digest_input_tokens"]
+        else:
+            messages = [message for message in messages if message.is_live]
+        budget = self.message_budget(chat)
         max_chars = self.services.settings["context.max_message_chars"]
         used, batch = 0, []
         for message in messages:
@@ -168,7 +187,12 @@ class MemoryKeeper:
         settings = services.settings.for_chat(chat.chat_id)
         read = services.digests.get(chat.chat_id)
         revision = read.revision if read else None  # to spot owner edits meanwhile
-        batch, more = self._batch(chat, messages)
+        try:
+            batch, more = self._batch(chat, messages)
+        except MemoryOutputError as exc:
+            logger.warning("Digest update not sent: %s", exc, extra={"chat_id": chat.chat_id})
+            services.digests.set_error(chat.chat_id, str(exc))
+            return None
         if not batch:
             return None
         prompt = self.build_prompt(chat, batch, more=more)
@@ -176,9 +200,10 @@ class MemoryKeeper:
         services.runs.update(run_id, prompt=prompt, window_size=len(batch),
                              prompt_tokens=sum(estimate_text_tokens(m["content"]) for m in prompt))
         try:
-            result = await services.llm.chat(prompt, reasoning=settings["memory.reasoning"],
-                                              max_tokens=settings["memory.max_output_tokens"],
-                                              background=True)
+            result = await services.llm.chat(
+                prompt, reasoning=settings["memory.reasoning"],
+                max_tokens=settings["memory.max_output_tokens"], background=True,
+                info=RequestInfo(task="digest", chat_id=chat.chat_id, run_id=run_id))
         except LLMError as exc:
             logger.warning("Digest update failed: %s", exc, extra={"chat_id": chat.chat_id})
             services.digests.set_error(chat.chat_id, str(exc))

@@ -4,21 +4,26 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+from naruto.lab.service import LabError
 from naruto.services import Services
 from naruto.web import (
     auth,
     board,
     chat_settings,
     chats,
+    history,
     imports,
+    lab_api,
+    lab_pages,
     logs_page,
     memory,
     pages,
     people,
+    queue,
     runs,
     settings_pages,
 )
@@ -43,7 +48,8 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.services = services
     app.state.templates = make_templates(services)
-    app.state.chat_detail_extras = [imports.chat_imports, board.chat_board, memory.chat_memory]
+    app.state.chat_detail_extras = [imports.chat_imports, board.chat_board, memory.chat_memory,
+                                     history.chat_history]
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -60,9 +66,13 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
                        same_site="strict")
 
     app.add_exception_handler(auth.LoginRequired, auth.login_redirect)
+    app.add_exception_handler(LabError, lab_api.lab_error)
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"error": "http", "message": str(exc.detail), "details": {}},
+                                status_code=exc.status_code)
         if request.headers.get("hx-request") or not request.session.get("admin"):
             return PlainTextResponse(str(exc.detail), status_code=exc.status_code)
         return app.state.templates.TemplateResponse(
@@ -80,9 +90,13 @@ def create_app(services: Services, *, session_secret: str) -> FastAPI:
     app.include_router(chat_settings.router)
     app.include_router(board.router)
     app.include_router(memory.router)
+    app.include_router(history.router)
     app.include_router(people.router)
     app.include_router(imports.router)
     app.include_router(runs.router)
+    app.include_router(queue.router)
+    app.include_router(lab_api.router)
+    app.include_router(lab_pages.router)
     app.include_router(settings_pages.router)
     app.include_router(logs_page.router)
     return app

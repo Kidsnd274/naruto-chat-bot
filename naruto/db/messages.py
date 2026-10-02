@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 
 LIVE = "live"
 IMPORT = "import"
@@ -141,7 +141,7 @@ class MessageRepository:
             self.db.execute(
                 f"INSERT OR IGNORE INTO messages ({', '.join(_INSERT_COLUMNS)}) "
                 f"VALUES ({placeholders})",
-                self._row_values(message, reply_row, now_ts()),
+                self._row_values(message, reply_row, self.db.now()),
             )
             stored = self.get_live(message.origin_chat_id, message.message_id)
         return stored
@@ -151,7 +151,7 @@ class MessageRepository:
         resolved afterwards with resolve_import_replies()."""
         if not messages:
             return
-        ts = now_ts()
+        ts = self.db.now()
         placeholders = ", ".join("?" for _ in _INSERT_COLUMNS)
         with self.db.transaction():
             self.db.executemany(
@@ -175,6 +175,27 @@ class MessageRepository:
             "DELETE FROM messages WHERE source = 'import' AND import_id = ?", (import_id,)
         ).rowcount
 
+    def delete_imported_range(self, chat_id: int, start: int, end: int, *,
+                              keep_import_id: int) -> int:
+        """Earlier imports' messages in [start, end): a new import of those
+        dates replaces them. Imported messages outside the range stay."""
+        with self.db.transaction():
+            cursor = self.db.execute(
+                "DELETE FROM messages WHERE chat_id = ? AND source = 'import' AND date >= ? "
+                "AND date < ? AND (import_id IS NULL OR import_id != ?)",
+                (chat_id, start, end, keep_import_id))
+            self.db.execute(
+                "UPDATE messages SET reply_to_row_id = NULL WHERE chat_id = ? "
+                "AND source = 'import' AND reply_to_row_id IS NOT NULL AND NOT EXISTS "
+                "(SELECT 1 FROM messages AS target WHERE target.id = messages.reply_to_row_id)",
+                (chat_id,))
+        return cursor.rowcount
+
+    def count_import(self, import_id: int) -> int:
+        return int(self.db.scalar(
+            "SELECT COUNT(*) FROM messages WHERE source = 'import' AND import_id = ?",
+            (import_id,)) or 0)
+
     def apply_edit(
         self,
         origin_chat_id: int,
@@ -186,7 +207,7 @@ class MessageRepository:
         cursor = self.db.execute(
             "UPDATE messages SET text = ?, edit_date = ? "
             "WHERE source = 'live' AND origin_chat_id = ? AND message_id = ?",
-            (text, edit_date or now_ts(), origin_chat_id, message_id),
+            (text, edit_date or self.db.now(), origin_chat_id, message_id),
         )
         return cursor.rowcount > 0
 
@@ -229,6 +250,20 @@ class MessageRepository:
         return int(self.db.scalar(sql, params) or 0)
 
     # ----------------------------------------------------------------- reads
+
+    def _incoming(self, chat_id: int, column: str = "import_id") -> tuple[str, list]:
+        """The one visibility rule for messages an import is still storing:
+        they are hidden from replies, searches and the message browser until
+        its raw stage finishes, when they appear all at once (replacing the
+        earlier import's messages of those dates), or are rolled back.
+        Returns an extra WHERE condition and its parameters (none while no
+        import of the chat is storing messages)."""
+        ids = [row[0] for row in self.db.query(
+            "SELECT id FROM imports WHERE chat_id = ? AND raw_status = 'running'", (chat_id,))]
+        if not ids:
+            return "", []
+        placeholders = ", ".join("?" for _ in ids)
+        return f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", ids
 
     def get(self, row_id: int) -> StoredMessage | None:
         row = self.db.query_one("SELECT * FROM messages WHERE id = ?", (row_id,))
@@ -277,27 +312,33 @@ class MessageRepository:
         the chat is short). The start only moves in whole steps, so the prompt
         prefix stays identical for up to ``step`` new messages and the
         inference server can reuse its cache.
+
+        The count still scans the chat's index (about 30 ms at a million
+        messages); the rows themselves are read newest first, so the cost of
+        reading them doesn't grow with the history.
         """
         window = max(window, 1)
         step = max(step, 1)
-        earlier = "chat_id = ? AND (date < ? OR (date = ? AND id < ?))"
-        params = (chat_id, before.date, before.date, before.id)
+        hidden, hidden_params = self._incoming(chat_id)
+        earlier = "chat_id = ? AND (date < ? OR (date = ? AND id < ?))" + hidden
+        params = (chat_id, before.date, before.date, before.id, *hidden_params)
         total = int(self.db.scalar(f"SELECT COUNT(*) FROM messages WHERE {earlier}", params) or 0)
         if total <= window:
             start = 0
         else:
             start = ((total - window) // step) * step
         rows = self.db.query(
-            f"SELECT * FROM messages WHERE {earlier} ORDER BY date, id LIMIT ? OFFSET ?",
-            (*params, total - start, start),
+            f"SELECT * FROM messages WHERE {earlier} ORDER BY date DESC, id DESC LIMIT ?",
+            (*params, total - start),
         )
-        return [StoredMessage.from_row(row) for row in rows]
+        return [StoredMessage.from_row(row) for row in reversed(rows)]
 
     def latest(self, chat_id: int, limit: int) -> list[StoredMessage]:
+        hidden, hidden_params = self._incoming(chat_id)
         rows = self.db.query(
-            "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? "
+            f"SELECT * FROM (SELECT * FROM messages WHERE chat_id = ?{hidden} "
             "ORDER BY date DESC, id DESC LIMIT ?) ORDER BY date, id",
-            (chat_id, limit),
+            (chat_id, *hidden_params, limit),
         )
         return [StoredMessage.from_row(row) for row in rows]
 
@@ -314,8 +355,9 @@ class MessageRepository:
         limit: int = 50,
     ) -> MessagePage:
         """Newest-first page for the web admin's message browser."""
-        where = ["m.chat_id = ?"]
-        params: list = [chat_id]
+        hidden, hidden_params = self._incoming(chat_id, "m.import_id")
+        where = ["m.chat_id = ?" + hidden]
+        params: list = [chat_id, *hidden_params]
         join = ""
         match = fts_query(query) if query else None
         if query and match is None:
@@ -364,13 +406,14 @@ class MessageRepository:
         match = fts_query(query) if query else None
         if query and match is None:
             return []
+        hidden, hidden_params = self._incoming(chat_id, "m.import_id")
         if match:
             sql = ("SELECT m.* FROM messages m JOIN messages_fts ON messages_fts.rowid = m.id "
-                   "WHERE m.chat_id = ? AND messages_fts MATCH ?")
-            params: list = [chat_id, match]
+                   f"WHERE m.chat_id = ?{hidden} AND messages_fts MATCH ?")
+            params: list = [chat_id, *hidden_params, match]
         else:
-            sql = "SELECT m.* FROM messages m WHERE m.chat_id = ?"
-            params = [chat_id]
+            sql = f"SELECT m.* FROM messages m WHERE m.chat_id = ?{hidden}"
+            params = [chat_id, *hidden_params]
         if sender_ids:
             sql += f" AND m.sender_id IN ({', '.join('?' for _ in sender_ids)})"
             params.extend(sender_ids)
@@ -392,30 +435,33 @@ class MessageRepository:
         if target is None or target.chat_id != chat_id:
             return []
         earlier = self.before(chat_id, target, limit=before)
+        hidden, hidden_params = self._incoming(chat_id)
         later = self.db.query(
-            "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?)) "
-            "ORDER BY date, id LIMIT ?",
-            (chat_id, target.date, target.date, target.id, after))
+            "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?))"
+            f"{hidden} ORDER BY date, id LIMIT ?",
+            (chat_id, target.date, target.date, target.id, *hidden_params, after))
         return earlier + [target] + [StoredMessage.from_row(row) for row in later]
 
     def before(self, chat_id: int, message: StoredMessage, *, limit: int) -> list[StoredMessage]:
         """The ``limit`` messages just before ``message``, oldest first."""
+        hidden, hidden_params = self._incoming(chat_id)
         rows = self.db.query(
             "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? "
-            "AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT ?) "
-            "ORDER BY date, id",
-            (chat_id, message.date, message.date, message.id, limit))
+            f"AND (date < ? OR (date = ? AND id < ?)){hidden} ORDER BY date DESC, id DESC "
+            "LIMIT ?) ORDER BY date, id",
+            (chat_id, message.date, message.date, message.id, *hidden_params, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
     def between(self, chat_id: int, *, since: int, before: StoredMessage,
                 limit: int) -> list[StoredMessage]:
         """Messages from ``since`` up to ``before`` (exclusive), oldest first,
         keeping the newest ``limit`` if there are more."""
+        hidden, hidden_params = self._incoming(chat_id)
         rows = self.db.query(
             "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? AND date >= ? "
-            "AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT ?) "
-            "ORDER BY date, id",
-            (chat_id, since, before.date, before.date, before.id, limit))
+            f"AND (date < ? OR (date = ? AND id < ?)){hidden} ORDER BY date DESC, id DESC "
+            "LIMIT ?) ORDER BY date, id",
+            (chat_id, since, before.date, before.date, before.id, *hidden_params, limit))
         return [StoredMessage.from_row(row) for row in rows]
 
     # ------------------------------------------------------ image descriptions
@@ -436,7 +482,7 @@ class MessageRepository:
             "created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET "
             "description = excluded.description, model = excluded.model, "
             "created_at = excluded.created_at",
-            (message.id, message.chat_id, description, model, now_ts()))
+            (message.id, message.chat_id, description, model, self.db.now()))
 
     def update_media_meta(self, row_id: int, meta: dict) -> None:
         self.db.execute("UPDATE messages SET media_meta = ? WHERE id = ?",

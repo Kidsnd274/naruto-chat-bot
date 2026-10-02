@@ -462,6 +462,478 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('memory_notes', MAX(
 ALTER TABLE digests ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
 """
 
+_V10_MODEL_QUEUE = """
+-- Every model request, for the web admin's queue page: what it was for,
+-- its priority and how long it waited and ran. No prompts. Times are
+-- fractional seconds. Follows the agent-run retention.
+CREATE TABLE model_requests (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER,
+    task TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('foreground', 'background')),
+    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'retrying', 'done', 'failed',
+                                         'cancelled', 'expired', 'interrupted')),
+    run_id INTEGER,
+    import_id INTEGER,
+    period_id INTEGER,
+    chunk INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    queued_at REAL NOT NULL,
+    started_at REAL,
+    finished_at REAL,
+    error TEXT
+);
+CREATE INDEX model_requests_state ON model_requests (state);
+CREATE INDEX model_requests_chat ON model_requests (chat_id, id);
+CREATE INDEX model_requests_queued ON model_requests (queued_at);
+"""
+
+_V11_HISTORY = """
+-- When the bot started recording a chat live. Imports stop here, so live
+-- and imported history (and their summaries) never overlap. Unlike the
+-- first stored live message, it doesn't move when retention deletes
+-- messages. Backfilled from the earliest live message.
+ALTER TABLE chats ADD COLUMN recording_since INTEGER;
+UPDATE chats SET recording_since = (
+    SELECT MIN(date) FROM messages WHERE messages.chat_id = chats.chat_id AND source = 'live');
+UPDATE chats SET recording_since = status_changed_at
+    WHERE recording_since IS NULL AND status = 'enabled';
+
+-- Imports get separate stages (raw messages, history summaries, memory
+-- notes), each with its own status, and can pause and resume. Rebuilt
+-- because SQLite can't change a CHECK constraint.
+CREATE TABLE imports_v11 (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('preview', 'running', 'paused', 'done', 'partial',
+                                           'failed', 'replaced', 'discarded')),
+    file_name TEXT NOT NULL,
+    file_path TEXT,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    export_name TEXT NOT NULL DEFAULT '',
+    export_type TEXT NOT NULL DEFAULT '',
+    export_id INTEGER,
+    preview TEXT,
+    options TEXT,
+    total INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0,
+    imported INTEGER NOT NULL DEFAULT 0,
+    skipped_overlap INTEGER NOT NULL DEFAULT 0,
+    skipped_retention INTEGER NOT NULL DEFAULT 0,
+    skipped_service INTEGER NOT NULL DEFAULT 0,
+    skipped_range INTEGER NOT NULL DEFAULT 0,
+    first_date INTEGER,
+    last_date INTEGER,
+    error TEXT,
+    raw_status TEXT,
+    archive_status TEXT,
+    archive_total INTEGER NOT NULL DEFAULT 0,
+    archive_done INTEGER NOT NULL DEFAULT 0,
+    archive_error TEXT,
+    distill_status TEXT,
+    distill_total INTEGER NOT NULL DEFAULT 0,
+    distill_done INTEGER NOT NULL DEFAULT 0,
+    notes_added INTEGER NOT NULL DEFAULT 0,
+    distill_error TEXT,
+    limitations TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    paused_at INTEGER,
+    source_expires_at INTEGER
+);
+INSERT INTO imports_v11 (id, chat_id, status, file_name, file_path, file_size, export_name,
+                         export_type, export_id, preview, total, processed, imported,
+                         skipped_overlap, skipped_retention, skipped_service, first_date,
+                         last_date, error, raw_status, distill_status, distill_total,
+                         distill_done, notes_added, distill_error, created_at, started_at,
+                         finished_at)
+    SELECT id, chat_id, status, file_name, file_path, file_size, export_name, export_type,
+           export_id, preview, total, processed, imported, skipped_overlap, skipped_retention,
+           skipped_service, first_date, last_date, error,
+           CASE status WHEN 'done' THEN 'done' WHEN 'replaced' THEN 'done'
+                       WHEN 'failed' THEN 'failed' WHEN 'running' THEN 'running' END,
+           distill_status, distill_total, distill_done, notes_added, distill_error, created_at,
+           started_at, finished_at
+    FROM imports;
+DROP TABLE imports;
+ALTER TABLE imports_v11 RENAME TO imports;
+CREATE INDEX imports_chat ON imports (chat_id, id);
+
+-- Dated summaries of past periods (a month, a week or a chosen range). They
+-- outlive raw messages and uploads, so they keep their own provenance.
+-- period_end is exclusive; first/last_message_at is what was actually read.
+CREATE TABLE history_digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'staged', 'replaced')),
+    source TEXT NOT NULL CHECK (source IN ('export', 'live')),
+    grouping TEXT NOT NULL CHECK (grouping IN ('month', 'week', 'range')),
+    timezone TEXT NOT NULL,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    first_message_at INTEGER,
+    last_message_at INTEGER,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    import_id INTEGER,
+    period_id INTEGER,
+    fingerprint TEXT NOT NULL,
+    text TEXT NOT NULL,
+    limitations TEXT,
+    edited INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL
+);
+CREATE INDEX history_digests_chat ON history_digests (chat_id, status, period_start);
+
+CREATE VIRTUAL TABLE history_digests_fts USING fts5(
+    text,
+    content = 'history_digests',
+    content_rowid = 'id',
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER history_digests_fts_insert AFTER INSERT ON history_digests BEGIN
+    INSERT INTO history_digests_fts (rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER history_digests_fts_delete AFTER DELETE ON history_digests BEGIN
+    INSERT INTO history_digests_fts (history_digests_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER history_digests_fts_update AFTER UPDATE OF text ON history_digests BEGIN
+    INSERT INTO history_digests_fts (history_digests_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+    INSERT INTO history_digests_fts (rowid, text) VALUES (new.id, new.text);
+END;
+
+-- The text before every owner edit.
+CREATE TABLE history_digest_edits (
+    id INTEGER PRIMARY KEY,
+    digest_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    changed_at INTEGER NOT NULL,
+    changed_by TEXT NOT NULL
+);
+CREATE INDEX history_digest_edits_digest ON history_digest_edits (digest_id, id);
+
+-- Work on one period: its progress, so an interrupted or failed summary
+-- resumes where it stopped. consumed is how many of the period's messages
+-- (in date order) have been read; partial is the summary so far.
+CREATE TABLE history_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('export', 'live')),
+    import_id INTEGER,
+    grouping TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('waiting', 'running', 'done', 'reused', 'failed',
+                                           'cancelled')),
+    message_count INTEGER NOT NULL DEFAULT 0,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    chunks_done INTEGER NOT NULL DEFAULT 0,
+    partial TEXT,
+    fingerprint TEXT,
+    replaces TEXT,
+    digest_id INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX history_periods_import ON history_periods (import_id, period_start);
+CREATE INDEX history_periods_chat ON history_periods (chat_id, source, period_start);
+"""
+
+_V12_LAB = """
+-- The prompt lab (plans/done/SELF_LEARNING_LOOP_TECH_PLAN.md). Runs test
+-- candidate configurations on scenarios in sandboxes; nothing here changes
+-- the live bot until a candidate is activated. Times are Unix seconds.
+
+-- Which lab attempt a model request belongs to (task 'lab').
+ALTER TABLE model_requests ADD COLUMN lab_attempt_id INTEGER;
+
+-- API tokens for external agents. Only a hash is kept. chats: the chats
+-- whose real messages and traces the token may read (JSON list).
+CREATE TABLE lab_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    chats TEXT NOT NULL DEFAULT '[]',
+    may_activate INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    revoked_at INTEGER
+);
+
+-- One tuning run: an objective, its scope and budget, the model it tests
+-- and a frozen copy of every setting when it started (the baseline).
+CREATE TABLE lab_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    model_endpoint TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    model_reported TEXT,
+    baseline TEXT NOT NULL,
+    baseline_history_id INTEGER NOT NULL DEFAULT 0,
+    code_fingerprint TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'finished')),
+    stop_reason TEXT,
+    recommendation TEXT,
+    summary TEXT,
+    warnings TEXT NOT NULL DEFAULT '[]',
+    token_id INTEGER,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+
+-- A candidate configuration: changes on top of its parent (NULL: the
+-- baseline). Never edited; a revision is a new candidate.
+CREATE TABLE lab_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    number INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    parent_id INTEGER,
+    changes TEXT NOT NULL,
+    hypothesis TEXT NOT NULL DEFAULT '',
+    rationale TEXT NOT NULL DEFAULT '',
+    settings_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, number)
+);
+
+-- Scenarios, versioned: an edit adds a version with a reason. chat_id is
+-- the chat a scenario was made from (real chat content), if any.
+CREATE TABLE lab_scenarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    focused INTEGER NOT NULL DEFAULT 0,
+    chat_id INTEGER,
+    reason TEXT,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (slug, version)
+);
+
+-- Sets of scenarios with a purpose. Removing one keeps the row (removed_at,
+-- reason), so reports can show what changed.
+CREATE TABLE lab_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('tuning', 'validation', 'regression')),
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, name)
+);
+CREATE TABLE lab_set_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    set_id INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    reason TEXT
+);
+CREATE INDEX lab_set_items_set ON lab_set_items (set_id);
+
+-- A batch of attempts started together (a suite, or one request).
+CREATE TABLE lab_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    spec TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'cancelled',
+                                           'interrupted', 'budget_exhausted')),
+    owner_request TEXT,
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+
+-- One scenario under one configuration (candidate_id NULL: the baseline).
+CREATE TABLE lab_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    batch_id INTEGER,
+    scenario_id INTEGER NOT NULL,
+    candidate_id INTEGER,
+    repeat INTEGER NOT NULL DEFAULT 1,
+    continue_from INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'cancelled',
+                                           'interrupted', 'skipped')),
+    outcome TEXT,
+    reason TEXT,
+    result TEXT,
+    conditions TEXT,
+    model_requests INTEGER NOT NULL DEFAULT 0,
+    model_ms INTEGER NOT NULL DEFAULT 0,
+    wait_ms INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    queued_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    first_viewed_at INTEGER,
+    state_path TEXT
+);
+CREATE INDEX lab_attempts_run ON lab_attempts (run_id, id);
+CREATE INDEX lab_attempts_batch ON lab_attempts (batch_id);
+
+-- AI and owner judgments of one turn of an attempt, against a rubric
+-- criterion. evidence: quotes from the attempt (JSON list).
+CREATE TABLE lab_judgments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id INTEGER NOT NULL,
+    run_id INTEGER NOT NULL,
+    turn INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('ai', 'owner')),
+    criterion TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'score')),
+    score REAL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    comment TEXT,
+    judge TEXT NOT NULL,
+    rubric_version INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX lab_judgments_attempt ON lab_judgments (attempt_id);
+
+-- The run's rubric, versioned; proposed until the owner confirms it.
+CREATE TABLE lab_rubrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    criteria TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('proposed', 'confirmed')),
+    confirmation TEXT,
+    reason TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, version)
+);
+
+-- A/B comparisons for the owner. mapping: label -> attempt id, chosen at
+-- random by the server.
+CREATE TABLE lab_comparisons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    scenario_id INTEGER NOT NULL,
+    turn INTEGER NOT NULL,
+    mapping TEXT NOT NULL,
+    presentation TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'answered', 'withdrawn')),
+    revealed_before_answer INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER
+);
+CREATE TABLE lab_choices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comparison_id INTEGER NOT NULL,
+    choice TEXT NOT NULL CHECK (choice IN ('A', 'B', 'C', 'D', 'both_good', 'both_bad',
+                                           'no_preference', 'skip', 'combination')),
+    comment TEXT,
+    channel TEXT NOT NULL,
+    supersedes INTEGER,
+    created_at INTEGER NOT NULL
+);
+
+-- The owner's preferences as understood so far, versioned.
+CREATE TABLE lab_preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    edited_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (run_id, version)
+);
+
+-- Notes the agent files for the report: suspected defects, observations,
+-- assumptions.
+CREATE TABLE lab_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('defect', 'observation', 'assumption')),
+    text TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- A candidate applied to the live settings, and its undoing.
+CREATE TABLE lab_activations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    candidate_id INTEGER NOT NULL,
+    model_endpoint TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('changes', 'full')),
+    previous TEXT NOT NULL,
+    applied TEXT NOT NULL,
+    drift TEXT,
+    evidence TEXT,
+    authorized_by TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    reverted_at INTEGER,
+    reverted_by TEXT
+);
+
+-- What happened in a run, for the report: budget hits, refused calls,
+-- reveals, scenario and rubric changes, drift.
+CREATE TABLE lab_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX lab_events_run ON lab_events (run_id, id);
+"""
+
+_V13_KEEP_MESSAGES = """
+-- plans/done/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md: messages are kept until
+-- the owner deletes them, imports no longer distill memory notes, and a
+-- history period has at most one summary.
+
+ALTER TABLE imports DROP COLUMN skipped_retention;
+ALTER TABLE imports DROP COLUMN distill_status;
+ALTER TABLE imports DROP COLUMN distill_total;
+ALTER TABLE imports DROP COLUMN distill_done;
+ALTER TABLE imports DROP COLUMN notes_added;
+ALTER TABLE imports DROP COLUMN distill_error;
+
+-- A crash between saving a summary and finishing its period could leave two
+-- summaries of one period. Keep the one the period points at; drop unedited
+-- extras and detach edited ones, so no owner edit is lost.
+DELETE FROM history_digests
+ WHERE period_id IS NOT NULL AND edited = 0
+   AND id NOT IN (SELECT digest_id FROM history_periods WHERE digest_id IS NOT NULL)
+   AND EXISTS (SELECT 1 FROM history_digests AS other
+                WHERE other.period_id = history_digests.period_id
+                  AND other.id != history_digests.id);
+UPDATE history_digests SET period_id = NULL
+ WHERE period_id IS NOT NULL
+   AND id NOT IN (SELECT digest_id FROM history_periods WHERE digest_id IS NOT NULL)
+   AND EXISTS (SELECT 1 FROM history_digests AS other
+                WHERE other.period_id = history_digests.period_id
+                  AND other.id != history_digests.id);
+CREATE UNIQUE INDEX history_digests_period ON history_digests (period_id)
+    WHERE period_id IS NOT NULL;
+
+-- What a period's partial summary was made with: the settings that shape it,
+-- and the messages read so far (in order). A resumed period whose hashes no
+-- longer match starts over. Unfinished periods from before have neither, so
+-- they start over too.
+ALTER TABLE history_periods ADD COLUMN settings_hash TEXT;
+ALTER TABLE history_periods ADD COLUMN source_hash TEXT;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -472,10 +944,15 @@ MIGRATIONS: list[str] = [
     _V7_REMINDER_RETRIES,
     _V8_CHAT_SETTINGS,
     _V9_STABLE_NOTE_IDS,
+    _V10_MODEL_QUEUE,
+    _V11_HISTORY,
+    _V12_LAB,
+    _V13_KEEP_MESSAGES,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.
 # Add new chat-scoped tables here when a migration creates them.
 CHAT_SCOPED_TABLES = ("messages", "members", "imports", "agent_runs", "boards", "plans",
                       "digests", "memory_notes", "memory_note_history", "reminders",
-                      "media_descriptions", "chat_settings")
+                      "media_descriptions", "chat_settings", "model_requests",
+                      "history_digests", "history_digest_edits", "history_periods")

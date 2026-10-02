@@ -1,10 +1,9 @@
 """Client for the local OpenAI-compatible inference server.
 
 Settings are read on every call, so changes in the web admin apply to the next
-request. At most model.parallel_requests requests run at once, process-wide
-(1 for a server with one slot, so concurrent triggers queue here instead of
-competing for the GPU). Replies to people go first: background work
-(digests, memory) waits while any reply is queued.
+request. Every request goes through one queue (naruto.model_queue): replies
+to people go first, background work (digests, history summaries, memory)
+within its own limit, and the web admin's queue page shows both.
 """
 
 import asyncio
@@ -13,11 +12,22 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import openai
 
+from naruto.model_queue import (
+    BACKGROUND,
+    FOREGROUND,
+    RETRYING,
+    ModelQueue,
+    QueueRefused,
+    RequestInfo,
+)
 from naruto.settings.service import SettingsService
+
+if TYPE_CHECKING:
+    from naruto.db.model_requests import ModelRequestRepository
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +43,27 @@ _THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
 _INLINE_TOOL_CALL = re.compile(r"<tool_call>\s*(.*?)\s*(?:</tool_call>|$)", re.DOTALL)
 
 
+# One more try after a connection error, a 5xx or a 429, outside the queue.
+RETRY_DELAY_SECONDS = 2.0
+
+
 class LLMError(Exception):
-    """The model request failed; the message is safe to log."""
+    """The model request failed; the message is safe to log. ``transient``
+    errors (connection refused, 5xx, 429) are worth one retry."""
+
+    def __init__(self, message: str = "", *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
+
+
+class RequestNotRun(LLMError):
+    """The request never reached the model: cancelled on the queue page
+    ("cancelled"), no longer wanted when its turn came ("expired"), or too
+    many requests were waiting ("busy")."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass
@@ -126,17 +155,35 @@ def split_reasoning(content: str) -> tuple[str, str | None]:
 
 
 class LLMClient:
-    def __init__(self, settings: SettingsService, api_key: str):
+    def __init__(self, settings: SettingsService, api_key: str,
+                 requests: "ModelRequestRepository | None" = None, *,
+                 queue: ModelQueue | None = None):
+        """``queue`` shares another client's queue: a prompt-lab sandbox
+        builds requests from its own settings but waits its turn with the
+        bot's requests."""
         self.settings = settings
         self.api_key = api_key
+        self.requests = requests
         self._client: openai.AsyncOpenAI | None = None
         self._client_key: tuple | None = None
-        self._slots: asyncio.Semaphore | None = None
-        self._slots_size = 0
+        self._queue: ModelQueue | None = queue
         self._listed_model: tuple[str, str] | None = None  # (endpoint, model)
-        self.in_flight = 0
-        self.waiting = 0
-        self._foreground_waiting = 0
+
+    @property
+    def queue(self) -> ModelQueue:
+        """Created on first use, unless one was passed in (a prompt-lab
+        sandbox shares the bot's)."""
+        if self._queue is None:
+            self._queue = ModelQueue(self.settings, self.requests)
+        return self._queue
+
+    @property
+    def in_flight(self) -> int:
+        return self._queue.in_flight if self._queue else 0
+
+    @property
+    def waiting(self) -> int:
+        return self._queue.waiting if self._queue else 0
 
     # -------------------------------------------------------------- client
 
@@ -151,7 +198,7 @@ class LLMClient:
                 api_key=self.api_key,
                 base_url=endpoint,
                 timeout=float(timeout),
-                max_retries=1,
+                max_retries=0,  # chat() retries itself, outside its queue slot
             )
             self._client_key = key
         return self._client
@@ -211,37 +258,6 @@ class LLMClient:
         self._listed_model = (endpoint, models[0])
         return models[0]
 
-    def _semaphore(self) -> asyncio.Semaphore:
-        """The request slots, resized when the setting changes (requests
-        already running finish on the old ones)."""
-        size = self.settings["model.parallel_requests"]
-        if self._slots is None or self._slots_size != size:
-            self._slots, self._slots_size = asyncio.Semaphore(size), size
-        return self._slots
-
-    async def _acquire(self, background: bool) -> asyncio.Semaphore:
-        """Take a request slot. Background work only gets one when no reply
-        is waiting; a running request is never interrupted."""
-        self.waiting += 1
-        try:
-            if not background:
-                self._foreground_waiting += 1
-                try:
-                    slots = self._semaphore()
-                    await slots.acquire()
-                finally:
-                    self._foreground_waiting -= 1
-                return slots
-            while True:
-                slots = self._semaphore()
-                await slots.acquire()
-                if not self._foreground_waiting:
-                    return slots
-                slots.release()
-                await asyncio.sleep(0.05)
-        finally:
-            self.waiting -= 1
-
     async def chat(
         self,
         messages: list[dict],
@@ -251,18 +267,46 @@ class LLMClient:
         tools: list[dict] | None = None,
         stream: bool = False,
         background: bool = False,
+        info: RequestInfo | None = None,
     ) -> ChatResult:
-        slots = await self._acquire(background)
-        self.in_flight += 1
-        try:
-            model = await self.resolve_model()
-            kwargs = self.build_request(messages, model=model, reasoning=reasoning,
-                                        max_tokens=max_tokens, tools=tools)
-            return await request_completion(self._get_client(), kwargs, stream=stream,
-                                            tools_offered=bool(tools))
-        finally:
-            self.in_flight -= 1
-            slots.release()
+        """One model request through the queue. ``background`` work waits
+        while replies are waiting; ``info`` says what the request is for (the
+        queue page). Raises LLMError (RequestNotRun if it never ran)."""
+        info = info or RequestInfo(task="background" if background else "reply")
+        priority = BACKGROUND if background else FOREGROUND
+        model = await self.resolve_model()  # listing models takes no slot
+        kwargs = self.build_request(messages, model=model, reasoning=reasoning,
+                                    max_tokens=max_tokens, tools=tools)
+        queue = self.queue
+        ticket = None
+        while True:
+            try:
+                ticket = await queue.acquire(info, priority, retry_of=ticket)
+            except QueueRefused as exc:
+                raise RequestNotRun(exc.reason, str(exc)) from None
+            try:
+                result = await request_completion(self._get_client(), kwargs, stream=stream,
+                                                  tools_offered=bool(tools))
+            except LLMError as exc:
+                if exc.transient and ticket.attempt == 1:
+                    logger.warning("Model request failed (%s); trying once more.", exc)
+                    queue.release(ticket, RETRYING, str(exc))
+                    try:
+                        await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    except asyncio.CancelledError:
+                        queue.abandon(ticket, "The caller stopped waiting.")
+                        raise
+                    continue
+                queue.release(ticket, "failed", str(exc))
+                raise
+            except asyncio.CancelledError:
+                queue.release(ticket, "expired", "The caller stopped waiting.")
+                raise
+            except BaseException as exc:
+                queue.release(ticket, "failed", f"{type(exc).__name__}: {exc}")
+                raise
+            queue.release(ticket, "done")
+            return result
 
     # -------------------------------------------------------------- health
 
@@ -289,12 +333,12 @@ async def request_completion(client, kwargs: dict, *, stream: bool = False,
     except LLMError:
         raise
     except openai.APIError as exc:
-        raise LLMError(f"{type(exc).__name__}: {exc}") from exc
+        raise LLMError(f"{type(exc).__name__}: {exc}", transient=_transient(exc)) from exc
     except openai.OpenAIError as exc:
         raise LLMError(type(exc).__name__) from exc
     except OSError as exc:
         raise LLMError(f"{type(exc).__name__}: {exc}"[:300] if str(exc)
-                       else type(exc).__name__) from exc
+                       else type(exc).__name__, transient=True) from exc
     latency_ms = int((time.monotonic() - started) * 1000)
     text, inline_reasoning = split_reasoning(parts["content"])
     tool_calls = parts["tool_calls"]
@@ -310,6 +354,15 @@ async def request_completion(client, kwargs: dict, *, stream: bool = False,
         tool_calls=tool_calls,
         ttft_ms=parts.get("ttft_ms"),
     )
+
+
+def _transient(exc: openai.APIError) -> bool:
+    """Worth one retry: the server was unreachable, overloaded or failed.
+    Not a time-out (that already took the full request time)."""
+    if isinstance(exc, openai.APITimeoutError):
+        return False
+    return isinstance(exc, (openai.APIConnectionError, openai.InternalServerError,
+                            openai.RateLimitError))
 
 
 def _from_response(response) -> dict:

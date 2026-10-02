@@ -3,7 +3,7 @@ belong to the person (see naruto.db.people) and are shared by every chat."""
 
 from dataclasses import dataclass, field
 
-from naruto.db.database import Database, now_ts
+from naruto.db.database import Database
 from naruto.db.people import PeopleRepository, Person
 
 
@@ -72,7 +72,7 @@ class MemberRepository:
 
     def upsert_live(self, chat_id: int, user_id: int, display_name: str, username: str | None,
                     *, is_bot: bool = False, seen_at: int | None = None) -> None:
-        seen_at = seen_at or now_ts()
+        seen_at = seen_at or self.db.now()
         self.people.touch_live(user_id, display_name, username, is_bot=is_bot, seen_at=seen_at)
         self._roster(chat_id, user_id, "live", seen_at)
 

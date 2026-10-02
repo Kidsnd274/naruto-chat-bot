@@ -93,7 +93,7 @@ class BoardPublisher:
     def _updated(self, board: Board) -> str:
         tz = self.services.timezone()
         when = datetime.fromtimestamp(board.updated_at or 0, tz) if board.updated_at \
-            else datetime.now(tz)
+            else datetime.fromtimestamp(self.services.time(), tz)
         return when.strftime("%d %b, %H:%M")
 
     async def publish(self, telegram, chat: Chat, *, fresh: bool = False) -> str:

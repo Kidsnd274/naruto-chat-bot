@@ -1,0 +1,76 @@
+<div id="queue-live" hx-get="/partials/queue" hx-trigger="every 2s" hx-swap="outerHTML">
+  {% set limits = snapshot.limits %}
+  <div class="grid three">
+    <section class="card">
+      <h2>Running</h2>
+      <p class="stats">
+        <span><strong>{{ snapshot.running_count(foreground) }}</strong> replies</span>
+        <span><strong>{{ snapshot.running_count(background) }}</strong> background</span>
+      </p>
+      <p class="muted small">of {{ limits.total }} slots; background may use {{ limits.effective_background }}{% if limits.effective_reserved %}, {{ limits.effective_reserved }} kept for replies{% endif %}</p>
+      {% if snapshot.over_limit %}<p class="small warn-text">{{ snapshot.over_limit }} over the new limit: they finish first.</p>{% endif %}
+    </section>
+    <section class="card">
+      <h2>Waiting</h2>
+      <p class="stats">
+        <span><strong>{{ snapshot.waiting_count(foreground) }}</strong> replies</span>
+        <span><strong>{{ snapshot.waiting_count(background) }}</strong> background</span>
+      </p>
+      <p class="muted small">{% if snapshot.oldest_wait is not none %}Oldest waiting {{ "%.0f"|format(snapshot.oldest_wait) }} s{% else %}Nothing waiting{% endif %}</p>
+    </section>
+    <section class="card">
+      <h2>Background work</h2>
+      {% if limits.paused %}
+        <p><span class="badge warn-badge">paused</span> No new background request starts.</p>
+        <form method="post" action="/queue/resume"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="small primary">Resume</button></form>
+      {% else %}
+        <p><span class="badge done">running</span> Digest upkeep, history summaries and import memory.</p>
+        <form method="post" action="/queue/pause"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="small">Pause</button></form>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Now</h2>
+    {% if snapshot.running or snapshot.waiting_count() %}
+    <div class="table-wrap">
+    <table class="compact">
+      <thead><tr><th>#</th><th>State</th><th>Priority</th><th>Chat</th><th>Task</th><th>For</th><th class="num">Waited</th><th class="num">Running</th><th></th></tr></thead>
+      <tbody>
+      {% for t in snapshot.running %}
+        <tr>
+          <td>{{ t.id }}</td>
+          <td><span class="badge running">running</span>{% if t.attempt > 1 %} <span class="muted small">try {{ t.attempt }}</span>{% endif %}</td>
+          <td class="small">{{ t.priority }}</td>
+          <td class="small">{{ chat_titles.get(t.info.chat_id, t.info.chat_id or "—") }}</td>
+          <td class="small">{{ t.info.task }}</td>
+          <td class="small">{% include "_queue_parent.html" %}</td>
+          <td class="num small">{{ "%.1f s"|format(t.started_at - t.queued_at) }}</td>
+          <td class="num small">{{ "%.1f s"|format(now - t.started_at) }}</td>
+          <td></td>
+        </tr>
+      {% endfor %}
+      {% for priority in (foreground, background) %}
+        {% for t in snapshot.waiting[priority] %}
+        <tr>
+          <td>{{ t.id }}</td>
+          <td><span class="badge pending">waiting</span> <span class="muted small">#{{ loop.index }} of {{ priority }}</span></td>
+          <td class="small">{{ t.priority }}</td>
+          <td class="small">{{ chat_titles.get(t.info.chat_id, t.info.chat_id or "—") }}</td>
+          <td class="small">{{ t.info.task }}</td>
+          <td class="small">{% include "_queue_parent.html" %}</td>
+          <td class="num small">{{ "%.1f s"|format(now - t.queued_at) }}</td>
+          <td></td>
+          <td><button class="small" hx-post="/queue/{{ t.id }}/cancel" hx-target="#queue-live" hx-swap="outerHTML">Cancel</button></td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">Positions change when replies arrive: they go ahead of background work. A running request can't be stopped; it finishes on its own.</p>
+    {% else %}
+      <p class="muted">The model server is idle.</p>
+    {% endif %}
+  </section>
+</div>

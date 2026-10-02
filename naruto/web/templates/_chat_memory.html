@@ -5,7 +5,7 @@
       <a class="button small primary" href="/chats/{{ chat.chat_id }}/memory">Add, edit or lock notes</a>
     </div>
   </div>
-  <p class="muted small">Durable facts the bot keeps about this group; they outlive the messages. The bot saves them when someone asks it to remember something, on its own when someone mentions something worth keeping, and (with automatic notes on) while it updates the digest.</p>
+  <p class="muted small">Durable facts the bot keeps about this group, from live chat. The bot saves them when someone asks it to remember something, on its own when someone mentions something worth keeping, and (with automatic notes on) while it updates the digest.</p>
   {% if notes %}
     <ul class="plain notes">
       {% for note in notes %}

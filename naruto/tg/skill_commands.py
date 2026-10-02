@@ -2,6 +2,7 @@
 the intent: /summary, /catchup, /plan, /questions, /remember, /remind, plus
 /board, which just shows the board."""
 
+from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta
 import logging
 import re
@@ -52,6 +53,81 @@ def summary_scope(args: list[str], tz, now: float | None = None) -> tuple[int | 
     return None, f"summarize what was said about: {text} (search for it)"
 
 
+# Commands that run a skill. /board only shows the board.
+SKILL_COMMANDS = ("summary", "plan", "questions", "remember", "remind", "catchup")
+USAGE = {
+    "remember": "Usage: /remember <fact>, or reply to a message with /remember.",
+    "remind": "Usage: /remind <when> <what>, e.g. /remind Saturday 5pm bring the grill",
+}
+
+
+@dataclass
+class CommandRequest:
+    """What a command asks the agent for. ``usage`` is set instead when the
+    command can't run as given (the bot answers with it)."""
+    skill: str = ""
+    note: str = ""
+    since: int | None = None
+    usage: str | None = None
+
+
+def command_request(name: str, args: list[str], *, tz, now: float,
+                    replied_to_date: int | None = None, has_reply: bool = False,
+                    last_spoke_at: int | None = None) -> CommandRequest:
+    """The skill, note and scope for a skill command, as the Telegram
+    handlers run it. Shared with the prompt lab, so a tested command takes
+    the same path. ``replied_to_date``: the date of the message the command
+    replies to (/summary since then); ``last_spoke_at``: the sender's latest
+    message (/catchup)."""
+    text = " ".join(args or []).strip()
+    if name == "summary":
+        since, what = summary_scope(args, tz, now)
+        if since is None and not text and replied_to_date is not None:
+            since, what = replied_to_date, "summarize everything since the message they replied to"
+        return CommandRequest("summarize", f"They used /summary: {what}.", since)
+    if name == "plan":
+        return CommandRequest("plan", "They used /plan: pull together the plan being discussed"
+                              + (f" ({text})" if text else "") + ".")
+    if name == "questions":
+        return CommandRequest("questions", "They used /questions: find the open questions.")
+    if name == "remember":
+        if not text and not has_reply:
+            return CommandRequest(usage=USAGE["remember"])
+        note = (f"They used /remember: save this in the group's memory: {text}" if text else
+                "They used /remember on the message they reply to: save what it says in the "
+                "group's memory.")
+        return CommandRequest("remember", note)
+    if name == "remind":
+        if not text:
+            return CommandRequest(usage=USAGE["remind"])
+        return CommandRequest("remind", f"They used /remind: set this reminder: {text}")
+    if name == "catchup":
+        if last_spoke_at is not None:
+            since = last_spoke_at + 1
+            when = datetime.fromtimestamp(since, tz).strftime("%a %d %b, %H:%M")
+            note = (f"They used /catchup: tell them what they missed since they last spoke "
+                    f"({when}).")
+        else:
+            since = int(now - CATCHUP_DEFAULT_HOURS * 3600)
+            note = (f"They used /catchup and haven't said anything here yet: catch them up on "
+                    f"the last {CATCHUP_DEFAULT_HOURS} hours.")
+        return CommandRequest("catchup", note, since)
+    raise ValueError(f"/{name} doesn't run a skill.")
+
+
+def catchup_trigger(*, chat_id: int, origin_chat_id: int, message_id: int, sender_id: int | None,
+                    sender_name: str, sender_username: str | None, now: int) -> StoredMessage:
+    """/catchup is ephemeral and never stored: the run answers this
+    stand-in for the command."""
+    return StoredMessage(
+        id=EPHEMERAL_TRIGGER_ID, chat_id=chat_id, origin_chat_id=origin_chat_id, source=LIVE,
+        message_id=message_id or 0, import_id=None, thread_id=None, sender_id=sender_id,
+        sender_name=sender_name, sender_username=sender_username, from_bot=False, date=now,
+        edit_date=None, text="/catchup", media_kind=None, media_file_id=None,
+        media_file_unique_id=None, media_meta={}, forwarded_from=None, reply_to_message_id=None,
+        reply_to_row_id=None, reply_to_snippet=None, created_at=now)
+
+
 class SkillCommands:
     def __init__(self, services: Services, responder: Responder, board: BoardPublisher):
         self.services = services
@@ -67,20 +143,36 @@ class SkillCommands:
         known = self.services.chats.get(chat.id)
         return known if known is not None and known.enabled else None
 
-    async def _run_skill(self, update: Update, context, skill: str, *,
-                         note: str, since: int | None = None) -> None:
+    async def _run_skill(self, update: Update, context, request: CommandRequest) -> None:
         chat = self._chat(update)
+        if chat is None:
+            return
+        if request.usage:
+            await self._usage(update, context, request.usage)
+            return
         bot = self.services.status.bot
-        if chat is None or bot is None:
+        if bot is None:
             return
         message = update.effective_message
         trigger = self.services.messages.get_live(message.chat_id, message.message_id)
         if trigger is None:
-            logger.warning("/%s message %s was not recorded; skipping.", skill, message.message_id)
+            logger.warning("/%s message %s was not recorded; skipping.", request.skill,
+                           message.message_id)
             return
-        logger.info("Running %s for message %s", skill, message.message_id)
-        await self.responder.respond(context.bot, chat, message, trigger, bot, skill=skill,
-                                     since=since, note=note, force_reply=True)
+        logger.info("Running %s for message %s", request.skill, message.message_id)
+        await self.responder.respond(context.bot, chat, message, trigger, bot,
+                                     skill=request.skill, since=request.since,
+                                     note=request.note, force_reply=True)
+
+    def _request(self, name: str, context, message=None) -> CommandRequest:
+        reply = getattr(message, "reply_to_message", None) if message is not None else None
+        replied_to_date = None
+        if name == "summary" and reply is not None:
+            stored = self.services.messages.get_live(reply.chat_id, reply.message_id)
+            replied_to_date = stored.date if stored else int(reply.date.timestamp())
+        return command_request(name, context.args or [], tz=self.services.timezone(),
+                               now=self.services.time(), replied_to_date=replied_to_date,
+                               has_reply=reply is not None)
 
     async def _usage(self, update: Update, context, text: str) -> None:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
@@ -88,48 +180,21 @@ class SkillCommands:
     # -------------------------------------------------------------- commands
 
     async def summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        message = update.effective_message
-        since, what = summary_scope(context.args, self.services.timezone())
-        reply = getattr(message, "reply_to_message", None) if message else None
-        if since is None and not context.args and reply is not None:
-            stored = self.services.messages.get_live(reply.chat_id, reply.message_id)
-            since = stored.date if stored else int(reply.date.timestamp())
-            what = "summarize everything since the message they replied to"
-        await self._run_skill(update, context, "summarize", since=since,
-                              note=f"They used /summary: {what}.")
+        await self._run_skill(update, context,
+                              self._request("summary", context, update.effective_message))
 
     async def plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        extra = " ".join(context.args or [])
-        await self._run_skill(update, context, "plan", note=(
-            "They used /plan: pull together the plan being discussed"
-            + (f" ({extra})" if extra else "") + "."))
+        await self._run_skill(update, context, self._request("plan", context))
 
     async def questions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._run_skill(update, context, "questions",
-                              note="They used /questions: find the open questions.")
+        await self._run_skill(update, context, self._request("questions", context))
 
     async def remember(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        text = " ".join(context.args or [])
-        message = update.effective_message
-        if not text and (message is None or message.reply_to_message is None):
-            if self._chat(update):
-                await self._usage(update, context, "Usage: /remember <fact>, or reply to a "
-                                                   "message with /remember.")
-            return
-        note = (f"They used /remember: save this in the group's memory: {text}" if text else
-                "They used /remember on the message they reply to: save what it says in the "
-                "group's memory.")
-        await self._run_skill(update, context, "remember", note=note)
+        await self._run_skill(update, context,
+                              self._request("remember", context, update.effective_message))
 
     async def remind(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        text = " ".join(context.args or [])
-        if not text:
-            if self._chat(update):
-                await self._usage(update, context, "Usage: /remind <when> <what>, e.g. "
-                                                   "/remind Saturday 5pm bring the grill")
-            return
-        await self._run_skill(update, context, "remind",
-                              note=f"They used /remind: set this reminder: {text}")
+        await self._run_skill(update, context, self._request("remind", context))
 
     async def show_board(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = self._chat(update)
@@ -157,27 +222,20 @@ class SkillCommands:
         account = self.services.people.for_user(user.id)
         user_ids = [a.user_id for a in account.accounts] if account else [user.id]
         last = self.services.messages.search(chat.chat_id, None, sender_ids=user_ids, limit=1)
-        now = int(time.time())
-        since = last[0].date + 1 if last else now - CATCHUP_DEFAULT_HOURS * 3600
-        when = datetime.fromtimestamp(since, self.services.timezone()).strftime("%a %d %b, %H:%M")
-        note = (f"They used /catchup: tell them what they missed since they last spoke "
-                f"({when})." if last else
-                f"They used /catchup and haven't said anything here yet: catch them up on the "
-                f"last {CATCHUP_DEFAULT_HOURS} hours.")
-        trigger = StoredMessage(
-            id=EPHEMERAL_TRIGGER_ID, chat_id=chat.chat_id, origin_chat_id=message.chat_id,
-            source=LIVE, message_id=message.message_id or 0, import_id=None, thread_id=None,
-            sender_id=sender.id, sender_name=sender.name, sender_username=sender.username,
-            from_bot=False, date=now, edit_date=None, text="/catchup", media_kind=None,
-            media_file_id=None, media_file_unique_id=None, media_meta={}, forwarded_from=None,
-            reply_to_message_id=None, reply_to_row_id=None, reply_to_snippet=None, created_at=now)
+        now = int(self.services.time())
+        request = command_request("catchup", [], tz=self.services.timezone(), now=now,
+                                  last_spoke_at=last[0].date if last else None)
+        trigger = catchup_trigger(chat_id=chat.chat_id, origin_chat_id=message.chat_id,
+                                  message_id=message.message_id, sender_id=sender.id,
+                                  sender_name=sender.name, sender_username=sender.username,
+                                  now=now)
         async with self.responder.chat_lock(chat.chat_id):
             chat = self.responder.enabled_chat(chat.chat_id)
             if chat is None:
                 return  # disabled while this waited its turn
             outcome = await self.responder.run(context.bot, chat, message, trigger, bot,
-                                               skill="catchup", since=since, note=note,
-                                               show_typing=False)
+                                               skill=request.skill, since=request.since,
+                                               note=request.note, show_typing=False)
         if not self.responder.still_enabled(chat, outcome):
             return
         text = outcome.text or ("Nothing much happened since you last spoke."

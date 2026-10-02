@@ -177,11 +177,21 @@ SECTIONS: tuple[Section, ...] = (
             "Both are kept up to date in the background, after replies to people."),
     Section("agent", "Agent limits",
             "Bounds for one bot response: model requests, tool calls and time."),
+    Section("history", "History",
+            "Dated summaries of past months or weeks (history digests): made from imported "
+            "exports, and from live chat once each month is over. The original messages stay "
+            "searchable; a summary answers “what happened then?” without reading them all."),
+    Section("lab", "Lab",
+            "The prompt lab: experiments with the bot's prompts and model parameters, run in "
+            "sandboxes by you or an external agent (docs/LAB.md). Nothing changes the live bot "
+            "until a candidate is activated."),
     Section("board", "Board", "The pinned board of plans, decisions and open questions."),
     Section("import", "Import", "Telegram Desktop history import."),
     Section("media", "Media", "Photos, stickers and other visual media."),
-    Section("retention", "Retention",
-            "How long raw data is kept. 0 keeps it forever."),
+    Section("retention", "Cleanup",
+            "How long operational records are kept: logs, agent traces, lab runs and finished "
+            "reminders. 0 keeps them forever. Chat messages are kept until you delete them "
+            "(Chats → a group → Delete messages)."),
     Section("behaviour", "Behaviour"),
 )
 
@@ -239,11 +249,26 @@ SETTINGS: tuple[Setting, ...] = (
             "Upper limit on generated tokens per request, including reasoning.",
             "int", 2048, nullable=True, min=16, max=65536),
     Setting("model.parallel_requests", "model", "Parallel requests",
-            "How many requests the model server works on at once. 1 for a server with one "
-            "slot (llama-server without --parallel); Halogen lists its slots on /props (4 by "
-            "default). More lets replies in different chats and background digest updates run "
-            "side by side; replies still go first when every slot is busy.",
+            "How many requests the model server works on at once, in total. 1 for a server "
+            "with one slot (llama-server without --parallel); Halogen lists its slots on /props "
+            "(4 by default). This doesn't create slots on the server: match what it has. Replies "
+            "always start before waiting background work. The Model queue page shows what is "
+            "running and waiting.",
             "int", 1, min=1, max=16),
+    Setting("model.background_requests", "model", "Background parallel requests",
+            "At most this many background requests (digest upkeep, history summaries, import "
+            "memory) run at once. 0 holds them all.",
+            "int", 1, min=0, max=16),
+    Setting("model.foreground_reserved", "model", "Slots kept for replies",
+            "Background work never takes these slots, so a new reply can start straight away. "
+            "At most parallel requests − 1 applies, so background work still runs on a "
+            "one-slot server (a reply then waits for the request in progress, but goes ahead "
+            "of the next one).",
+            "int", 1, min=0, max=16),
+    Setting("model.background_paused", "model", "Pause background work",
+            "No new background request starts; running ones finish. Replies are not affected. "
+            "Imports and history summaries wait and continue when this is turned off.",
+            "bool", False),
     Setting("model.request_timeout_seconds", "model", "Request timeout (seconds)",
             "Give up on a model request after this long.",
             "int", 180, min=5, max=1800),
@@ -314,16 +339,17 @@ SETTINGS: tuple[Setting, ...] = (
             "cache. The window holds up to size + step - 1 messages.",
             "int", 20, min=1, max=500),
     Setting("context.input_token_budget", "context", "Input token budget",
-            "Estimated input tokens per request. The oldest recent messages are "
-            "dropped to fit.",
+            "Estimated input tokens of every reply request, follow-ups with tool results "
+            "included. The oldest recent messages are dropped to fit, then long tool results "
+            "are shortened. The server's context per slot must hold this plus the output.",
             "int", 12000, min=1000, max=1_000_000),
     Setting("context.max_message_chars", "context", "Max characters per message",
             "Longer messages are shortened in the recent window.",
             "int", 1500, min=50, max=100_000),
     # -------------------------------------------------------------- memory
     Setting("memory.auto_notes", "memory", "Automatic notes",
-            "Let digest updates and imports add and correct group memory notes (durable "
-            "facts people mention). “Remember that…” works either way.",
+            "Let digest updates add and correct group memory notes (durable facts people "
+            "mention in live chat; imports never add notes). “Remember that…” works either way.",
             "bool", True),
     Setting("memory.max_notes_per_chat", "memory", "Max notes per chat",
             "The bot and members can't add notes beyond this (the owner can).",
@@ -342,24 +368,21 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("memory.digest_max_chars", "memory", "Digest size (characters)",
             "The digest is kept under this length.",
             "int", 1500, min=200, max=10000),
-    Setting("memory.digest_input_tokens", "memory", "Messages per update (tokens)",
-            "One update reads at most this many new messages (estimated tokens); a longer "
-            "backlog is read over several updates.",
-            "int", 8000, min=1000, max=100_000),
+    Setting("memory.digest_input_tokens", "memory", "Tokens per update",
+            "Estimated input of one digest update: the instructions, the digest, the notes and "
+            "as many new messages as fit; a longer backlog is read over several updates. Keep "
+            "it plus Max output tokens within the context of one server slot.",
+            "int", 12000, min=2000, max=100_000),
     Setting("memory.reasoning", "memory", "Reasoning",
-            "Let the model think during digest updates and import distillation (slower).",
+            "Let the model think during digest updates (slower).",
             "bool", False),
     Setting("memory.max_output_tokens", "memory", "Max output tokens",
-            "Output limit for digest updates and import distillation.",
+            "Output limit for digest updates.",
             "int", 2500, min=200, max=16000),
     Setting("memory.instructions", "memory", "Digest and notes: instructions",
             "System prompt for digest updates. {bot_name} and {digest_max_chars} are "
             "filled in. The answer must be the JSON object it describes.",
             "text", load_prompt("digest"), max=20000),
-    Setting("memory.distill_instructions", "memory", "Import distillation: instructions",
-            "System prompt for reading an imported history into notes. {bot_name} is "
-            "filled in. The answer must be the JSON object it describes.",
-            "text", load_prompt("distill"), max=20000),
     # --------------------------------------------------------------- agent
     Setting("agent.max_model_requests", "agent", "Model requests per run",
             "Upper limit on model requests for one response, including the final "
@@ -378,6 +401,54 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("agent.search_results", "agent", "Search results",
             "How many messages search_chat returns at most.",
             "int", 12, min=1, max=100),
+    # ------------------------------------------------------------- history
+    Setting("history.instructions", "history", "Summary instructions",
+            "System prompt for history digests. {bot_name}, {period} and {max_chars} are filled "
+            "in. Changing it means re-uploading an export makes new summaries instead of "
+            "reusing the old ones.",
+            "text", load_prompt("history"), max=20000),
+    Setting("history.chunk_tokens", "history", "Tokens per request",
+            "Estimated input of one summary request: the instructions, the summary so far and "
+            "as many messages as fit. A busy month takes several requests. Keep it plus Max "
+            "output tokens within the context of one server slot.",
+            "int", 8000, min=2000, max=100_000),
+    Setting("history.digest_max_chars", "history", "Summary size (characters)",
+            "Each period's summary is kept under about this length.",
+            "int", 2500, min=300, max=10000),
+    Setting("history.max_output_tokens", "history", "Max output tokens",
+            "Output limit for one summary request (with reasoning on, it includes the reasoning).",
+            "int", 2000, min=200, max=16000),
+    Setting("history.reasoning", "history", "Reasoning",
+            "Let the model think while summarizing (slower).",
+            "bool", False),
+    Setting("history.lookup_results", "history", "Summaries per lookup",
+            "How many period summaries the bot's history lookup returns at once.",
+            "int", 3, min=1, max=10),
+    Setting("history.source_keep_days", "history", "Keep a paused import's file (days)",
+            "An import that paused (after errors, or by you) keeps its uploaded file this long so "
+            "it can resume. After that the file is deleted and unfinished work needs a new upload.",
+            "int", 7, min=1, max=90),
+    Setting("history.live_archive", "history", "Summarize live chat monthly",
+            "Once a month is over, summarize its live messages into a history digest. A month "
+            "that keeps failing is marked failed (retry it on the History page); later months "
+            "still go ahead.",
+            "bool", True),
+    # ----------------------------------------------------------------- lab
+    Setting("lab.parallel_attempts", "lab", "Parallel attempts",
+            "How many lab attempts run at once. Their model requests wait behind replies to "
+            "people, and count against Background parallel requests.",
+            "int", 1, min=1, max=4),
+    Setting("lab.model_servers", "lab", "Other model servers",
+            "Other local model servers a run may test, besides the configured one, as a JSON "
+            "object: name → endpoint URL, e.g. {\"gufo-27b\": \"http://localhost:8081/v1\"}. "
+            "An agent can't point the lab at a server that isn't here.",
+            "json", {}),
+    Setting("lab.max_attempts_per_run", "lab", "Most attempts per run",
+            "No run's budget can allow more attempts than this.",
+            "int", 500, min=10, max=5000),
+    Setting("lab.default_budget", "lab", "Default budget",
+            "The budget of a run that doesn't set its own: attempts, model requests and hours.",
+            "json", {"attempts": 60, "model_requests": 300, "hours": 4}),
     # --------------------------------------------------------------- board
     Setting("board.format", "board", "Board format",
             "rich: a Telegram rich message (headings and lists). html: a plain "
@@ -390,18 +461,6 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("import.max_upload_mb", "import", "Max upload size (MB)",
             "Largest result.json the Import page accepts.",
             "int", 200, min=1, max=4096),
-    Setting("import.distill_memory", "import", "Distill memory from imports",
-            "After an import, read the whole export in chunks (including messages outside "
-            "retention) and add group memory notes. Keeps the model busy in the background "
-            "for a while; replies to people still go first.",
-            "bool", True),
-    Setting("import.distill_chunk_tokens", "import", "Distillation chunk (tokens)",
-            "How much of the export one model request reads.",
-            "int", 6000, min=1000, max=100_000),
-    Setting("import.digest_window_days", "import", "Digest window for imports (days)",
-            "If the chat has no digest yet, the first one is built from the import's last "
-            "this many days.",
-            "int", 14, min=1, max=365),
     # --------------------------------------------------------------- media
     Setting("media.enabled", "media", "Media enabled",
             "Look at images when someone asks about one (the current message "
@@ -421,18 +480,17 @@ SETTINGS: tuple[Setting, ...] = (
             "Instructions for describing an image.",
             "text", load_prompt("describe_image"), max=5000),
     # ----------------------------------------------------------- retention
-    Setting("retention.live_messages_days", "retention", "Live messages (days)",
-            "How long live messages are kept (cleaned up hourly). The digest and group memory "
-            "keep what matters beyond this; messages the digest hasn't read yet get up to 7 "
-            "more days.",
-            "int", 30, min=0, max=36500),
-    Setting("retention.imported_messages_days", "retention", "Imported messages (days)",
-            "An import keeps only messages newer than this, and older imported messages are "
-            "cleaned up daily.",
+    Setting("retention.reminders_days", "retention", "Finished reminders (days)",
+            "Sent and cancelled reminders are deleted this long after they finish. Pending "
+            "reminders are never cleaned up.",
             "int", 30, min=0, max=36500),
     Setting("retention.agent_runs_days", "retention", "Agent runs (days)",
             "Agent traces contain full prompts, so they are cleaned up daily.",
             "int", 30, min=0, max=36500),
+    Setting("retention.lab_days", "retention", "Lab runs (days)",
+            "Finished lab runs, their attempts and traces are deleted this long after they "
+            "finish. Activations are kept.",
+            "int", 90, min=0, max=36500),
     Setting("retention.logs_days", "retention", "Logs (days)",
             "Stored application logs are cleaned up daily.",
             "int", 30, min=0, max=36500),
@@ -459,6 +517,7 @@ PER_CHAT: frozenset[str] = frozenset({
     "memory.prompt_notes",
     "memory.digest_every_messages",
     "memory.digest_quiet_minutes",
+    "history.live_archive",
     "board.format",
     "board.pin",
     "media.enabled",

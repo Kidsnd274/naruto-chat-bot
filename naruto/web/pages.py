@@ -17,6 +17,7 @@ def _status_context(services: Services) -> dict:
         "llm": services.llm,
         "endpoint": services.settings["model.endpoint_url"],
         "model_name": services.settings["model.name"],
+        "settings_paused": services.settings["model.background_paused"],
     }
 
 
@@ -31,6 +32,9 @@ async def dashboard(request: Request):
         "pending": [chat for chat in chats if chat.status == "pending"],
         "errors": services.logs.recent_errors(10),
         "drift": len(seed_differences(services.settings, services.chats, services.seed)),
+        "lab_waiting": ([run.id for run in services.lab.repo.runs(20) if run.status == "active"
+                         and services.lab.repo.comparisons(run.id, status="pending")]
+                        if services.lab is not None else []),
     }
     return request.app.state.templates.TemplateResponse(request, "dashboard.html", context)
 

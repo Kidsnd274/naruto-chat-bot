@@ -46,7 +46,7 @@ class RunState:
 @dataclass
 class ToolContext:
     services: "Services"
-    telegram: Any  # telegram.Bot (or a recording fake in the evaluation)
+    telegram: Any  # telegram.Bot (or the prompt lab's stand-in)
     chat: "Chat"
     trigger: "StoredMessage"
     bot: "BotIdentity"

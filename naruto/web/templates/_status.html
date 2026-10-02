@@ -36,7 +36,7 @@
       </ul>
     {% endif %}
     {% if status.llm_error %}<p class="error-text">{{ status.llm_error }}</p>{% endif %}
-    <p class="muted">Requests: {{ llm.in_flight }} running, {{ llm.waiting }} waiting · checked {{ status.llm_checked_at|ago }}</p>
+    <p class="muted">Requests: <a href="/queue">{{ llm.in_flight }} running, {{ llm.waiting }} waiting</a>{% if settings_paused %} · <span class="warn-text">background paused</span>{% endif %} · checked {{ status.llm_checked_at|ago }}</p>
     <button class="small" hx-post="/model/check" hx-target="#status" hx-swap="outerHTML">Check now</button>
   </section>
 </div>

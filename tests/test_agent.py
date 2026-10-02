@@ -30,7 +30,7 @@ from naruto.llm import (
     split_inline_tool_calls,
 )
 from naruto.tg.access import ChatAccess
-from naruto.tg.board import BoardPublisher, Updated, render_html, render_markdown
+from naruto.tg.board import RULE, BoardPublisher, Updated, render_html, render_markdown
 from naruto.tg.plans import PlanButtons
 from naruto.tg.polls import PollTracker
 from naruto.tg.recorder import Recorder
@@ -507,8 +507,8 @@ async def test_board_is_sent_pinned_then_edited_in_place(services, bot, chat):
     assert endpoint == "sendRichMessage"
     markdown = payload["rich_message"]["markdown"]
     assert markdown.startswith("📌 **BBQ Sat 6pm · Book the pit (Sam)**")
-    assert "**🗓 Plans**" in markdown and "- **BBQ Sat 6pm** · ✅ confirmed" in markdown
-    assert "- **Book the pit (Sam)** · ⏳ not locked yet" in markdown
+    assert "==**🗓 Plans**==" in markdown and "✅ **BBQ Sat 6pm**" in markdown
+    assert "⏳ **Book the pit (Sam)**" in markdown
     assert '<footer><sub>updated <tg-time unix="' in markdown
     board = services.boards.get(GROUP_ID)
     assert board.format == "rich" and board.pinned and bot.pins == [(GROUP_ID, board.message_id)]
@@ -546,8 +546,8 @@ def test_board_rendering_and_prompt(services, chat):
         GROUP_ID, "plans", [{"text": "BBQ", "done": True, "details": ["Sat 6pm"]}, "Pit"],
         actor="t")
     assert render_html(board, UPDATED).splitlines() == [
-        "📌 <b>BBQ · Pit</b>", "", "<b>🗓 Plans</b>", "• <b>BBQ</b> · ✅ confirmed",
-        "    ◦ Sat 6pm", "• <b>Pit</b> · ⏳ not locked yet", "", f"<i>updated {TIME}</i>"]
+        "📌 <b>BBQ · Pit</b>", "", RULE, "<b>🗓 Plans</b>", "", "✅ <b>BBQ</b>",
+        "\u2003◦ Sat 6pm", "", "⏳ <b>Pit</b>", "", f"<i>updated {TIME}</i>"]
     empty = services.boards.get(-1)
     assert render_markdown(empty, UPDATED).splitlines()[:3] == [
         "📌 **Board**", "", "Nothing on it yet. Ask me to add plans or open questions."]
@@ -561,17 +561,14 @@ def test_rich_board_layout(services, chat):
     board = services.boards.set_section(GROUP_ID, "questions", [
         {"text": "Driving or drinking?", "for_name": "Bob", "for_user_id": BOB.id},
         {"text": "Venue?", "for_name": "Somebody new"}, "Time?"], actor="t")
-    assert render_markdown(board, UPDATED).splitlines() == [
-        "📌 **Fri dinner + poker · Sat BBQ**", "",
-        "**🗓 Plans**",
-        "- **Fri · Dinner + poker** · ⏳ not locked yet",
-        "  - Venue TBC",
-        "  - \\$10 buy-in",
-        "- **Sat · BBQ** · ✅ confirmed", "",
-        "**❓ Open questions**",
-        f"- [Bob](tg://user?id={BOB.id}): Driving or drinking?",
-        "- Somebody new: Venue?",
-        "- Time?", "",
+    assert render_markdown(board, UPDATED).split("\n\n") == [
+        "📌 **Fri dinner + poker · Sat BBQ**",
+        f"{RULE}<br>==**🗓 Plans**==",
+        "⏳ **Fri · Dinner + poker**<br>\u2003◦ Venue TBC<br>\u2003◦ \\$10 buy-in",
+        "✅ **Sat · BBQ**",
+        f"{RULE}<br>==**❓ Open questions**==",
+        f"• [Bob](tg://user?id={BOB.id}): Driving or drinking?<br>• Somebody new: Venue?<br>"
+        "• Time?",
         f"<footer><sub>updated {TIME}</sub></footer>"]
     assert board.as_text().splitlines()[0] == "Title: Fri dinner + poker · Sat BBQ"
     assert "  • Driving or drinking? (for Bob)" in board.as_text()

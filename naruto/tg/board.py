@@ -4,10 +4,12 @@ The board is sent as a Telegram rich message (Bot API 10.1, sent through
 do_api_request because python-telegram-bot 22.8 predates it). If Telegram
 refuses rich messages, it falls back to an HTML message and remembers that.
 
-Layout: the title (also the pin text in apps that preview rich messages),
-then each plan in bold with its status and its details as bullets, then
-the open questions (mentioning who each is for), then a small "updated
-5 minutes ago" that each app shows in the reader's own time.
+Layout: the title (also the pin text in apps that preview rich messages);
+each section under a line and a highlighted heading; each plan as one
+tight block, its status emoji and name in bold, then its details; the open
+questions (mentioning who each is for) as one block; a small "updated
+5 minutes ago" that each app shows in the reader's own time. Blocks join
+their lines with <br>: list blocks would put a gap between every line.
 """
 
 from dataclasses import dataclass, replace
@@ -29,9 +31,11 @@ RICH = "rich"
 HTML = "html"
 TELEGRAM_LIMIT = 4096  # characters in one message
 EMPTY_TEXT = "Nothing on it yet. Ask me to add plans or open questions."
-CONFIRMED = "✅ confirmed"
-NOT_LOCKED = "⏳ not locked yet"
+CONFIRMED = "✅"
+NOT_LOCKED = "⏳"
 HEADINGS = dict(SECTIONS)
+RULE = "─" * 16  # drawn as text: Telegram centers its divider block
+INDENT = "\u2003"  # an em space, which Markdown doesn't collapse
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>|~#$=])")
 
 
@@ -61,40 +65,43 @@ def _status(plan: BoardItem) -> str:
 
 
 def render_markdown(board: Board, updated: Updated, hidden: int = 0) -> str:
-    lines = [f"📌 **{_md(board.display_title)}**"]
+    blocks = [f"📌 **{_md(board.display_title)}**"]
     if board.is_empty:
-        lines += ["", EMPTY_TEXT]
+        blocks.append(EMPTY_TEXT)
     if board.items("plans"):
-        lines += ["", f"**{HEADINGS['plans']}**"]
-        for plan in board.items("plans"):
-            lines.append(f"- **{_md(plan.text)}** · {_status(plan)}")
-            lines.extend(f"  - {_md(detail)}" for detail in plan.details)
+        blocks.append(f"{RULE}<br>==**{HEADINGS['plans']}**==")
+        blocks += ["<br>".join([f"{_status(plan)} **{_md(plan.text)}**",
+                                *(f"{INDENT}◦ {_md(detail)}" for detail in plan.details)])
+                   for plan in board.items("plans")]
     if board.items("questions"):
-        lines += ["", f"**{HEADINGS['questions']}**"]
+        blocks.append(f"{RULE}<br>==**{HEADINGS['questions']}**==")
+        lines = []
         for question in board.items("questions"):
             who = ""
             if question.for_user_id:
                 who = f"[{_md(question.for_name or 'them')}](tg://user?id={question.for_user_id}): "
             elif question.for_name:
                 who = f"{_md(question.for_name)}: "
-            lines.append(f"- {who}{_md(question.text)}")
+            lines.append(f"• {who}{_md(question.text)}")
+        blocks.append("<br>".join(lines))
     if hidden:
-        lines += ["", f"_{_hidden_note(hidden)}_"]
-    lines += ["", f"<footer><sub>{_time(updated)}</sub></footer>"]
-    return "\n".join(lines)
+        blocks.append(f"_{_hidden_note(hidden)}_")
+    blocks.append(f"<footer><sub>{_time(updated)}</sub></footer>")
+    return "\n\n".join(blocks)
 
 
 def render_html(board: Board, updated: Updated, hidden: int = 0) -> str:
-    lines = [f"📌 <b>{escape(board.display_title)}</b>"]
+    blocks = [f"📌 <b>{escape(board.display_title)}</b>"]
     if board.is_empty:
-        lines += ["", EMPTY_TEXT]
+        blocks.append(EMPTY_TEXT)
     if board.items("plans"):
-        lines += ["", f"<b>{HEADINGS['plans']}</b>"]
-        for plan in board.items("plans"):
-            lines.append(f"• <b>{escape(plan.text)}</b> · {_status(plan)}")
-            lines.extend(f"    ◦ {escape(detail)}" for detail in plan.details)
+        blocks.append(f"{RULE}\n<b>{HEADINGS['plans']}</b>")
+        blocks += ["\n".join([f"{_status(plan)} <b>{escape(plan.text)}</b>",
+                              *(f"{INDENT}◦ {escape(detail)}" for detail in plan.details)])
+                   for plan in board.items("plans")]
     if board.items("questions"):
-        lines += ["", f"<b>{HEADINGS['questions']}</b>"]
+        blocks.append(f"{RULE}\n<b>{HEADINGS['questions']}</b>")
+        lines = []
         for question in board.items("questions"):
             who = ""
             if question.for_user_id:
@@ -103,10 +110,11 @@ def render_html(board: Board, updated: Updated, hidden: int = 0) -> str:
             elif question.for_name:
                 who = f"{escape(question.for_name)}: "
             lines.append(f"• {who}{escape(question.text)}")
+        blocks.append("\n".join(lines))
     if hidden:
-        lines += ["", f"<i>{_hidden_note(hidden)}</i>"]
-    lines += ["", f"<i>{_time(updated)}</i>"]
-    return "\n".join(lines)
+        blocks.append(f"<i>{_hidden_note(hidden)}</i>")
+    blocks.append(f"<i>{_time(updated)}</i>")
+    return "\n\n".join(blocks)
 
 
 def fit_message(board: Board, render, updated: Updated, limit: int = TELEGRAM_LIMIT) -> str:

@@ -90,6 +90,24 @@ def render_markdown(board: Board, updated: Updated, hidden: int = 0) -> str:
     return "\n\n".join(blocks)
 
 
+# Another plain HTML layout the owner liked (test variant "AN", 2 Oct 2026),
+# kept for reference in case the fallback should look like it instead. Plain
+# messages have normal line spacing, so it needs no separate blocks per plan:
+#
+#   📌 <b>Fri dinner + poker · Sat BBQ</b>
+#
+#   <b>🗓 Plans</b>
+#   • <b>Fri 2 Oct · Dinner + poker</b> · ⏳ not locked yet
+#   {INDENT}◦ Dinner — venue & time TBC
+#   {INDENT}◦ Poker at Jeremy's after, $10 buy-in
+#   • <b>Sat 10 Oct · BBQ at East Coast</b> · ✅ confirmed
+#   {INDENT}◦ 6 pm, pit 42 booked
+#
+#   <b>❓ Open questions</b>
+#   • <a href="tg://user?id=…">Samuel</a>: Driving or drinking?
+#   • Dinner venue and time?
+#
+#   <i>updated <tg-time unix="…" format="r">02 Oct, 16:47</tg-time></i>
 def render_html(board: Board, updated: Updated, hidden: int = 0) -> str:
     blocks = [f"📌 <b>{escape(board.display_title)}</b>"]
     if board.is_empty:

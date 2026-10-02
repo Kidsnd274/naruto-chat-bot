@@ -1,0 +1,3 @@
+{% if t.info.run_id %}<a href="/runs/{{ t.info.run_id }}">run {{ t.info.run_id }}</a>{% endif %}
+{% if t.info.import_id %}<a href="/import/{{ t.info.import_id }}">import {{ t.info.import_id }}</a>{% endif %}
+{% if t.info.period_id %}<span class="muted">period {{ t.info.period_id }}{% if t.info.chunk %}, part {{ t.info.chunk }}{% endif %}</span>{% elif t.info.chunk %}<span class="muted">part {{ t.info.chunk }}</span>{% endif %}

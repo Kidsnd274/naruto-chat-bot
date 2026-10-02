@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Memory · {{ chat.display_title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/chats">Chats</a> / <a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a> /</p>
+<h1>Memory</h1>
+<p class="muted">Durable facts the bot keeps about this group ({{ total }} of at most {{ limit }} notes). Notes stay when messages are deleted. The bot adds them when asked to remember something and, if automatic notes are on, while it updates the digest. Locked notes can't be changed or forgotten by the bot or members.</p>
+
+<form class="filters" method="get" action="/chats/{{ chat.chat_id }}/memory">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search notes">
+  <select name="person" aria-label="Person">
+    <option value="">Anyone or no one</option>
+    {% for person_id, name in people %}<option value="{{ person_id }}" {{ 'selected' if filters.person == person_id|string else '' }}>{{ name }}</option>{% endfor %}
+  </select>
+  <select name="category" aria-label="Category">
+    <option value="">Any category</option>
+    {% for key, label in categories %}<option value="{{ key }}" {{ 'selected' if filters.category == key else '' }}>{{ label }}</option>{% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<section class="card">
+  <h2>Add a note</h2>
+  <form method="post" action="/chats/{{ chat.chat_id }}/memory" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input name="content" required maxlength="400" placeholder="e.g. Sam is vegetarian" aria-label="Note" class="grow">
+    <select name="category" aria-label="Category">
+      {% for key, label in categories %}<option value="{{ key }}" {{ 'selected' if key == 'group_fact' else '' }}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="person" aria-label="About">
+      <option value="">About no one in particular</option>
+      {% for person_id, name in people %}<option value="{{ person_id }}">About {{ name }}</option>{% endfor %}
+    </select>
+    <label class="switch small"><input type="checkbox" name="locked" value="1"> locked</label>
+    <button type="submit" class="primary">Add</button>
+  </form>
+</section>
+
+{% if notes %}
+<section class="card">
+  <ul class="plain">
+  {% for note in notes %}
+    <li>
+      <form method="post" action="/chats/{{ chat.chat_id }}/memory/{{ note.id }}" class="filters">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <span class="mono small muted">n{{ note.id }}</span>
+        <input name="content" value="{{ note.content }}" maxlength="400" aria-label="Note {{ note.id }}" class="grow">
+        <select name="category" aria-label="Category">
+          {% for key, label in categories %}<option value="{{ key }}" {{ 'selected' if note.category == key else '' }}>{{ label }}</option>{% endfor %}
+        </select>
+        <select name="person" aria-label="About">
+          <option value="">No one</option>
+          {% for person_id, name in people %}<option value="{{ person_id }}" {{ 'selected' if note.person_id == person_id else '' }}>{{ name }}</option>{% endfor %}
+          {% if note.person_id and note.person_id not in people|map('first')|list %}<option value="" selected>{{ names.get(note.person_id, "someone") }} (not in this chat)</option>{% endif %}
+        </select>
+        <button type="submit" class="small">Save</button>
+      </form>
+      <div class="row-actions small">
+        {% if note.locked %}<span class="badge custom">locked</span>{% endif %}
+        <span class="muted">by {{ note.created_by }}, {{ note.created_at|ts("%d %b %Y") }}{% if note.updated_at != note.created_at %}, changed {{ note.updated_at|ago }}{% endif %}{% if note.source_row_ids %} · from message {{ note.source_row_ids|join(", ") }}{% endif %}</span>
+        <form method="post" action="/chats/{{ chat.chat_id }}/memory/{{ note.id }}/lock">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="link">{{ 'Unlock' if note.locked else 'Lock' }}</button>
+        </form>
+        <form method="post" action="/chats/{{ chat.chat_id }}/memory/{{ note.id }}/delete">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="link">Delete…</button>
+        </form>
+      </div>
+      {% if history[note.id]|length > 1 %}
+        <details>
+          <summary class="small muted">History ({{ history[note.id]|length }} changes)</summary>
+          <ul class="plain small">
+            {% for change in history[note.id] %}
+              <li><span class="muted">{{ change.changed_at|ts }} · {{ change.action }} by {{ change.changed_by }}:</span> {{ change.content }} <span class="muted">({{ change.category }})</span></li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+{% else %}
+  <p class="card muted">{{ "No notes match." if filters.q or filters.person or filters.category else "No notes yet." }}</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+{% if drift %}
+  <p class="notice warn">config.json or .env differ from the database in {{ drift }} place{{ 's' if drift != 1 else '' }}. The database wins; see <a href="/settings">Settings</a>.</p>
+{% endif %}
+{% if status.can_read_all_group_messages is false %}
+  <p class="notice warn">Group Privacy is on, so the bot only sees mentions. Turn it off in BotFather, then remove and re-add the bot to each group.</p>
+{% endif %}
+
+{% for run_id in lab_waiting %}
+  <p class="notice info">Lab run #{{ run_id }} is waiting for your choice between replies: <a href="/lab/runs/{{ run_id }}#comparisons">choose</a>.</p>
+{% endfor %}
+
+{% include "_status.html" %}
+
+<div class="grid two">
+  <section class="card">
+    <h2>Chats</h2>
+    <p class="stats">
+      <a href="/chats"><strong>{{ counts.get('enabled', 0) }}</strong> enabled</a>
+      <a href="/chats" class="{{ 'attention' if counts.get('pending', 0) else '' }}"><strong>{{ counts.get('pending', 0) }}</strong> pending</a>
+      <a href="/chats"><strong>{{ counts.get('disabled', 0) }}</strong> disabled</a>
+    </p>
+    {% if pending %}
+      <h3>Waiting for approval</h3>
+      <ul class="plain">
+        {% for chat in pending %}
+          <li class="row-actions">
+            <a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a>
+            {% if chat.added_by_name %}<span class="muted">added by {{ chat.added_by_name }}</span>{% endif %}
+            <form method="post" action="/chats/{{ chat.chat_id }}/enable">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="small primary">Approve</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Recent errors</h2>
+    {% if errors %}
+      <ul class="plain log-list">
+        {% for row in errors %}
+          <li><span class="muted">{{ row.created_at|ts("%d %b %H:%M:%S") }}</span> <code>{{ row.logger }}</code> {{ row.message.split("\n")[0] }}</li>
+        {% endfor %}
+      </ul>
+      <p><a href="/logs?level=ERROR">All errors →</a></p>
+    {% else %}
+      <p class="muted">None.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

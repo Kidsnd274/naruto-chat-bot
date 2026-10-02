@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">Stored in the database and applied immediately. Secrets and bootstrap values (bot token, API key, admin password, owner ID, database path, web address) stay in <code>.env</code>.</p>
+
+{% if differences %}
+  <section class="notice warn">
+    <p><strong>Old configuration differs from the database.</strong> config.json, .env and system_prompt.md were only used to seed the database on first start; the database wins. Update or remove those values to silence this notice.</p>
+    <div class="table-wrap">
+    <table class="compact">
+      <thead><tr><th>Setting</th><th>From</th><th>File value</th><th>Database value</th></tr></thead>
+      <tbody>
+      {% for d in differences %}
+        <tr><td>{{ d.label }} <span class="muted mono small">{{ d.key }}</span></td><td class="small">{{ d.source }}</td><td class="mono small">{{ d.file_value }}</td><td class="mono small">{{ d.db_value }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+{% endif %}
+
+<nav class="section-nav">
+  {% for group in sections %}<a href="#section-{{ group.section.id }}">{{ group.section.title }}</a>{% endfor %}
+</nav>
+
+{% for group in sections %}
+  <section class="settings-section" id="section-{{ group.section.id }}">
+    <h2>{{ group.section.title }}</h2>
+    {% if group.section.description %}<p class="muted">{{ group.section.description }}</p>{% endif %}
+    <div class="settings-grid">
+    {% for card in group.cards %}
+      {% include "_setting.html" %}
+    {% endfor %}
+    </div>
+  </section>
+{% endfor %}
+
+{% if recent %}
+<section class="card">
+  <h2>Recent changes</h2>
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th>When</th><th>Setting</th><th>Change</th><th>By</th></tr></thead>
+    <tbody>
+    {% for entry in recent %}
+      {% set setting = registry.get(entry.key) %}
+      <tr>
+        <td class="small nowrap">{{ entry.changed_at|ts }}</td>
+        <td><a href="#{{ entry.key }}">{{ setting.label if setting else entry.key }}</a></td>
+        <td class="small mono">
+          {% if setting %}{{ setting.display(entry.old_value) }} → {{ setting.display(entry.new_value) }}{% else %}—{% endif %}
+        </td>
+        <td class="small">{{ entry.changed_by }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

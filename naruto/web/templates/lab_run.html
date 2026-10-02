@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Lab run #{{ run.id }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/lab">Lab</a> /</p>
+<div class="title-row">
+  <h1>Run #{{ run.id }}
+    {% if state.state == "waiting_for_owner" %}<span class="badge warn-badge">waiting for your choice</span>
+    {% elif state.state == "finished" %}<span class="badge">finished · {{ run.stop_reason }}</span>
+    {% else %}<span class="badge running">{{ state.state }}</span>{% endif %}
+  </h1>
+  {% if run.status == "active" %}
+  <form method="post" action="/lab/runs/{{ run.id }}/stop" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="small danger">Stop the run</button>
+  </form>
+  {% endif %}
+</div>
+<p class="msg-text">{{ run.objective }}</p>
+{% if run.spec.protected %}<p class="small">Keep: {{ run.spec.protected|join("; ") }}</p>{% endif %}
+{% for warning in run.warnings %}<p class="notice warn">{{ warning }}</p>{% endfor %}
+
+<div class="grid two">
+  <section class="card">
+    <h2>Budget</h2>
+    <dl class="facts">
+      <dt>Attempts</dt><dd>{{ state.used.attempts }} of {{ state.budget.attempts }}</dd>
+      <dt>Model requests</dt><dd>{{ state.used.model_requests }} of {{ state.budget.model_requests }}</dd>
+      <dt>Model time</dt><dd>{{ "%.1f"|format(state.used.model_ms / 60000) }} min</dd>
+      <dt>Model</dt><dd class="mono">{{ run.model_name or "(first listed)" }}{% if run.model_reported %} <span class="muted small">reported as {{ run.model_reported }}</span>{% endif %}</dd>
+      <dt>Activation</dt><dd>{{ run.spec.activation.policy }}</dd>
+      <dt>Started</dt><dd>{{ run.created_at|ts }} by {{ run.created_by }}</dd>
+    </dl>
+  </section>
+  <section class="card" id="preferences">
+    <h2>What you prefer</h2>
+    {% if preferences %}
+      {% set body = preferences.body %}
+      <h3>In your words</h3>
+      <ul>{% for s in body.owner_statements %}<li>“{{ s.text }}”{% if s.get("correction") %} <span class="muted small">(your correction)</span>{% endif %}</li>{% else %}<li class="muted">Nothing yet.</li>{% endfor %}</ul>
+      <h3>The agent's reading</h3>
+      <ul>{% for i in body.interpretations %}<li><span class="badge {{ 'done' if i.status == 'confirmed' else 'pending' }}">{{ i.status }}</span> {{ i.text }}</li>{% else %}<li class="muted">Nothing yet.</li>{% endfor %}</ul>
+      {% if body.context %}<h3>Depends on the situation</h3><ul>{% for c in body.context %}<li>{{ c }}</li>{% endfor %}</ul>{% endif %}
+    {% else %}
+      <p class="muted">No summary yet. The agent writes one from your choices.</p>
+    {% endif %}
+    <form method="post" action="/lab/runs/{{ run.id }}/preferences">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="small">Correct it in your own words
+        <textarea name="correction" rows="2" placeholder="Cheeky in banter, but never when someone's upset."></textarea></label>
+      <button type="submit" class="small">Add</button>
+    </form>
+  </section>
+</div>
+
+<section class="card" id="comparisons">
+  <h2>Your choices</h2>
+  {% for c in pending %}
+    <div class="card">
+      <pre class="prompt">{{ c.presentation }}</pre>
+      <form method="post" action="/lab/comparisons/{{ c.id }}/answer" class="actions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% for label in c.labels %}<button type="submit" name="choice" value="{{ label }}" class="primary">{{ label }}</button>{% endfor %}
+        <button type="submit" name="choice" value="both_good">Both good</button>
+        <button type="submit" name="choice" value="both_bad">Both bad</button>
+        <button type="submit" name="choice" value="no_preference">No preference</button>
+        <button type="submit" name="choice" value="skip">Skip</button>
+        <button type="submit" name="choice" value="combination">A mix (say which)</button>
+        <input name="comment" placeholder="Optional: A's humour, B's brevity…" class="wide">
+      </form>
+    </div>
+  {% else %}
+    <p class="muted">Nothing waiting for you.</p>
+  {% endfor %}
+  {% if answered %}
+  <details>
+    <summary>Earlier comparisons ({{ answered|length }})</summary>
+    {% for c in answered %}
+      <div class="card">
+        <p><strong>Comparison {{ c.id }}</strong> · {{ c.status }}
+          {% if c.choice %} · you chose <strong>{{ c.choice.choice }}</strong>{% if c.choice.comment %}: “{{ c.choice.comment }}”{% endif %} <span class="muted small">via {{ c.choice.channel }}</span>{% endif %}
+          {% if c.revealed_before_answer %}<span class="badge warn-badge">configurations shown before the answer</span>{% endif %}</p>
+        {% if c.mapping %}<p class="small">{% for label, info in c.mapping.items() %}{{ label }} = <a href="/lab/attempts/{{ info.attempt }}">{{ info.configuration }}</a>{{ ", " if not loop.last else "" }}{% endfor %}</p>{% endif %}
+        <details><summary class="small">The replies</summary><pre class="prompt">{{ c.presentation }}</pre></details>
+        {% if c.status == "answered" %}
+        <form method="post" action="/lab/comparisons/{{ c.id }}/answer" class="actions">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <select name="choice">{% for choice in choices if choice not in ("A", "B", "C", "D") or choice in c.labels %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}</select>
+          <input name="comment" placeholder="Why the change (optional)">
+          <button type="submit" class="small">Correct my choice</button>
+        </form>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </details>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Configurations</h2>
+  <details>
+    <summary><strong>baseline</strong> <span class="muted small">the live configuration when the run started</span></summary>
+    {% for key, value in baseline.settings.items() %}
+      <p class="small"><code>{{ key }}</code></p><pre class="prompt">{{ value }}</pre>
+    {% endfor %}
+  </details>
+  {% for c in candidates %}
+    <details>
+      <summary><strong>{{ c.label }}</strong> <span class="muted small">on {{ c.parent }} · changes {{ c.vs_parent|join(", ") }}</span>{% if c.hypothesis %} — {{ c.hypothesis }}{% endif %}</summary>
+      {% if c.rationale %}<p class="small">{{ c.rationale }}</p>{% endif %}
+      {% for effect in c.background_effects %}<p class="notice warn small">{{ effect }}</p>{% endfor %}
+      <p><a class="button small" href="/lab/runs/{{ run.id }}/activate/{{ c.ref }}">Activate…</a></p>
+      {% for key, change in c.vs_baseline.items() %}
+        <p class="small"><code>{{ key }}</code></p>
+        <div class="grid two"><pre class="prompt">{{ change.from }}</pre><pre class="prompt">{{ change.to }}</pre></div>
+      {% endfor %}
+    </details>
+  {% else %}
+    <p class="muted">No candidates yet.</p>
+  {% endfor %}
+</section>
+
+<section class="card" id="activations">
+  <h2>Activations</h2>
+  {% for a in activations %}
+    <div class="row-actions">
+      <span><strong>{{ a.candidate }}</strong> ({{ a.mode }}) on {{ a.at|ts }} by {{ a.by }} · authorized by {{ a.authorized_by }}
+        <span class="muted small">{{ a.applied|join(", ") }}</span>
+        {% if a.reverted_at %}<span class="badge">reverted {{ a.reverted_at|ts }}</span>{% endif %}</span>
+      {% if not a.reverted_at %}
+      <form method="post" action="/lab/activations/{{ a.id }}/revert">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="small danger">Revert</button>
+      </form>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="muted">Nothing from this run is live. Each candidate above has an Activate… link; you can also put the baseline back with <a href="/lab/runs/{{ run.id }}/activate/baseline?mode=full">its full configuration</a>.</p>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>Attempts</h2>
+  {% if attempts %}
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th class="num">#</th><th>Scenario</th><th>Configuration</th><th class="num">Try</th><th>Outcome</th><th class="num">Model time</th></tr></thead>
+    <tbody>
+    {% for a in attempts|reverse %}
+      <tr>
+        <td class="num"><a href="/lab/attempts/{{ a.id }}">{{ a.id }}</a></td>
+        <td>{{ a.scenario }} <span class="muted small">v{{ a.scenario_version }}{% if a.continues %}, continues {{ a.continues }}{% endif %}</span></td>
+        <td>{{ a.candidate }}</td>
+        <td class="num">{{ a.repeat }}</td>
+        <td><span class="badge {{ 'done' if a.outcome == 'pass' else ('error' if a.outcome in ('fail', 'error', 'action_failed') else a.status) }}">{{ a.outcome or a.status }}</span>{% if a.reason %} <span class="muted small">{{ a.reason|truncate(80) }}</span>{% endif %}</td>
+        <td class="num small">{{ "%.1f s"|format(a.model_ms / 1000) if a.model_ms else "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p class="muted">No attempts yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Report</h2>
+  <details><summary>The full report (also in <code>lab export</code>)</summary><pre class="prompt">{{ report_md }}</pre></details>
+</section>
+{% endblock %}

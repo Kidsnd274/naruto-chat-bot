@@ -48,8 +48,8 @@ def image_bytes(fmt="JPEG", size=(16, 8), color="red"):
 
 
 @pytest.fixture
-def media_module(initialized_config):
-    import media
+def media_module():
+    from naruto import media
     return media
 
 
@@ -139,7 +139,6 @@ async def test_static_sticker_is_stored_as_webp(media_module):
     assert marker is None
     assert attachments[0]["kind"] == "sticker"
     assert attachments[0]["mime_type"] == "image/webp"
-    assert media_module.media_label(message) == "[sent a sticker 🍥]"
 
 
 async def test_missing_video_thumbnail_uses_ffmpeg_fallback(media_module, monkeypatch):

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "[45]..", "swap": true, "error": true}]}'>
+  <title>{% block title %}Admin{% endblock %} · Naruto</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="swirl" aria-hidden="true">🍥</span> Naruto admin</a>
+    <nav>
+      {% for path, label in [("/", "Dashboard"), ("/chats", "Chats"), ("/people", "People"), ("/import", "Import"), ("/runs", "Agent runs"), ("/queue", "Queue"), ("/lab", "Lab"), ("/settings", "Settings"), ("/logs", "Logs")] %}
+        {% set active = nav_path == path or (path != "/" and nav_path.startswith(path)) %}
+        <a href="{{ path }}" class="{{ 'active' if active else '' }}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <form method="post" action="/logout" class="logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="link">Log out</button>
+    </form>
+  </header>
+  <main>
+    {% for kind, text in take_flashes() %}
+      <p class="notice {{ 'info' if kind == 'ok' else kind }} flash">{{ text }}</p>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

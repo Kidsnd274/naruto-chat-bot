@@ -1,0 +1,11 @@
+{% for row in rows %}
+  <tr class="level-{{ row.level_name|lower }}">
+    <td class="small nowrap mono">{{ row.created_at|ts("%d %b %H:%M:%S") }}</td>
+    <td class="small">{{ row.level_name }}</td>
+    <td class="small mono">{{ row.logger }}</td>
+    <td class="small mono">{{ row.chat_id if row.chat_id is not none else '' }}</td>
+    <td class="log-message">{{ row.message }}</td>
+  </tr>
+{% else %}
+  <tr><td colspan="5" class="muted">No log records match.</td></tr>
+{% endfor %}

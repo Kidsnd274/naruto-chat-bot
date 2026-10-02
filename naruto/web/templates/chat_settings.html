@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Settings · {{ chat.display_title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/chats">Chats</a> / <a href="/chats/{{ chat.chat_id }}">{{ chat.display_title }}</a> /</p>
+<h1>Settings for this chat</h1>
+<p class="muted">These settings can differ from one group to another. A setting you save here applies to {{ chat.display_title }} only and stays as it is when the global value changes; “Use the global setting” removes it. Everything else follows the <a href="/settings">global Settings</a>.
+{% if override_count %}{{ override_count }} set for this chat.{% else %}Nothing is set for this chat yet.{% endif %}</p>
+
+{% for group in sections %}
+<section class="settings-section" id="section-{{ group.section.id }}">
+  <h2>{{ group.section.title }}</h2>
+  <div class="settings-grid">
+  {% for card in group.cards %}
+    {% set s = card.setting %}
+    <article class="card setting{{ ' wide' if s.type in ('text', 'json') else '' }}" id="{{ s.key }}">
+      <form method="post" action="/chats/{{ chat.chat_id }}/settings/{{ s.key }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="setting-head">
+          <label for="input-{{ s.key }}"><strong>{{ s.label }}</strong></label>
+          <span class="mono muted small">{{ s.key }}</span>
+          {% if card.override %}<span class="badge custom">this chat</span>{% else %}<span class="badge muted-badge">global</span>{% endif %}
+        </div>
+        <p class="muted small">{{ s.description }}
+          {% if s.min is not none and s.type in ("int", "float") %} Range {{ s.min|num }}–{{ s.max|num if s.max is not none else "∞" }}.{% endif %}
+        </p>
+        {% if s.type == "bool" %}
+          <label class="switch"><input id="input-{{ s.key }}" type="checkbox" name="value" value="on" {{ 'checked' if card.value else '' }}> Enabled</label>
+        {% elif s.type == "choice" %}
+          <select id="input-{{ s.key }}" name="value">
+            {% if s.nullable %}<option value="" {{ 'selected' if card.form_value == '' else '' }}>(server default)</option>{% endif %}
+            {% for choice in s.choices %}<option value="{{ choice }}" {{ 'selected' if card.form_value == choice else '' }}>{{ choice }}</option>{% endfor %}
+          </select>
+        {% elif s.type in ("text", "json") %}
+          <textarea id="input-{{ s.key }}" name="value" rows="{{ 14 if s.type == 'text' else 4 }}" class="{{ 'mono' if s.type == 'json' else '' }}" spellcheck="{{ 'true' if s.type == 'text' else 'false' }}">{{ card.form_value }}</textarea>
+        {% elif s.type in ("int", "float") %}
+          <input id="input-{{ s.key }}" name="value" value="{{ card.form_value }}" inputmode="decimal" class="narrow">
+        {% else %}
+          <input id="input-{{ s.key }}" name="value" value="{{ card.form_value }}">
+        {% endif %}
+        <div class="setting-actions">
+          <button type="submit" class="small primary">Save for this chat</button>
+          {% if card.override %}
+            <button type="submit" class="small" formaction="/chats/{{ chat.chat_id }}/settings/{{ s.key }}/reset">Use the global setting</button>
+            <span class="muted small">Set {{ card.override.updated_at|ago }} by {{ card.override.updated_by }}{% if s.type not in ('text', 'json') %} · global: {{ card.global_display }}{% endif %}</span>
+          {% endif %}
+        </div>
+      </form>
+    </article>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

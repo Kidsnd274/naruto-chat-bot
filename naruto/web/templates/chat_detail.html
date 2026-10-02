@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}{{ chat.display_title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/chats">Chats</a> /</p>
+<div class="title-row">
+  <h1>{{ chat.display_title }} <span class="badge {{ chat.status }}">{{ chat.status }}</span></h1>
+  <div class="actions">
+    {% if chat.status != "enabled" %}
+      <form method="post" action="/chats/{{ chat.chat_id }}/enable">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="back" value="detail">
+        <button type="submit" class="primary">Enable</button>
+      </form>
+    {% endif %}
+    {% if chat.status != "disabled" %}
+      <form method="post" action="/chats/{{ chat.chat_id }}/disable">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="back" value="detail">
+        <button type="submit">Disable</button>
+      </form>
+    {% endif %}
+    <a class="button" href="/chats/{{ chat.chat_id }}/settings">Settings for this chat{% if setting_overrides %} ({{ setting_overrides }}){% endif %}</a>
+    <form method="post" action="/chats/{{ chat.chat_id }}/rights">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="back" value="detail">
+      <button type="submit">Check admin rights</button>
+    </form>
+    {% if chat.membership not in ("left", "kicked") %}
+      <a class="button danger" href="/chats/{{ chat.chat_id }}/leave">Leave</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Details</h2>
+    <dl class="facts">
+      <dt>Chat ID</dt><dd class="mono">{{ chat.chat_id }}</dd>
+      {% if aliases %}<dt>Old IDs</dt><dd class="mono">{{ aliases|join(", ") }} <span class="muted">(before the upgrade to supergroup)</span></dd>{% endif %}
+      <dt>Type</dt><dd>{{ chat.type }}</dd>
+      <dt>Bot membership</dt><dd>{{ chat.membership }}</dd>
+      <dt>Admin rights</dt>
+      <dd>
+        {% if chat.rights_checked_at is none %}not checked yet
+        {% else %}
+          pin {{ '✓' if chat.can_pin else '✗' }}, delete {{ '✓' if chat.can_delete else '✗' }}
+          <span class="muted">(checked {{ chat.rights_checked_at|ago }})</span>
+        {% endif %}
+        {% if chat.missing_rights() %}<div class="error-text small">Missing: {{ chat.missing_rights()|join(", ") }}. Make the bot an admin with “Pin messages”.</div>{% endif %}
+      </dd>
+      {% if chat.added_by_name %}<dt>Added by</dt><dd>{{ chat.added_by_name }}</dd>{% endif %}
+      <dt>First seen</dt><dd>{{ chat.created_at|ts }}</dd>
+      <dt>Messages</dt><dd>{{ live_count }} live, {{ import_count }} imported</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h2>People</h2>
+    <p class="muted small">Names and aliases are shared by every chat; open someone to rename or merge them.</p>
+    {% if members %}
+      <ul class="plain members">
+        {% for member in members %}
+          <li>
+            <div><a href="/people/{{ member.person_id }}"><strong>{{ member.display_name }}</strong></a> <span class="muted">{{ member.handle }}{% if member.is_bot %} · bot{% endif %}{% if member.source == "import" %} · only in the import{% endif %}{% if member.export_name and member.export_name != member.display_name %} · export: {{ member.export_name }}{% endif %}</span></div>
+            <div class="alias-row">
+              {% for alias in member.aliases %}
+                <form method="post" action="/chats/{{ chat.chat_id }}/members/{{ member.user_id }}/aliases/delete" class="chip">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="alias" value="{{ alias }}">
+                  {{ alias }} <button type="submit" class="link" title="Remove alias">×</button>
+                </form>
+              {% endfor %}
+              <form method="post" action="/chats/{{ chat.chat_id }}/members/{{ member.user_id }}/aliases" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input name="alias" placeholder="add alias" maxlength="64" class="small-input">
+                <button type="submit" class="small">Add</button>
+              </form>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Nobody seen yet.</p>
+    {% endif %}
+  </section>
+</div>
+
+{% block extra_sections %}
+  {% if digest is defined %}{% include "_chat_memory.html" %}{% endif %}
+  {% if history_count is defined %}{% include "_chat_history.html" %}{% endif %}
+  {% if board is defined %}{% include "_chat_board.html" %}{% endif %}
+  {% if imports is defined %}{% include "_chat_imports.html" %}{% endif %}
+{% endblock %}
+
+<section class="card">
+  <h2>Messages</h2>
+  <form class="filters" hx-get="/chats/{{ chat.chat_id }}/messages" hx-target="#messages" hx-push-url="false" action="/chats/{{ chat.chat_id }}" method="get">
+    <input type="search" name="q" value="{{ filters.q }}" placeholder="Search text">
+    <select name="sender">
+      <option value="">Anyone</option>
+      {% for sender_id, name, count in senders %}
+        <option value="{{ sender_id }}" {{ 'selected' if filters.sender == sender_id|string else '' }}>{{ name }} ({{ count }})</option>
+      {% endfor %}
+    </select>
+    <select name="source">
+      <option value="">Live and imported</option>
+      <option value="live" {{ 'selected' if filters.source == 'live' else '' }}>Live</option>
+      <option value="import" {{ 'selected' if filters.source == 'import' else '' }}>Imported</option>
+    </select>
+    <label class="small">From <input type="date" name="since" value="{{ filters.since }}"></label>
+    <label class="small">To <input type="date" name="until" value="{{ filters.until }}"></label>
+    <button type="submit">Filter</button>
+  </form>
+  <div id="messages">{% include "_messages.html" %}</div>
+</section>
+
+<section class="card danger-zone">
+  <h2>Delete data</h2>
+  <p class="muted">Deletion is permanent. You'll see what is affected before anything is deleted. Messages are kept until you delete them here; nothing deletes them automatically. Deleting messages leaves the digest, memory notes and history summaries made from them; delete those separately. Messages can't be deleted while an import of this group is running or paused.</p>
+  <form method="post" action="/chats/{{ chat.chat_id }}/delete-messages" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="scope">
+      <option value="age">Messages older than N days</option>
+      <option value="older">Messages from before a date</option>
+      <option value="all">All messages</option>
+    </select>
+    <label class="small">N days <input type="number" name="days" min="1" max="36500" step="1" inputmode="numeric" style="width: 6em"></label>
+    <label class="small">Date <input type="date" name="before"></label>
+    <select name="source">
+      <option value="">Live and imported</option>
+      <option value="live">Live only</option>
+      <option value="import">Imported only</option>
+    </select>
+    <button type="submit" class="danger">Review deletion</button>
+  </form>
+  <div class="actions">
+    <form method="post" action="/chats/{{ chat.chat_id }}/board/clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Clear the board…</button>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/digest/clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Clear the digest…</button>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/memory-clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Delete all memory notes…</button>
+    </form>
+    <form method="post" action="/chats/{{ chat.chat_id }}/history-clear">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Delete all history summaries…</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

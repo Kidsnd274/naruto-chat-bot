@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}{{ person.display_name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/people">People</a> /</p>
+<h1>{{ person.display_name }}</h1>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Name</h2>
+    <p class="muted small">Used in every chat, in prompts and here. Leave empty to show their Telegram name.</p>
+    <form method="post" action="/people/{{ person.id }}/name" class="filters">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input name="name" value="{{ person.name or '' }}" placeholder="{{ person.accounts[0].label if person.accounts else '' }}" maxlength="100">
+      <button type="submit" class="primary">Save</button>
+    </form>
+    {% set suggestions = person.accounts|map(attribute="export_name")|select|unique|reject("equalto", person.display_name)|list %}
+    {% if suggestions %}
+      <p class="small muted">From imports:
+        {% for name in suggestions %}
+          <form method="post" action="/people/{{ person.id }}/name" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="name" value="{{ name }}">
+            <button type="submit" class="small">Use “{{ name }}”</button>
+          </form>
+        {% endfor %}
+      </p>
+    {% endif %}
+
+    <h2>Aliases</h2>
+    <p class="muted small">Nicknames the bot knows them by, in every chat.</p>
+    <div class="alias-row">
+      {% for alias in person.aliases %}
+        <form method="post" action="/people/{{ person.id }}/aliases/delete" class="chip">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="alias" value="{{ alias }}">
+          {{ alias }} <button type="submit" class="link" title="Remove alias">×</button>
+        </form>
+      {% endfor %}
+      <form method="post" action="/people/{{ person.id }}/aliases" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input name="alias" placeholder="add alias" maxlength="64" class="small-input">
+        <button type="submit" class="small">Add</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Chats</h2>
+    {% if chats %}
+      <ul class="plain">
+        {% for chat_id, title, count in chats %}
+          <li class="row-actions"><a href="/chats/{{ chat_id }}">{{ title }}</a><span class="muted small">{{ count }} messages</span></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Not in any chat's roster.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Telegram accounts</h2>
+  <div class="table-wrap">
+  <table class="compact">
+    <thead><tr><th>User ID</th><th>Telegram name</th><th>@username</th><th>Name in exports</th><th>First seen</th><th>Last seen</th><th></th></tr></thead>
+    <tbody>
+    {% for a in person.accounts %}
+      <tr>
+        <td class="mono small">{{ a.user_id }}</td>
+        <td>{{ a.telegram_name or "—" }}{% if a.is_bot %} <span class="badge muted-badge">bot</span>{% endif %}</td>
+        <td class="small">{{ a.handle }}</td>
+        <td class="small">{{ a.export_name or "—" }}</td>
+        <td class="small nowrap">{{ a.first_seen_at|ts("%d %b %Y") }}</td>
+        <td class="small nowrap">{{ a.last_seen_at|ago }}</td>
+        <td>
+          {% if person.accounts|length > 1 %}
+            <form method="post" action="/people/{{ person.id }}/split" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="user_id" value="{{ a.user_id }}">
+              <button type="submit" class="small">Make a separate person</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+{% if others %}
+<section class="card">
+  <h2>Merge</h2>
+  <p class="muted small">Same human as someone else (for example a second Telegram account)? Merge this person into them. You'll confirm first.</p>
+  <form method="post" action="/people/{{ person.id }}/merge" class="filters">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="target" required>
+      <option value="">Merge into…</option>
+      {% for other in others %}
+        <option value="{{ other.id }}">{{ other.display_name }}{% if other.username %} (@{{ other.username }}){% endif %}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Review merge</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

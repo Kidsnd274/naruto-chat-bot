@@ -1,1 +1,1 @@
-docker run -v %cd%/config.json:/app/config.json --env-file .env naruto-chat-bot
+docker run -d --name naruto-chat-bot --env-file .env -p 127.0.0.1:8765:8765 -v naruto-data:/data naruto-chat-bot

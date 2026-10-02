@@ -386,7 +386,8 @@ SETTINGS: tuple[Setting, ...] = (
     # --------------------------------------------------------------- agent
     Setting("agent.max_model_requests", "agent", "Model requests per run",
             "Upper limit on model requests for one response, including the final "
-            "answer. The last request gets no more tool results.",
+            "answer. The last request gets no more tool results. A hand-over to "
+            "another mode doesn't count.",
             "int", 4, min=1, max=20),
     Setting("agent.max_tool_calls", "agent", "Tool calls per run",
             "Upper limit on tool calls for one response.",

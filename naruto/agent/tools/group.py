@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 MAX_POLL_OPTIONS = 10
 # After posting something the group sees, the model may send nothing more.
 NOTHING_TO_ADD = "If there's nothing to add, answer with just [NO REPLY]; otherwise keep it short."
+# The tools whose result the group sees, so a run may end after them without an answer.
+POSTING_TOOLS = ("update_board", "propose_plan", "create_poll")
 
 
 async def update_board(ctx: ToolContext, args: dict) -> str:

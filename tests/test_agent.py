@@ -271,6 +271,43 @@ async def test_last_request_gets_no_more_tools(services, wired, bot, chat):
     assert run.status == "error" and run.tool_calls == 1
 
 
+async def test_a_hand_over_does_not_use_up_a_request(services, wired, bot, chat):
+    services.settings.set("agent.max_model_requests", 2, actor="t")
+    services.llm = ScriptedLLM([tool_call("use_skill", {"skill": "plan"})],
+                               [tool_call("search_chat", {"query": "friday"})],
+                               "Friday it is.")
+    await say(wired, bot, message(6, "@naruto_bot what's the plan for friday?"))
+    assert len(services.llm.calls) == 3
+    assert tool_results(services.llm, 2)[0].endswith(LAST_CALL_NOTE)
+    assert bot.sent[-1]["text"] == "Friday it is."
+    run = services.runs.recent()[0][0]
+    assert run.status == "ok" and run.skill == "plan" and run.model_requests == 3
+
+
+async def test_a_post_on_the_last_request_still_runs(services, wired, bot, chat):
+    services.settings.set("agent.max_model_requests", 2, actor="t")
+    services.llm = ScriptedLLM(
+        [tool_call("search_chat", {"query": "friday"}, "c1")],
+        [tool_call("update_board", {"section": "plans", "items": [{"text": "Poker Fri"}]}, "c2"),
+         tool_call("search_chat", {"query": "venue"}, "c3")])
+    await say(wired, bot, message(6, "@naruto_bot sum up friday"))
+    assert len(services.llm.calls) == 2
+    assert [i.text for i in services.boards.get(GROUP_ID).items("plans")] == ["Poker Fri"]
+    assert STUCK_TEXT not in [sent["text"] for sent in bot.sent]
+    run = services.runs.recent()[0][0]
+    assert run.status == "ok" and run.tool_calls == 2  # the second search didn't run
+
+
+async def test_a_failed_post_on_the_last_request_is_stuck(services, wired, bot, chat):
+    services.settings.set("agent.max_model_requests", 1, actor="t")
+    services.llm = ScriptedLLM(
+        [tool_call("update_board", {"section": "gossip", "items": ["Poker Fri"]})])
+    await say(wired, bot, message(6, "@naruto_bot sum up friday"))
+    assert bot.sent[-1]["text"] == STUCK_TEXT
+    run = services.runs.recent()[0][0]
+    assert run.status == "error" and run.tool_steps[0]["error"]
+
+
 async def test_tool_call_limit(services, wired, bot, chat):
     services.settings.set("agent.max_tool_calls", 1, actor="t")
     services.llm = ScriptedLLM([tool_call("search_chat", {"query": "a"}, "c1"),

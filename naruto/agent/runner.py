@@ -3,8 +3,10 @@
 Limits come from the settings (agent.*): model requests per run, tool calls
 per run and a deadline that includes waiting for the model server. The last
 allowed request is reserved for the answer: its tool results say that no
-more tools are available. Every model request and tool call is traced in
-the run's ``steps``.
+more tools are available, and only the calls that post something (the
+board, a plan, a poll) still run on it. A hand-over to another skill (use_skill) does no
+work of its own, so it doesn't use up a request. Every model request and
+tool call is traced in the run's ``steps``.
 
 Every request, follow-ups with tool results included, is kept within
 context.input_token_budget (an estimate): the oldest recent messages go
@@ -34,6 +36,7 @@ from naruto.agent.text import (
 )
 from naruto.agent.tools import RunState, ToolContext, ToolRegistry, default_registry
 from naruto.agent.tools.base import timed
+from naruto.agent.tools.group import POSTING_TOOLS
 from naruto.db.chats import Chat
 from naruto.db.messages import StoredMessage
 from naruto.llm import ChatResult, LLMError, RequestNotRun
@@ -162,6 +165,7 @@ class AgentRunner:
         result: ChatResult | None = None
         switched = False
         checked = False
+        posted = False  # the last request's posts ran
 
         while True:
             state.model_requests += 1
@@ -194,14 +198,22 @@ class AgentRunner:
                     messages.append({"role": "assistant", "content": result.text or ""})
                     messages.append({"role": "user", "content": note})
                     continue
-            if not calls or last_request:
-                if calls:
-                    logger.info("Ignoring %s tool calls on the last allowed request.", len(calls))
+            if last_request and calls:
+                # Reading can't help any more, but a post the request asked
+                # for (the board, a plan, a poll) still runs: the group sees
+                # it, so the run may end without an answer.
+                posts = [call for call in calls if call.name in POSTING_TOOLS]
+                if len(posts) < len(calls):
+                    logger.info("Ignoring %s tool calls on the last allowed request.",
+                                len(calls) - len(posts))
+                calls = posts
+            if not calls:
                 break
 
             messages.append({"role": "assistant", "content": result.text or "",
                              "tool_calls": [call.as_request_part() for call in calls]})
             switching = any(call.name == "use_skill" for call in calls) and not switched
+            acted = len(state.actions)
             for call in calls:
                 if not self._chat_enabled(request.chat):
                     # Disabled while the model was busy (or by an earlier
@@ -225,8 +237,12 @@ class AgentRunner:
                                     "arguments": call.arguments, "result": content,
                                     "error": failed, "duration_ms": elapsed()})
                 self._save_progress(state)
+            if last_request:
+                posted = len(state.actions) > acted
+                break
             if state.switch_to_skill and not switched:
                 switched = True
+                state.max_model_requests += 1  # the hand-over request did no work
                 skill = get_skill(state.switch_to_skill)
                 since = state.switch_since or since
                 reasoning = settings[f"skills.{skill.name}.reasoning"]
@@ -268,7 +284,7 @@ class AgentRunner:
                                     result=result, totals=totals)
         should_reply, text = clean_model_output(answer, request.bot.name)
         if not text:
-            if result.tool_calls or (state.tool_calls and not state.actions):
+            if (result.tool_calls and not posted) or (state.tool_calls and not state.actions):
                 # Still wanted tools when it had to answer.
                 return self._finish(state, status="error", text=STUCK_TEXT, fallback=True,
                                     error="No answer after the last allowed request",

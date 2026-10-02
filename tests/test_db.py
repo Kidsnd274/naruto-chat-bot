@@ -3,6 +3,7 @@
 import pytest
 
 from naruto.db import open_database
+from naruto.db.board import BoardRepository, format_lines, parse_lines
 from naruto.db.chats import ChatRepository, infer_chat_type
 from naruto.db.members import MemberRepository
 from naruto.db.people import PeopleRepository
@@ -352,3 +353,41 @@ def test_upgrade_to_13_keeps_one_summary_per_period_and_every_edit(tmp_path):
     period_columns = {row["name"] for row in upgraded.query("PRAGMA table_info(history_periods)")}
     assert {"settings_hash", "source_hash"} <= period_columns
     upgraded.close()
+
+
+# ------------------------------------------------------------------- board
+
+def test_board_folds_old_decisions_into_a_plan(db):
+    sections = ('{"plans": [{"text": "BBQ"}], "decided": [{"text": "Splitwise"}, '
+                '{"text": "Sam drives"}], "questions": [{"text": "Grill?"}]}')
+    db.execute("INSERT INTO boards (chat_id, sections, updated_at, updated_by) "
+               "VALUES (?, ?, 0, 't')", (BASIC, sections))
+    board = BoardRepository(db).get(BASIC)
+    assert [(i.text, i.done, i.details) for i in board.items("plans")] == [
+        ("BBQ", False, []), ("Decided", True, ["Splitwise", "Sam drives"])]
+    assert [i.text for i in board.items("questions")] == ["Grill?"]
+
+
+def test_board_title_is_dropped_when_the_plans_change_without_one(db):
+    boards = BoardRepository(db)
+    board = boards.set_section(BASIC, "plans", ["Fri dinner", "Sat BBQ"], actor="t",
+                               title="  📌 Dinner +  BBQ ")
+    assert board.title == "Dinner + BBQ" and board.display_title == "Dinner + BBQ"
+    assert boards.set_section(BASIC, "questions", ["Venue?"], actor="t").title == "Dinner + BBQ"
+    # Same plans (a confirmation moves one to the end): the title still fits.
+    board = boards.add_item(BASIC, "plans", "Fri dinner", done=True, details=["7pm"], actor="t")
+    assert board.title == "Dinner + BBQ" and board.items("plans")[1].details == ["7pm"]
+    board = boards.add_item(BASIC, "plans", "Sun brunch", actor="t")
+    assert board.title is None and board.display_title == "Sat BBQ · Fri dinner · Sun brunch"
+    long = boards.set_section(BASIC, "plans", [f"Plan number {i}" for i in range(9)], actor="t")
+    assert long.display_title.endswith("…") and len(long.display_title) <= 61
+
+
+def test_board_form_lines_round_trip():
+    plans = parse_lines("[x] BBQ Sat\n  - 6pm\n  • East Coast\n- Book the pit\n\n", "plans")
+    assert [(i.text, i.done, i.details) for i in plans] == [
+        ("BBQ Sat", True, ["6pm", "East Coast"]), ("Book the pit", False, [])]
+    assert format_lines(plans, "plans") == "[x] BBQ Sat\n  - 6pm\n  - East Coast\nBook the pit"
+    questions = parse_lines("@Sam Tan: driving?\nGrill?", "questions")
+    assert [(i.text, i.for_name) for i in questions] == [("driving?", "Sam Tan"), ("Grill?", None)]
+    assert format_lines(questions, "questions") == "@Sam Tan: driving?\nGrill?"

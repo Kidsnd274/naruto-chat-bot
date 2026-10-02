@@ -46,6 +46,7 @@ from naruto.agent.runner import BUSY_TEXT, DEADLINE_TEXT, FAILURE_TEXT, STUCK_TE
 from naruto.agent.tools import default_registry
 from naruto.bootstrap import Bootstrap
 from naruto.db import open_database
+from naruto.db.board import SECTION_KEYS, fold_decided
 from naruto.db.plans import CONFIRMED, PROPOSED
 from naruto.db.reminders import PENDING
 from naruto.lab.checks import (
@@ -588,9 +589,7 @@ class Sandbox:
                 services.notes.set_locked(created.id, True, actor="scenario")
         board = state.get("board") or {}
         if board:
-            sections = {section: [item if isinstance(item, dict) else {"text": item}
-                                  for item in items] for section, items in board.items()}
-            services.boards.set_sections(CHAT_ID, sections, actor="scenario")
+            services.boards.set_sections(CHAT_ID, fold_decided(dict(board)), actor="scenario")
         for reminder in state.get("reminders") or []:
             by = reminder.get("by")
             services.reminders.create(CHAT_ID, reminder["text"], _when(reminder["due"], tz),
@@ -632,9 +631,8 @@ class Sandbox:
         services = self.services
         board = services.boards.get(CHAT_ID)
         return {
-            "board": {section: [{"text": item.text, "done": item.done}
-                                for item in board.items(section)]
-                      for section in ("plans", "decided", "questions")},
+            "board": {section: [item.as_dict() for item in board.items(section)]
+                      for section in SECTION_KEYS},
             "reminders": [{"id": r.id, "text": r.text, "due_at": r.due_at}
                           for r in services.reminders.for_chat(CHAT_ID, status=PENDING)],
             "notes": [{"id": n.id, "text": n.content, "category": n.category,

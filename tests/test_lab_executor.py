@@ -8,6 +8,7 @@ import pytest
 
 from fakes import ScriptedLLM, tool_call
 from naruto.db.lab import LabRepository
+from naruto.db.migrations import MIGRATIONS
 from naruto.lab import config
 from naruto.lab.service import LabError, LabService
 from naruto.llm import ChatResult
@@ -58,7 +59,8 @@ def test_a_run_freezes_the_baseline_and_its_model(lab, services):
     assert run.baseline["persona.prompt"] == "Persona v1"
     assert (run.model_endpoint, run.model_name) == ("http://localhost:8080/v1", "test-model")
     assert run.spec["budget"] == {"attempts": 10, "model_requests": 300, "hours": 4}
-    assert run.code_fingerprint == config.code_fingerprint() and run.schema_version == 13
+    assert run.code_fingerprint == config.code_fingerprint()
+    assert run.schema_version == len(MIGRATIONS)
     services.settings.set("persona.prompt", "Persona v2", actor="owner")
     assert lab.get_run(run.id).baseline["persona.prompt"] == "Persona v1"
     assert lab.run_state(run)["state"] == "idle"

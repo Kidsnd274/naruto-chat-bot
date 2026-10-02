@@ -34,7 +34,7 @@ class Plan:
         return cls(**data)
 
     def one_line(self) -> str:
-        """For the board: the title plus the details."""
+        """For the model's prompt: the title plus the details."""
         if not self.items:
             return self.title
         return f"{self.title}: {'; '.join(self.items)}"

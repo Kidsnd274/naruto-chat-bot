@@ -30,7 +30,7 @@ from naruto.llm import (
     split_inline_tool_calls,
 )
 from naruto.tg.access import ChatAccess
-from naruto.tg.board import BoardPublisher, render_html, render_markdown
+from naruto.tg.board import BoardPublisher, Updated, render_html, render_markdown
 from naruto.tg.plans import PlanButtons
 from naruto.tg.polls import PollTracker
 from naruto.tg.recorder import Recorder
@@ -506,8 +506,10 @@ async def test_board_is_sent_pinned_then_edited_in_place(services, bot, chat):
     endpoint, payload = bot.api_calls[0]
     assert endpoint == "sendRichMessage"
     markdown = payload["rich_message"]["markdown"]
-    assert "### 🗓 Plans" in markdown and "- ☑ BBQ Sat 6pm" in markdown
-    assert "- ☐ Book the pit \\(Sam\\)" not in markdown and "Book the pit (Sam)" in markdown
+    assert markdown.startswith("📌 **BBQ Sat 6pm · Book the pit (Sam)**")
+    assert "**🗓 Plans**" in markdown and "- **BBQ Sat 6pm** · ✅ confirmed" in markdown
+    assert "- **Book the pit (Sam)** · ⏳ not locked yet" in markdown
+    assert '<footer><sub>updated <tg-time unix="' in markdown
     board = services.boards.get(GROUP_ID)
     assert board.format == "rich" and board.pinned and bot.pins == [(GROUP_ID, board.message_id)]
 
@@ -522,26 +524,57 @@ async def test_board_is_sent_pinned_then_edited_in_place(services, bot, chat):
 async def test_board_falls_back_to_html_and_reports_missing_pin_right(services, bot, chat):
     bot.fail_rich = True
     bot.fail_pin = True
-    services.boards.set_section(GROUP_ID, "decided", ["Split costs <evenly>"], actor="t")
+    services.boards.set_section(GROUP_ID, "questions", ["Split costs <evenly>?"], actor="t")
     note = await BoardPublisher(services).publish(bot, chat)
     assert note.startswith("Sent the board, but couldn't pin it")
     sent = bot.sent[-1]
-    assert sent["parse_mode"] == "HTML" and "• Split costs &lt;evenly&gt;" in sent["text"]
+    assert sent["parse_mode"] == "HTML" and "• Split costs &lt;evenly&gt;?" in sent["text"]
     board = services.boards.get(GROUP_ID)
     assert board.format == "html" and not board.pinned
 
-    services.boards.set_section(GROUP_ID, "decided", ["Split costs"], actor="t")
+    services.boards.set_section(GROUP_ID, "questions", ["Split costs?"], actor="t")
     assert await BoardPublisher(services).publish(bot, chat) == "Updated the pinned board."
     assert bot.edits[-1]["parse_mode"] == "HTML"
 
 
+UPDATED = Updated(1_790_000_000, "22 Sep, 18:13")
+TIME = '<tg-time unix="1790000000" format="r">22 Sep, 18:13</tg-time>'
+
+
 def test_board_rendering_and_prompt(services, chat):
-    board = services.boards.set_section(GROUP_ID, "plans", [{"text": "BBQ", "done": True}, "Pit"],
-                                        actor="t")
-    assert render_html(board, "1 Oct").splitlines()[2:] == ["<b>🗓 Plans</b>", "☑ BBQ", "☐ Pit"]
+    board = services.boards.set_section(
+        GROUP_ID, "plans", [{"text": "BBQ", "done": True, "details": ["Sat 6pm"]}, "Pit"],
+        actor="t")
+    assert render_html(board, UPDATED).splitlines() == [
+        "📌 <b>BBQ · Pit</b>", "", "<b>🗓 Plans</b>", "• <b>BBQ</b> · ✅ confirmed",
+        "    ◦ Sat 6pm", "• <b>Pit</b> · ⏳ not locked yet", "", f"<i>updated {TIME}</i>"]
     empty = services.boards.get(-1)
-    assert "Nothing on it yet" in render_markdown(empty, "1 Oct")
-    assert board.as_text() == "🗓 Plans (plans)\n  ☑ BBQ\n  ☐ Pit"
+    assert render_markdown(empty, UPDATED).splitlines()[:3] == [
+        "📌 **Board**", "", "Nothing on it yet. Ask me to add plans or open questions."]
+    assert board.as_text() == "🗓 Plans (plans)\n  ☑ BBQ\n     - Sat 6pm\n  ☐ Pit"
+
+
+def test_rich_board_layout(services, chat):
+    services.boards.set_section(GROUP_ID, "plans", [
+        {"text": "Fri · Dinner + poker", "details": ["Venue TBC", "$10 buy-in"]},
+        {"text": "Sat · BBQ", "done": True}], actor="t", title="📌 Fri dinner + poker · Sat BBQ")
+    board = services.boards.set_section(GROUP_ID, "questions", [
+        {"text": "Driving or drinking?", "for_name": "Bob", "for_user_id": BOB.id},
+        {"text": "Venue?", "for_name": "Somebody new"}, "Time?"], actor="t")
+    assert render_markdown(board, UPDATED).splitlines() == [
+        "📌 **Fri dinner + poker · Sat BBQ**", "",
+        "**🗓 Plans**",
+        "- **Fri · Dinner + poker** · ⏳ not locked yet",
+        "  - Venue TBC",
+        "  - \\$10 buy-in",
+        "- **Sat · BBQ** · ✅ confirmed", "",
+        "**❓ Open questions**",
+        f"- [Bob](tg://user?id={BOB.id}): Driving or drinking?",
+        "- Somebody new: Venue?",
+        "- Time?", "",
+        f"<footer><sub>updated {TIME}</sub></footer>"]
+    assert board.as_text().splitlines()[0] == "Title: Fri dinner + poker · Sat BBQ"
+    assert "  • Driving or drinking? (for Bob)" in board.as_text()
 
 
 async def test_board_and_open_plans_come_with_the_request(services, wired, bot, chat):
@@ -588,8 +621,8 @@ async def test_plan_is_proposed_and_confirmed_onto_the_board(services, wired, bo
     await buttons_handler.on_callback(SimpleNamespace(callback_query=query), context(bot))
     assert services.plans.get(1).status == "confirmed"
     assert services.plans.get(1).decided_by_name == "Bob"
-    assert [(i.text, i.done) for i in services.boards.get(GROUP_ID).items("plans")] == [
-        ("BBQ: Sat 6pm; East Coast", True)]
+    assert [(i.text, i.done, i.details) for i in services.boards.get(GROUP_ID).items("plans")] \
+        == [("BBQ", True, ["Sat 6pm", "East Coast"])]
     assert "Confirmed" in answers[0] and "✅ Confirmed by Bob" in answers[1]
     assert "✅ Confirmed by Bob" in services.messages.get_live(GROUP_ID, plan.message_id).text
     assert bot.api_calls[-1][0] == "sendRichMessage"
@@ -645,7 +678,7 @@ async def test_the_board_stays_within_one_telegram_message(services, bot, chat):
     assert services.boards.get(GROUP_ID).is_empty  # nothing half-saved
 
     _, results = await run_tools(services, bot, chat, tool_call(
-        "update_board", {"section": "decided", "items": [{"text": t} for t in long_items]}))
+        "update_board", {"section": "questions", "items": [{"text": t} for t in long_items]}))
     assert results[0].startswith("Error: Not changed: The board would be too long")
     assert bot.api_calls == [] and bot.sent == []
 

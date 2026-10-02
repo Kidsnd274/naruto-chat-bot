@@ -3,9 +3,14 @@
 The board is sent as a Telegram rich message (Bot API 10.1, sent through
 do_api_request because python-telegram-bot 22.8 predates it). If Telegram
 refuses rich messages, it falls back to an HTML message and remembers that.
+
+Layout: the title (also the pin text in apps that preview rich messages),
+then each plan in bold with its status and its details as bullets, then
+the open questions (mentioning who each is for), then a small "updated
+5 minutes ago" that each app shows in the reader's own time.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from html import escape
 import logging
@@ -13,7 +18,7 @@ import re
 
 from telegram.error import BadRequest, ChatMigrated, Forbidden, TelegramError
 
-from naruto.db.board import SECTION_KEYS, SECTIONS, Board
+from naruto.db.board import SECTION_KEYS, SECTIONS, Board, BoardItem
 from naruto.db.chats import Chat
 from naruto.services import Services
 from naruto.tg.access import note_pin
@@ -23,44 +28,88 @@ logger = logging.getLogger(__name__)
 RICH = "rich"
 HTML = "html"
 TELEGRAM_LIMIT = 4096  # characters in one message
-EMPTY_TEXT = "Nothing on it yet. Ask me to add plans, decisions or open questions."
-_MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>|~#])")
+EMPTY_TEXT = "Nothing on it yet. Ask me to add plans or open questions."
+CONFIRMED = "✅ confirmed"
+NOT_LOCKED = "⏳ not locked yet"
+HEADINGS = dict(SECTIONS)
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>|~#$=])")
 
 
-def _mark(section: str, done: bool) -> str:
-    if section == "plans":
-        return "☑" if done else "☐"
-    return "•"
+@dataclass(frozen=True)
+class Updated:
+    """When the board last changed: apps show ``unix`` relative to now;
+    ``text`` (local time) is the fallback."""
+    unix: int
+    text: str
 
 
-def render_markdown(board: Board, updated: str) -> str:
-    lines = [f"📌 **Board** · updated {updated}"]
+def _md(text: str) -> str:
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", text)
+
+
+def _time(updated: Updated) -> str:
+    return (f'updated <tg-time unix="{updated.unix}" format="r">{escape(updated.text)}'
+            "</tg-time>")
+
+
+def _hidden_note(hidden: int) -> str:
+    return f"… and {hidden} more (too long to show; see the web admin)"
+
+
+def _status(plan: BoardItem) -> str:
+    return CONFIRMED if plan.done else NOT_LOCKED
+
+
+def render_markdown(board: Board, updated: Updated, hidden: int = 0) -> str:
+    lines = [f"📌 **{_md(board.display_title)}**"]
     if board.is_empty:
-        return f"{lines[0]}\n\n{EMPTY_TEXT}"
-    for key, heading in SECTIONS:
-        items = board.items(key)
-        if not items:
-            continue
-        lines += ["", f"### {heading}"]
-        lines += [f"- {_mark(key, item.done)} {_MARKDOWN_SPECIAL.sub(r'\\\1', item.text)}"
-                  for item in items]
+        lines += ["", EMPTY_TEXT]
+    if board.items("plans"):
+        lines += ["", f"**{HEADINGS['plans']}**"]
+        for plan in board.items("plans"):
+            lines.append(f"- **{_md(plan.text)}** · {_status(plan)}")
+            lines.extend(f"  - {_md(detail)}" for detail in plan.details)
+    if board.items("questions"):
+        lines += ["", f"**{HEADINGS['questions']}**"]
+        for question in board.items("questions"):
+            who = ""
+            if question.for_user_id:
+                who = f"[{_md(question.for_name or 'them')}](tg://user?id={question.for_user_id}): "
+            elif question.for_name:
+                who = f"{_md(question.for_name)}: "
+            lines.append(f"- {who}{_md(question.text)}")
+    if hidden:
+        lines += ["", f"_{_hidden_note(hidden)}_"]
+    lines += ["", f"<footer><sub>{_time(updated)}</sub></footer>"]
     return "\n".join(lines)
 
 
-def render_html(board: Board, updated: str) -> str:
-    lines = [f"📌 <b>Board</b> · updated {escape(updated)}"]
+def render_html(board: Board, updated: Updated, hidden: int = 0) -> str:
+    lines = [f"📌 <b>{escape(board.display_title)}</b>"]
     if board.is_empty:
-        return f"{lines[0]}\n\n{EMPTY_TEXT}"
-    for key, heading in SECTIONS:
-        items = board.items(key)
-        if not items:
-            continue
-        lines += ["", f"<b>{heading}</b>"]
-        lines += [f"{_mark(key, item.done)} {escape(item.text)}" for item in items]
+        lines += ["", EMPTY_TEXT]
+    if board.items("plans"):
+        lines += ["", f"<b>{HEADINGS['plans']}</b>"]
+        for plan in board.items("plans"):
+            lines.append(f"• <b>{escape(plan.text)}</b> · {_status(plan)}")
+            lines.extend(f"    ◦ {escape(detail)}" for detail in plan.details)
+    if board.items("questions"):
+        lines += ["", f"<b>{HEADINGS['questions']}</b>"]
+        for question in board.items("questions"):
+            who = ""
+            if question.for_user_id:
+                who = (f'<a href="tg://user?id={question.for_user_id}">'
+                       f"{escape(question.for_name or 'them')}</a>: ")
+            elif question.for_name:
+                who = f"{escape(question.for_name)}: "
+            lines.append(f"• {who}{escape(question.text)}")
+    if hidden:
+        lines += ["", f"<i>{_hidden_note(hidden)}</i>"]
+    lines += ["", f"<i>{_time(updated)}</i>"]
     return "\n".join(lines)
 
 
-def fit_message(board: Board, render, updated: str, limit: int = TELEGRAM_LIMIT) -> str:
+def fit_message(board: Board, render, updated: Updated, limit: int = TELEGRAM_LIMIT) -> str:
     """The rendered board, cut to fit one Telegram message. Saving already
     keeps the board small enough (MAX_BOARD_CHARS); this covers boards saved
     before that check and heavy escaping. The last items are left out."""
@@ -71,8 +120,7 @@ def fit_message(board: Board, render, updated: str, limit: int = TELEGRAM_LIMIT)
         last = next(key for key in reversed(SECTION_KEYS) if sections[key])
         sections[last].pop()
         hidden += 1
-        text = (render(replace(board, sections=sections), updated)
-                + f"\n\n… and {hidden} more (too long to show; see the web admin)")
+        text = render(replace(board, sections=sections), updated, hidden)
     return text
 
 
@@ -90,11 +138,10 @@ class BoardPublisher:
     def __init__(self, services: Services):
         self.services = services
 
-    def _updated(self, board: Board) -> str:
-        tz = self.services.timezone()
-        when = datetime.fromtimestamp(board.updated_at or 0, tz) if board.updated_at \
-            else datetime.fromtimestamp(self.services.time(), tz)
-        return when.strftime("%d %b, %H:%M")
+    def _updated(self, board: Board) -> Updated:
+        unix = int(board.updated_at or self.services.time())
+        when = datetime.fromtimestamp(unix, self.services.timezone())
+        return Updated(unix, when.strftime("%d %b, %H:%M"))
 
     async def publish(self, telegram, chat: Chat, *, fresh: bool = False) -> str:
         """Show the current board in the chat. Edits the existing board

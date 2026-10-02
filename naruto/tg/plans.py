@@ -87,7 +87,8 @@ class PlanButtons:
             await query.answer("This plan was already confirmed or replaced.")
             return
         try:
-            self.services.boards.add_item(chat.chat_id, "plans", plan.one_line(), done=True,
+            self.services.boards.add_item(chat.chat_id, "plans", plan.title, done=True,
+                                          details=plan.items,
                                           actor=f"plan {plan.id} confirmed by {name}")
             on_board = True
         except BoardFull as exc:

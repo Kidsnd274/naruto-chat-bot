@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from telegram.error import TelegramError
 
-from naruto.db.board import SECTIONS, BoardFull, format_lines, parse_lines
+from naruto.db.board import SECTIONS, BoardFull, BoardItem, format_lines, parse_lines
 from naruto.db.chats import Chat
+from naruto.db.members import match_members
 from naruto.services import Services
 from naruto.tg.board import BoardPublisher
 from naruto.web.auth import require_admin
@@ -23,7 +24,7 @@ def chat_board(services: Services, chat: Chat) -> dict:
     board = services.boards.get(chat.chat_id)
     return {
         "board": board,
-        "board_sections": [(key, heading, format_lines(board.items(key)))
+        "board_sections": [(key, heading, format_lines(board.items(key), key))
                            for key, heading in SECTIONS],
         "plans": services.plans.for_chat(chat.chat_id, limit=10),
     }
@@ -34,6 +35,18 @@ def _chat(services: Services, chat_id: int) -> Chat:
     if chat is None:
         raise HTTPException(status_code=404, detail="Unknown chat.")
     return chat
+
+
+def _with_people(services: Services, chat: Chat, items: list[BoardItem]) -> list[BoardItem]:
+    """Questions "for" someone get their user ID when exactly one member
+    has that name, so the board can mention them."""
+    members = [m for m in services.members.list(chat.chat_id) if not m.is_bot]
+    for item in items:
+        found = {m.person_id: m for m in match_members(members, item.for_name or "")}
+        if len(found) == 1:
+            member = next(iter(found.values()))
+            item.for_user_id, item.for_name = member.user_id, member.display_name
+    return items
 
 
 def _back(chat: Chat) -> RedirectResponse:
@@ -62,9 +75,10 @@ async def save_board(request: Request, chat_id: int):
     chat = _chat(services, chat_id)
     form = await request.form()
     try:
-        services.boards.set_sections(
-            chat.chat_id, {key: parse_lines(str(form.get(key) or "")) for key, _ in SECTIONS},
-            actor=ACTOR)
+        sections = {key: parse_lines(str(form.get(key) or ""), key) for key, _ in SECTIONS}
+        sections["questions"] = _with_people(services, chat, sections["questions"])
+        services.boards.set_sections(chat.chat_id, sections, actor=ACTOR,
+                                     title=str(form.get("title") or ""))
     except BoardFull as exc:
         flash(request, f"Not saved: {exc}", "error")
         return _back(chat)

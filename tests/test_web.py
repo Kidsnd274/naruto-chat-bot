@@ -688,16 +688,20 @@ def test_board_edit_publish_and_clear(admin, chat, services):
     page = admin.client.get(f"/chats/{CHAT}").text
     assert 'id="board"' in page and "Not sent to the chat yet." in page
 
-    response = admin.post(f"/chats/{CHAT}/board", {"plans": "[x] BBQ Sat\n- Book the pit",
-                                                   "decided": "", "questions": "Grill?",
-                                                   "publish": "1"})
+    response = admin.post(f"/chats/{CHAT}/board", {
+        "title": "📌 BBQ weekend", "plans": "[x] BBQ Sat\n  - 6pm, East Coast\n- Book the pit",
+        "questions": "Grill?\n@alice: Bringing the drinks?", "publish": "1"})
     assert response.status_code == 303
     board = services.boards.get(CHAT)
-    assert [(i.text, i.done) for i in board.items("plans")] == [("BBQ Sat", True),
-                                                                ("Book the pit", False)]
+    assert board.title == "BBQ weekend"
+    assert [(i.text, i.done, i.details) for i in board.items("plans")] == [
+        ("BBQ Sat", True, ["6pm, East Coast"]), ("Book the pit", False, [])]
+    asked = board.items("questions")[1]
+    assert (asked.text, asked.for_name, asked.for_user_id) == ("Bringing the drinks?", "Alice", 7)
     assert board.pinned and bot.api_calls[0][0] == "sendRichMessage"
     page = admin.client.get(f"/chats/{CHAT}").text
-    assert "Sent and pinned the board." in page and "[x] BBQ Sat" in page
+    assert "Sent and pinned the board." in page and "[x] BBQ Sat\n  - 6pm, East Coast" in page
+    assert "@Alice: Bringing the drinks?" in page
 
     admin.post(f"/chats/{CHAT}/board/publish", {"fresh": "1"})
     assert len(bot.pins) == 2 and bot.unpins  # a new pinned board replaces the old one
@@ -709,9 +713,9 @@ def test_board_edit_publish_and_clear(admin, chat, services):
 
 
 def test_board_save_without_the_bot(admin, chat, services):
-    admin.post(f"/chats/{CHAT}/board", {"plans": "", "decided": "Splitwise", "questions": "",
+    admin.post(f"/chats/{CHAT}/board", {"plans": "", "questions": "Splitwise?",
                                         "publish": "1"})
-    assert [i.text for i in services.boards.get(CHAT).items("decided")] == ["Splitwise"]
+    assert [i.text for i in services.boards.get(CHAT).items("questions")] == ["Splitwise?"]
     assert "the board wasn&#39;t sent" in admin.client.get(f"/chats/{CHAT}").text
 
 

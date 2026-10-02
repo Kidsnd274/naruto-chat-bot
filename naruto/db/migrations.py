@@ -934,6 +934,13 @@ ALTER TABLE history_periods ADD COLUMN settings_hash TEXT;
 ALTER TABLE history_periods ADD COLUMN source_hash TEXT;
 """
 
+_V14_BOARD_TITLE = """
+-- The board's first line, also shown in the pin bar. NULL: built from the
+-- plan names. (Decisions now live under their plan; boards that still have
+-- a "decided" section are folded into a "Decided" plan when read.)
+ALTER TABLE boards ADD COLUMN title TEXT;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -948,6 +955,7 @@ MIGRATIONS: list[str] = [
     _V11_HISTORY,
     _V12_LAB,
     _V13_KEEP_MESSAGES,
+    _V14_BOARD_TITLE,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

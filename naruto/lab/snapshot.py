@@ -16,6 +16,7 @@ from datetime import datetime
 import json
 
 from naruto import markers
+from naruto.db.board import SECTION_KEYS
 from naruto.db.plans import CONFIRMED, PROPOSED
 from naruto.db.reminders import PENDING
 from naruto.lab.scenario import MEDIA_KINDS, Scenario, parse_scenario
@@ -142,9 +143,8 @@ def dump_chat(services, chat_id: int, messages, *, images: dict[int, bytes] | No
         state["notes"] = notes
     board = services.boards.get(chat_id)
     if not board.is_empty:
-        state["board"] = {section: [{"text": i.text, "done": i.done} for i in board.items(section)]
-                          for section in ("plans", "decided", "questions")
-                          if board.items(section)}
+        state["board"] = {section: [item.as_dict() for item in board.items(section)]
+                          for section in SECTION_KEYS if board.items(section)}
     reminders = [{"due": _iso(r.due_at, tz), "text": r.text}
                  for r in services.reminders.for_chat(chat_id, status=PENDING)]
     if reminders:

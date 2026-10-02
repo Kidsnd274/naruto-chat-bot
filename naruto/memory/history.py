@@ -1,6 +1,6 @@
 """History digests: dated summaries of past periods
-(plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md, simplified by
-plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md). The original messages
+(plans/done/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md, simplified by
+plans/done/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md). The original messages
 are kept until the owner deletes them; a summary is a convenience over them.
 
 - plan_periods(): calendar months, weeks from Monday, or one range, in the

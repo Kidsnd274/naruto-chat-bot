@@ -1,5 +1,5 @@
 """Import flow: upload -> preview -> choose what to keep and summarize ->
-run the stages (plans/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md).
+run the stages (plans/done/IMPORTED_HISTORY_DIGEST_TECH_PLAN.md).
 
 An import has up to two stages, each with its own status:
 
@@ -11,7 +11,7 @@ An import has up to two stages, each with its own status:
    period, straight from the uploaded file (naruto.memory.history).
 
 An import never adds memory notes or touches the rolling digest: those come
-from live chat only (plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md).
+from live chat only (plans/done/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md).
 
 A stage that keeps failing, or that the owner pauses, pauses the import: its
 uploaded file is kept for history.source_keep_days from the first pause, so

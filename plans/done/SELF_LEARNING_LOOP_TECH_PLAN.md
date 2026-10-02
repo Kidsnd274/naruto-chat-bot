@@ -1,6 +1,6 @@
 # Technical plan: the self-learning loop (prompt lab)
 
-Implements `plans/SELF_LEARNING_LOOP_PLAN.md` (the feature plan). It also replaces the model evaluation harness (`naruto/evaluation`). On 2026-10-01 the owner said they don't need that harness and would rather tune the bot for each model through this loop.
+Implements `plans/done/SELF_LEARNING_LOOP_PLAN.md` (the feature plan). It also replaces the model evaluation harness (`naruto/evaluation`). On 2026-10-01 the owner said they don't need that harness and would rather tune the bot for each model through this loop.
 
 Status: implemented on branch `self_learning_loop` (2026-10-02). See "Implementation notes" at the end for deviations and what still needs checking against the real model server.
 

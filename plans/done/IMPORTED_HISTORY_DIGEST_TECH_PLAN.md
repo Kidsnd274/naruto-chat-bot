@@ -1,6 +1,6 @@
 # Technical plan: history digests, live archiving and the model queue
 
-Implements `plans/IMPORTED_HISTORY_DIGEST_PLAN.md` (the feature plan), plus monthly archiving of live chat (owner's choice, 2026-10-01).
+Implements `plans/done/IMPORTED_HISTORY_DIGEST_PLAN.md` (the feature plan), plus monthly archiving of live chat (owner's choice, 2026-10-01).
 
 Status: all five stages implemented on branch `history_digests` (2026-10-01); see "Implementation notes" at the end for deviations and what still needs checking on the real model server.
 

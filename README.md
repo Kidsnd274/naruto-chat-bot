@@ -176,7 +176,7 @@ The manual, for you and for agents: **[docs/LAB.md](docs/LAB.md)**. It also cove
 
 The code lives in the `naruto` package: `db/` (SQLite schema and repositories), `settings/` (registry, service, one-time seed), `tg/` (Telegram handlers, recorder, approval, sending, board, plans, polls, commands, reminders), `agent/` (prompt building, the agent loop in `runner.py`, skills and `tools/`), `memory/` (digest and notes upkeep, history summaries), `web/` (FastAPI admin), `lab/` (the prompt lab: scenarios run in sandboxes), plus `llm.py` (model client with tool calls and a reply-first queue) and `media.py` (media download and conversion). Plans live in [`plans/`](plans/).
 
-Schema changes are migrations in `naruto/db/migrations.py`, applied in order at start (`PRAGMA user_version`), so an existing database is upgraded in place. Version 13 ([plan](plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md) §8) drops the old import memory columns, keeps one summary per history period (an edited duplicate is kept, detached), and makes unfinished summaries start over once.
+Schema changes are migrations in `naruto/db/migrations.py`, applied in order at start (`PRAGMA user_version`), so an existing database is upgraded in place. Version 13 ([plan](plans/done/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md) §8) drops the old import memory columns, keeps one summary per history period (an edited duplicate is kept, detached), and makes unfinished summaries start over once.
 
 ### Upgrading from the Redis version
 

@@ -648,7 +648,7 @@ CREATE INDEX history_periods_chat ON history_periods (chat_id, source, period_st
 """
 
 _V12_LAB = """
--- The prompt lab (plans/SELF_LEARNING_LOOP_TECH_PLAN.md). Runs test
+-- The prompt lab (plans/done/SELF_LEARNING_LOOP_TECH_PLAN.md). Runs test
 -- candidate configurations on scenarios in sandboxes; nothing here changes
 -- the live bot until a candidate is activated. Times are Unix seconds.
 
@@ -897,7 +897,7 @@ CREATE INDEX lab_events_run ON lab_events (run_id, id);
 """
 
 _V13_KEEP_MESSAGES = """
--- plans/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md: messages are kept until
+-- plans/done/MEMORY_SIMPLIFICATION_AND_STABILITY_PLAN.md: messages are kept until
 -- the owner deletes them, imports no longer distill memory notes, and a
 -- history period has at most one summary.
 

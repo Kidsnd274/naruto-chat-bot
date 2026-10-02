@@ -324,7 +324,7 @@ class ChatAccess:
         enabled = self.services.chats.list_by_status(ENABLED)
         web = self.services.bootstrap
         lines = [
-            "Oi! I only chat in groups. This DM is for approving groups.",
+            "I only chat in groups. This DM is for approving groups.",
             f"Enabled groups: {len(enabled)}. Pending: {len(pending)}.",
         ]
         if web.web_enabled:

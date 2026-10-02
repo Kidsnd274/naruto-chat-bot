@@ -36,16 +36,26 @@ def split_message(text: str, limit: int = CHUNK_LIMIT) -> list[str]:
     return chunks
 
 
-async def _send_one(bot, chat_id: int, text: str, reply_to: int | None) -> Message:
+def topic_of(message) -> int | None:
+    """The forum topic ``message`` is in, so the answer goes there too. In
+    other groups message_thread_id names a chain of replies, which can't be
+    sent to."""
+    if message is not None and getattr(message, "is_topic_message", False):
+        return message.message_thread_id
+    return None
+
+
+async def _send_one(bot, chat_id: int, text: str, reply_to: int | None, **options) -> Message:
     reply = (ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
              if reply_to is not None else None)
     try:
         return await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown",
-                                      reply_parameters=reply)
+                                      reply_parameters=reply, **options)
     except BadRequest as exc:
         # Usually "can't parse entities": the model wrote unbalanced Markdown.
         logger.warning("Markdown send failed (%s); sending plain text.", exc.message)
-        return await bot.send_message(chat_id=chat_id, text=text, reply_parameters=reply)
+        return await bot.send_message(chat_id=chat_id, text=text, reply_parameters=reply,
+                                      **options)
 
 
 async def send_text(
@@ -54,21 +64,30 @@ async def send_text(
     text: str,
     *,
     reply_to: int | None = None,
+    thread_id: int | None = None,
+    silent: bool = False,
     on_migrated=None,
 ) -> list[Message]:
     """Send ``text`` (split if long). Only the first chunk is a threaded
-    reply. If the group was upgraded to a supergroup, ``on_migrated(old, new)``
-    is called and the send is retried once on the new ID."""
+    reply; every chunk goes to the forum topic ``thread_id``. ``silent``
+    sends without a notification. If the group was upgraded to a supergroup,
+    ``on_migrated(old, new)`` is called and the send is retried once on the
+    new ID."""
+    options: dict = {}
+    if thread_id is not None:
+        options["message_thread_id"] = thread_id
+    if silent:
+        options["disable_notification"] = True
     sent = []
     for index, chunk in enumerate(split_message(text)):
         target_reply = reply_to if index == 0 else None
         try:
-            sent.append(await _send_one(bot, chat_id, chunk, target_reply))
+            sent.append(await _send_one(bot, chat_id, chunk, target_reply, **options))
         except ChatMigrated as exc:
             if on_migrated is not None:
                 on_migrated(chat_id, exc.new_chat_id)
             chat_id = exc.new_chat_id
-            sent.append(await _send_one(bot, chat_id, chunk, None))
+            sent.append(await _send_one(bot, chat_id, chunk, None, **options))
     return sent
 
 

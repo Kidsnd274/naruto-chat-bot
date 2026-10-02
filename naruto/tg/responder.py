@@ -28,11 +28,13 @@ from naruto.db.messages import StoredMessage
 from naruto.services import BotIdentity, Services
 from naruto.tg.progress import Progress
 from naruto.tg.recorder import GROUP_TYPES, Recorder, has_content
-from naruto.tg.sending import edit_text, send_text, split_message, typing
+from naruto.tg.sending import send_text, topic_of, typing
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["FAILURE_TEXT", "Responder", "is_trigger"]
+
+NOT_SENT_TEXT = "Sorry, I couldn't send my answer. Please try again."
 
 
 def is_trigger(message, bot: BotIdentity) -> bool:
@@ -86,20 +88,38 @@ class Responder:
                             message.message_id)
                 return
             progress = Progress(
-                telegram_bot, message.chat_id, message.message_id or None, skill=skill,
+                self.services, telegram_bot, message.chat_id, message.message_id or None,
+                skill=skill, thread_id=topic_of(message),
                 after_seconds=self.services.settings.for_chat(current.chat_id)[
                     "behaviour.progress_after_seconds"])
             try:
                 outcome = await self.run(telegram_bot, current, message, trigger, bot,
                                          skill=skill, since=since, note=note,
                                          force_reply=force_reply,
-                                         on_skill=progress.skill_changed)
+                                         on_skill=progress.skill_changed,
+                                         on_stage=progress.stage)
+            except Exception:
+                await progress.stop()
+                await self._crashed(current, progress)
+                raise
             finally:
                 await progress.stop()
             if not self.still_enabled(current, outcome):
                 await progress.discard()
                 return
             await self.deliver(telegram_bot, current, message, outcome, progress=progress)
+
+    async def _crashed(self, chat: Chat, progress: Progress) -> None:
+        """The run raised: a placeholder shows the failure rather than
+        "Pulling the plan together…" forever."""
+        if progress.message is None:
+            return
+        if self.enabled_chat(chat.chat_id) is None:
+            await progress.discard()
+            return
+        shown = await progress.show(FAILURE_TEXT)
+        if shown is not None:
+            self.recorder.record_sent(shown.chat_id, shown)
 
     def enabled_chat(self, chat_id: int) -> Chat | None:
         """The chat as stored now, if the bot may still work there."""
@@ -121,14 +141,15 @@ class Responder:
     async def run(self, telegram_bot, chat: Chat, message: Message, trigger: StoredMessage,
                   bot: BotIdentity, *, skill: str = "banter", since: int | None = None,
                   note: str | None = None, force_reply: bool = False,
-                  show_typing: bool = True, on_skill=None) -> RunOutcome:
+                  show_typing: bool = True, on_skill=None, on_stage=None) -> RunOutcome:
         """One agent run, without sending the answer. Callers that don't use
         respond() hold chat_lock() around it."""
         images = await self._images(message, trigger) if trigger.id else []
         runner = AgentRunner(self.services, telegram_bot, record_sent=self.recorder.record_sent)
         request = RunRequest(chat=chat, trigger=trigger, bot=bot, skill=skill, images=images,
                              trigger_message_id=message.message_id or None, since=since,
-                             note=note, force_reply=force_reply, on_skill=on_skill)
+                             note=note, force_reply=force_reply, on_skill=on_skill,
+                             on_stage=on_stage)
         if not show_typing:
             return await runner.run(request)
         async with typing(telegram_bot, message.chat_id):
@@ -139,45 +160,38 @@ class Responder:
 
     async def deliver(self, telegram_bot, chat: Chat, message: Message,
                       outcome: RunOutcome, *, progress: Progress | None = None) -> list[Message]:
-        if progress is not None and progress.message is not None:
-            if not outcome.text:
+        """Send the run's answer. A progress placeholder is deleted once the
+        result is in the chat; a failed run turns it into the error message,
+        which stays (plans/TELEGRAM_PERMISSIONS_AND_CHAT_CLUTTER_PLAN.md §6)."""
+        placeholder = progress is not None and progress.message is not None
+        if placeholder and outcome.fallback and outcome.text:
+            shown = await progress.show(outcome.text)
+            if shown is not None:
+                self.recorder.record_sent(shown.chat_id, shown)
+                return [shown]
+            # Couldn't edit it: the error comes anew, and the placeholder goes.
+        if not outcome.text:
+            if placeholder:
                 await progress.discard()
-                return []
-            sent = await self._replace(telegram_bot, progress, outcome.text)
-            if sent is None:  # couldn't edit it: say it anew
-                await progress.discard()
-                sent = await self._send(telegram_bot, chat, message, outcome.text,
-                                        reply=outcome.threaded and not outcome.fallback)
-        elif not outcome.text:
             return []
-        else:
+        try:
             sent = await self._send(telegram_bot, chat, message, outcome.text,
                                     reply=outcome.threaded and not outcome.fallback)
+        except TelegramError as exc:
+            if not placeholder:
+                raise
+            logger.warning("Couldn't send the answer of run %s: %s", outcome.run_id, exc)
+            self.services.runs.update(outcome.run_id,
+                                      error=f"Not sent: {type(exc).__name__}: {exc}"[:500])
+            shown = await progress.show(NOT_SENT_TEXT)
+            if shown is not None:
+                self.recorder.record_sent(shown.chat_id, shown)
+            return []
+        if placeholder:
+            await progress.discard()
         if sent and not outcome.fallback:
             self.services.runs.update(outcome.run_id,
                                       reply_message_ids=[m.message_id for m in sent])
-        return sent
-
-    async def _replace(self, telegram_bot, progress: Progress,
-                       text: str) -> list[Message] | None:
-        """Turn the placeholder into the answer (its first part; any further
-        parts follow as new messages). None if Telegram refused the edit."""
-        placeholder = progress.message
-        first, *rest = split_message(text)
-        try:
-            edited = await edit_text(telegram_bot, placeholder.chat_id, placeholder.message_id,
-                                     first)
-        except TelegramError as exc:
-            logger.info("Couldn't replace the progress message: %s", exc)
-            return None
-        sent = [edited if isinstance(edited, Message) else placeholder]
-        if isinstance(edited, Message):
-            self.recorder.record_sent(edited.chat_id, edited)
-        for chunk in rest:
-            for extra in await send_text(telegram_bot, placeholder.chat_id, chunk,
-                                         on_migrated=self.services.chats.migrate):
-                self.recorder.record_sent(extra.chat_id, extra)
-                sent.append(extra)
         return sent
 
     async def _send(self, telegram_bot, chat: Chat, message: Message, text: str,
@@ -185,6 +199,7 @@ class Responder:
         sent = await send_text(
             telegram_bot, message.chat_id, text,
             reply_to=message.message_id if reply else None,
+            thread_id=topic_of(message),
             on_migrated=self.services.chats.migrate,
         )
         for sent_message in sent:

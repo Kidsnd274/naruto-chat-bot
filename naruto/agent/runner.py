@@ -56,6 +56,9 @@ SHORTENED_NOTE = "\n…[shortened to fit the input budget]"
 MIN_TOOL_RESULT_CHARS = 400  # tool results aren't shortened below this
 BUSY_TEXT = "Sorry, I'm handling too many requests right now. Please try again in a minute."
 TRACE_TEXT_CHARS = 20_000
+# Tools that read further back in the chat: the "reading" stage.
+READING_TOOLS = ("search_chat", "get_messages_around", "get_earlier_messages",
+                 "search_history_summaries")
 # How OpenAI-compatible servers word a refused image (Halogen without a
 # vision tower, llama.cpp without an mmproj, text-only models).
 _IMAGES_REFUSED = re.compile(r"image|vision|multimodal|mmproj", re.IGNORECASE)
@@ -77,6 +80,10 @@ class RunRequest:
     note: str | None = None  # added to the current request, e.g. what a command asked for
     force_reply: bool = False  # always thread the answer to the trigger (commands)
     on_skill: Callable[[str], None] | None = None  # told the skill at the start and on hand-over
+    # Told the stage the run reaches, for the progress message: "reading" when it
+    # reads further back in the chat (the next request reads what it found),
+    # "writing" for a request after other tools, or once no tools are left.
+    on_stage: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -166,9 +173,13 @@ class AgentRunner:
         switched = False
         checked = False
         posted = False  # the last request's posts ran
+        next_stage = None  # reported when the next request starts
 
         while True:
             state.model_requests += 1
+            if next_stage:
+                self._stage(request, next_stage)
+                next_stage = None
             try:
                 self._fit(request, skill, since, builder, messages, tools, state)
                 result = await self._request(request.chat, messages, tools, reasoning, state)
@@ -214,6 +225,7 @@ class AgentRunner:
                              "tool_calls": [call.as_request_part() for call in calls]})
             switching = any(call.name == "use_skill" for call in calls) and not switched
             acted = len(state.actions)
+            read = False
             for call in calls:
                 if not self._chat_enabled(request.chat):
                     # Disabled while the model was busy (or by an earlier
@@ -230,6 +242,9 @@ class AgentRunner:
                                        "reached. Answer with what you have."), True
                 else:
                     state.tool_calls += 1
+                    if call.name in READING_TOOLS:
+                        read = True
+                        self._stage(request, "reading")
                     content, failed = await self.registry.execute(call, context, allowed,
                                                                   max_chars)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
@@ -252,9 +267,12 @@ class AgentRunner:
                 prompt, messages, allowed, tools, context = self._prepare(
                     request, skill, since, state, builder)
                 continue
-            if (state.model_requests + 1 >= state.max_model_requests
-                    or state.tool_calls >= max_tool_calls):
+            last_call = (state.model_requests + 1 >= state.max_model_requests
+                         or state.tool_calls >= max_tool_calls)
+            if last_call:
                 messages[-1]["content"] += f"\n\n{LAST_CALL_NOTE}"
+            if last_call or not read:
+                next_stage = "writing"
 
         answer, removed = strip_internal_json(result.text)
         if removed is not None and not answer and not result.tool_calls \
@@ -379,6 +397,11 @@ class AgentRunner:
         text = BUSY_TEXT if isinstance(exc, RequestNotRun) else FAILURE_TEXT
         return self._finish(state, status="error", text=text, fallback=True, error=str(exc),
                             result=result, totals=totals)
+
+    @staticmethod
+    def _stage(request: RunRequest, stage: str) -> None:
+        if request.on_stage is not None:
+            request.on_stage(stage)
 
     def _chat_enabled(self, chat: Chat) -> bool:
         current = self.services.chats.get(chat.chat_id)

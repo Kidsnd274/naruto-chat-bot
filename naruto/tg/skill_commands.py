@@ -21,7 +21,7 @@ from naruto.tg.board import BoardPublisher
 from naruto.tg.content import ephemeral_message_id, sender_of
 from naruto.tg.recorder import GROUP_TYPES
 from naruto.tg.responder import Responder
-from naruto.tg.sending import send_ephemeral, send_text, split_message
+from naruto.tg.sending import send_ephemeral, send_text, split_message, topic_of
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,8 @@ class SkillCommands:
                                has_reply=reply is not None)
 
     async def _usage(self, update: Update, context, text: str) -> None:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text,
+                                       message_thread_id=topic_of(update.effective_message))
 
     # -------------------------------------------------------------- commands
 
@@ -257,4 +258,5 @@ class SkillCommands:
             return
         except TelegramError as exc:
             logger.info("Catch-up DM failed (%s); answering in the group.", exc)
-        await send_text(telegram, chat.chat_id, text, on_migrated=self.services.chats.migrate)
+        await send_text(telegram, chat.chat_id, text, thread_id=topic_of(message),
+                        on_migrated=self.services.chats.migrate)

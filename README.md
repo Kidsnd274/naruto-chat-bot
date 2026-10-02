@@ -14,7 +14,7 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 ### 1. Telegram (BotFather)
 
 - **Group Privacy: off** (`/setprivacy` → Disable), so the bot receives every group message. The setting applies when the bot joins a group: if it joined while privacy was on, remove it and add it again. The dashboard warns if privacy is still on.
-- After adding the bot to a group, make it an **admin with “Pin messages”** (optionally “Delete messages”), for the pinned board and pins. In a basic group where every member may pin, admin isn't needed. The web admin shows missing rights; it checks them soon after start, every six hours, and whenever a pin works or is refused.
+- After adding the bot to a group, make it an **admin with “Pin messages”**, for the pinned board and pins. In a basic group where every member may pin, admin isn't needed. It doesn't need “Delete messages”: Telegram lets a bot delete its own messages (for 48 hours) without it, and the bot never deletes anyone else's, even with that right. The web admin shows missing rights; it checks them soon after start, every six hours, and whenever a pin works or is refused.
 
 ### 2. `.env`
 
@@ -156,7 +156,7 @@ Logs, agent runs, lab runs, the queue's request history and finished reminders a
 - **Images** need a model server with vision (for Halogen, `HALOGEN_VISION_TOWER`). Without it the bot answers without seeing the image.
 - **Parallel requests** (Model settings or the Queue page, default 1): raise it to the server's number of slots (Halogen: 4, see its `/props`) so replies in different chats and background work don't wait for each other. Replies always start before waiting background work. Background work may use at most **Background parallel requests** (default 1) and never the **Slots kept for replies** (default 1; on a one-slot server a reply waits for the request in progress, then goes first). Each slot of a llama-server-style server gets part of its context, so check that a reply (Context → Input token budget), a digest update (Memory → Tokens per update) and a history summary (History → Tokens per request), each plus its output limit, fit one slot. These limits are estimates of the whole request: a reply that would go over drops its oldest recent messages first, then shortens long tool results, every round.
 - **History summaries take time:** every period is at least one request; a busy month takes several. The import preview estimates the requests and tokens. On Halogen (about 160 tokens/s for an uncached prompt), a 50,000-message export takes a couple of hours per pass, and memory notes are a second pass. Pause background work on the Queue page if the server is needed for something else; replies are not affected.
-- **Progress messages:** when a summary, plan or list of open questions takes longer than 8 seconds, the bot posts “Reading back through the chat…” and then replaces it with the answer (Settings → Behaviour; 0 turns it off).
+- **Progress messages:** when a summary, plan or list of open questions takes longer than 8 seconds, the bot silently posts “Reading back through the chat…”, updates it when it reads further back or writes the answer, and deletes it once the answer is sent. If the run fails, it shows the error instead (Settings → Behaviour; 0 turns it off). In a forum group, answers stay in the request's topic.
 
 ### Tuning the bot (prompt lab)
 

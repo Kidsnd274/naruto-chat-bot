@@ -502,8 +502,9 @@ SETTINGS: tuple[Setting, ...] = (
     # ----------------------------------------------------------- behaviour
     Setting("behaviour.progress_after_seconds", "behaviour", "Progress message after (seconds)",
             "When a summary, plan or list of open questions is still being worked on after "
-            "this long, post a short “working on it” line that the answer then replaces. "
-            "0 turns it off; other replies only show “typing…”.",
+            "this long, post a short, silent “working on it” line. It is deleted once the "
+            "answer is sent, or shows the error if the run fails. 0 turns it off; other "
+            "replies only show “typing…”.",
             "int", 8, min=0, max=120),
     Setting("behaviour.pending_leave_hours", "behaviour", "Leave pending groups after (hours)",
             "Leave a group that nobody approved after this many hours. 0 never leaves.",

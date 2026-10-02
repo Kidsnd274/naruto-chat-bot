@@ -998,19 +998,21 @@ async def summarize(wired, bot, services, text="/summary"):
                                   services.status.bot, skill="summarize", force_reply=True)
 
 
-async def test_a_slow_summary_posts_progress_then_replaces_it(services, wired, bot, chat,
-                                                              quick_progress):
+async def test_a_slow_summary_posts_progress_then_the_answer_and_deletes_it(
+        services, wired, bot, chat, quick_progress):
     services.llm = SlowLLM("*BBQ*: Saturday, 6pm.")
     await summarize(wired, bot, services)
 
-    placeholder = bot.sent[0]
+    placeholder, answer = bot.sent
     assert placeholder["text"] == "📖 Reading back through the chat…"
     assert placeholder["reply_parameters"].message_id == 6
-    assert len(bot.sent) == 1  # the answer replaced it
-    assert bot.edits[-1]["message_id"] == 901 and bot.edits[-1]["text"] == "*BBQ*: Saturday, 6pm."
-    stored = services.messages.get_live(GROUP_ID, 901)
-    assert stored.text == "*BBQ*: Saturday, 6pm."  # the transcript has the answer, not the wait
-    assert services.runs.recent()[0][0].reply_message_ids == [901]
+    assert placeholder["disable_notification"] is True  # the answer notifies, not the wait
+    assert answer["text"] == "*BBQ*: Saturday, 6pm." and answer["disable_notification"] is None
+    assert answer["reply_parameters"].message_id == 6
+    assert bot.deleted == [(GROUP_ID, 901)] and bot.edits == []
+    assert services.messages.get_live(GROUP_ID, 901) is None  # the wait isn't in the transcript
+    assert services.messages.get_live(GROUP_ID, 902).text == "*BBQ*: Saturday, 6pm."
+    assert services.runs.recent()[0][0].reply_message_ids == [902]
 
 
 async def test_fast_answers_and_banter_get_no_progress_message(services, wired, bot, chat,
@@ -1019,27 +1021,126 @@ async def test_fast_answers_and_banter_get_no_progress_message(services, wired, 
     await summarize(wired, bot, services)
     services.llm = SlowLLM("Heh.")
     await say(wired, bot, message(7, "@naruto_bot hi", offset=10))
-    assert [s["text"] for s in bot.sent] == ["Saturday!", "Heh."] and bot.edits == []
+    assert [s["text"] for s in bot.sent] == ["Saturday!", "Heh."]
+    assert bot.edits == [] and bot.deleted == []
 
 
 async def test_a_hand_over_to_summarize_gets_one_too(services, wired, bot, chat, quick_progress):
     services.llm = SlowLLM([tool_call("use_skill", {"skill": "summarize"})], "Here's the gist.")
     await say(wired, bot, message(6, "@naruto_bot what did we talk about?"))
-    assert bot.sent[0]["text"] == "📖 Reading back through the chat…"
-    assert bot.edits[-1]["text"] == "Here's the gist."
-
-
-async def test_progress_message_is_removed_or_replaced_as_needed(services, wired, bot, chat,
-                                                                 quick_progress):
-    services.llm = SlowLLM("[NO REPLY]")  # nothing to say: the placeholder goes
-    await summarize(wired, bot, services)
+    assert [s["text"] for s in bot.sent] == ["📖 Reading back through the chat…",
+                                             "Here's the gist."]
     assert bot.deleted == [(GROUP_ID, 901)]
 
-    bot.fail_edit = True  # e.g. someone deleted it meanwhile: the answer comes anew
+
+async def test_a_result_without_text_just_deletes_the_progress_message(services, wired, bot,
+                                                                       chat, quick_progress):
+    services.llm = SlowLLM("[NO REPLY]")
+    await summarize(wired, bot, services)
+    assert bot.deleted == [(GROUP_ID, 901)] and len(bot.sent) == 1
+
+    services.llm = SlowLLM([tool_call("create_poll", {"question": "BBQ day?",
+                                                       "options": ["Sat", "Sun"]})], "")
+    msg = message(7, "/plan", offset=10)
+    await wired.recorder.on_message(update(msg), context(bot))
+    await wired.responder.respond(bot, chat, msg, store(services, 7, "/plan", offset=10),
+                                  services.status.bot, skill="plan", force_reply=True)
+    assert bot.sent[-1]["text"] == "🗓 Pulling the plan together…"  # no text after the poll
+    assert len(bot.polls) == 1 and bot.deleted[-1] == (GROUP_ID, 902)  # the poll is 903
+
+
+async def test_a_failed_run_turns_the_progress_message_into_the_error(services, wired, bot,
+                                                                      chat, quick_progress):
+    services.llm = SlowLLM(LLMError("APIConnectionError"))
+    await summarize(wired, bot, services)
+    assert [s["text"] for s in bot.sent] == ["📖 Reading back through the chat…"]
+    assert bot.edits[-1]["message_id"] == 901 and bot.edits[-1]["text"] == FAILURE_TEXT
+    assert bot.deleted == []  # the error stays
+    assert services.messages.get_live(GROUP_ID, 901).text == FAILURE_TEXT
+
+    bot.fail_edit = True  # e.g. someone deleted it meanwhile: the error comes anew
+    await summarize(wired, bot, services)
+    assert bot.sent[-1]["text"] == FAILURE_TEXT and bot.deleted == [(GROUP_ID, 902)]
+
+
+async def test_a_crashed_run_shows_the_error_on_the_progress_message(services, wired, bot, chat,
+                                                                     quick_progress):
+    services.llm = SlowLLM(RuntimeError("bug"))
+    with pytest.raises(RuntimeError):
+        await summarize(wired, bot, services)
+    assert bot.edits[-1]["text"] == FAILURE_TEXT and bot.deleted == []
+
+
+async def test_an_answer_that_cant_be_sent_shows_on_the_progress_message(services, wired, bot,
+                                                                         chat, quick_progress):
+    from naruto.tg.responder import NOT_SENT_TEXT
+    bot.fail_send_texts = {"Saturday, 6pm."}
     services.llm = SlowLLM("Saturday, 6pm.")
     await summarize(wired, bot, services)
-    assert bot.deleted[-1] == (GROUP_ID, 902)
-    assert bot.sent[-1]["text"] == "Saturday, 6pm."
+    assert bot.edits[-1]["message_id"] == 901 and bot.edits[-1]["text"] == NOT_SENT_TEXT
+    assert bot.deleted == []
+    assert services.runs.recent()[0][0].error.startswith("Not sent: Forbidden")
+
+
+async def test_the_progress_message_goes_when_the_chat_is_disabled_mid_run(
+        services, wired, bot, chat, quick_progress):
+    class DisablingLLM(SlowLLM):
+        async def chat(self, messages, **kwargs):
+            result = await super().chat(messages, **kwargs)
+            services.chats.set_status(GROUP_ID, "disabled")  # the owner, mid-run
+            return result
+
+    services.llm = DisablingLLM("Saturday, 6pm.")
+    await summarize(wired, bot, services)
+    assert [s["text"] for s in bot.sent] == ["📖 Reading back through the chat…"]
+    assert bot.deleted == [(GROUP_ID, 901)]
+
+
+async def test_a_placeholder_that_cant_be_deleted_is_left(services, wired, bot, chat,
+                                                          quick_progress):
+    from telegram.error import BadRequest
+    bot.delete_errors = [BadRequest("Message can't be deleted")]
+    services.llm = SlowLLM("Saturday, 6pm.")
+    await summarize(wired, bot, services)
+    assert [s["text"] for s in bot.sent] == ["📖 Reading back through the chat…",
+                                             "Saturday, 6pm."]  # nothing more is posted
+    assert bot.deleted == [] and bot.edits == []
+
+
+async def test_the_progress_message_shows_the_stages_the_run_reaches(services, wired, bot, chat,
+                                                                    quick_progress, monkeypatch):
+    monkeypatch.setattr("naruto.tg.progress.STAGE_EDIT_SECONDS", 0.05)
+    services.llm = SlowLLM([tool_call("get_earlier_messages", {})],
+                           [tool_call("search_memory", {"query": "bbq"})], "*BBQ*: Saturday.")
+    await summarize(wired, bot, services)
+    # Reading what it found, then writing once the next tool wasn't a read.
+    assert [e["text"] for e in bot.edits] == ["📖 Reading further back…", "✍️ Writing it up…"]
+    assert all(e["message_id"] == 901 for e in bot.edits)
+    assert bot.sent[-1]["text"] == "*BBQ*: Saturday." and bot.deleted == [(GROUP_ID, 901)]
+
+
+async def test_stage_edits_are_spaced_out(services, wired, bot, chat, quick_progress):
+    # The run is over long before another edit is allowed (5 s after the post).
+    services.llm = SlowLLM([tool_call("get_earlier_messages", {})], "*BBQ*: Saturday.")
+    await summarize(wired, bot, services)
+    assert bot.edits == [] and bot.deleted == [(GROUP_ID, 901)]
+
+
+async def test_answers_in_a_forum_topic_stay_in_it(services, wired, bot, chat, quick_progress):
+    services.llm = SlowLLM("word " * 1500)  # two messages long
+    msg = message(6, "/summary", message_thread_id=77, is_topic_message=True)
+    await wired.recorder.on_message(update(msg), context(bot))
+    await wired.responder.respond(bot, chat, msg, store(services, 6, "/summary"),
+                                  services.status.bot, skill="summarize", force_reply=True)
+    assert len(bot.sent) == 3  # the placeholder and two parts
+    assert [s["message_thread_id"] for s in bot.sent] == [77, 77, 77]
+    assert bot.sent[2]["reply_parameters"] is None  # only the first part is a reply
+
+
+async def test_a_reply_chain_is_not_a_topic(services, wired, bot, chat):
+    services.llm = ScriptedLLM("Saturday!")
+    await say(wired, bot, message(6, "@naruto_bot when?", message_thread_id=3))
+    assert bot.sent[-1]["message_thread_id"] is None
 
 
 async def test_progress_messages_can_be_turned_off(services, wired, bot, chat, monkeypatch):

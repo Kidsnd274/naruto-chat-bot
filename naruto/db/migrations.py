@@ -941,6 +941,13 @@ _V14_BOARD_TITLE = """
 ALTER TABLE boards ADD COLUMN title TEXT;
 """
 
+_V15_DELETED_MESSAGES = """
+-- plans/TELEGRAM_PERMISSIONS_AND_CHAT_CLUTTER_PLAN.md: when the bot deletes one
+-- of its own messages in Telegram, its row stays (history and summaries stay
+-- consistent) but leaves the model's recent messages and searches.
+ALTER TABLE messages ADD COLUMN deleted_at INTEGER;
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -956,6 +963,7 @@ MIGRATIONS: list[str] = [
     _V12_LAB,
     _V13_KEEP_MESSAGES,
     _V14_BOARD_TITLE,
+    _V15_DELETED_MESSAGES,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

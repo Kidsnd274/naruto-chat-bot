@@ -61,6 +61,7 @@ class StoredMessage:
     reply_to_row_id: int | None
     reply_to_snippet: str | None
     created_at: int
+    deleted_at: int | None = None  # the bot deleted it in Telegram
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "StoredMessage":
@@ -196,6 +197,12 @@ class MessageRepository:
             "SELECT COUNT(*) FROM messages WHERE source = 'import' AND import_id = ?",
             (import_id,)) or 0)
 
+    def mark_deleted(self, row_id: int) -> None:
+        """The bot deleted this message in Telegram. The row stays, but the
+        model no longer reads it (see _shown)."""
+        self.db.execute("UPDATE messages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+                        (self.db.now(), row_id))
+
     def apply_edit(
         self,
         origin_chat_id: int,
@@ -265,6 +272,13 @@ class MessageRepository:
         placeholders = ", ".join("?" for _ in ids)
         return f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", ids
 
+    def _shown(self, chat_id: int, table: str = "") -> tuple[str, list]:
+        """What the model reads: _incoming's rule, and not the messages the
+        bot deleted in Telegram (the message browser still lists those).
+        ``table`` is the alias the query gives messages ("m.")."""
+        hidden, params = self._incoming(chat_id, f"{table}import_id")
+        return f"{hidden} AND {table}deleted_at IS NULL", params
+
     def get(self, row_id: int) -> StoredMessage | None:
         row = self.db.query_one("SELECT * FROM messages WHERE id = ?", (row_id,))
         return StoredMessage.from_row(row) if row else None
@@ -319,7 +333,7 @@ class MessageRepository:
         """
         window = max(window, 1)
         step = max(step, 1)
-        hidden, hidden_params = self._incoming(chat_id)
+        hidden, hidden_params = self._shown(chat_id)
         earlier = "chat_id = ? AND (date < ? OR (date = ? AND id < ?))" + hidden
         params = (chat_id, before.date, before.date, before.id, *hidden_params)
         total = int(self.db.scalar(f"SELECT COUNT(*) FROM messages WHERE {earlier}", params) or 0)
@@ -406,7 +420,7 @@ class MessageRepository:
         match = fts_query(query) if query else None
         if query and match is None:
             return []
-        hidden, hidden_params = self._incoming(chat_id, "m.import_id")
+        hidden, hidden_params = self._shown(chat_id, "m.")
         if match:
             sql = ("SELECT m.* FROM messages m JOIN messages_fts ON messages_fts.rowid = m.id "
                    f"WHERE m.chat_id = ?{hidden} AND messages_fts MATCH ?")
@@ -435,7 +449,7 @@ class MessageRepository:
         if target is None or target.chat_id != chat_id:
             return []
         earlier = self.before(chat_id, target, limit=before)
-        hidden, hidden_params = self._incoming(chat_id)
+        hidden, hidden_params = self._shown(chat_id)
         later = self.db.query(
             "SELECT * FROM messages WHERE chat_id = ? AND (date > ? OR (date = ? AND id > ?))"
             f"{hidden} ORDER BY date, id LIMIT ?",
@@ -444,7 +458,7 @@ class MessageRepository:
 
     def before(self, chat_id: int, message: StoredMessage, *, limit: int) -> list[StoredMessage]:
         """The ``limit`` messages just before ``message``, oldest first."""
-        hidden, hidden_params = self._incoming(chat_id)
+        hidden, hidden_params = self._shown(chat_id)
         rows = self.db.query(
             "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? "
             f"AND (date < ? OR (date = ? AND id < ?)){hidden} ORDER BY date DESC, id DESC "
@@ -456,7 +470,7 @@ class MessageRepository:
                 limit: int) -> list[StoredMessage]:
         """Messages from ``since`` up to ``before`` (exclusive), oldest first,
         keeping the newest ``limit`` if there are more."""
-        hidden, hidden_params = self._incoming(chat_id)
+        hidden, hidden_params = self._shown(chat_id)
         rows = self.db.query(
             "SELECT * FROM (SELECT * FROM messages WHERE chat_id = ? AND date >= ? "
             f"AND (date < ? OR (date = ? AND id < ?)){hidden} ORDER BY date DESC, id DESC "

@@ -20,7 +20,7 @@ from telegram import (
     Update,
     User,
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden
 
 from naruto.llm import ChatResult, make_tool_call
 
@@ -125,6 +125,9 @@ class FakeBot:
         self.member = None
         self.members_can_pin = False  # the group's default permissions (get_chat)
         self.fail_edit = False
+        self.fail_send_texts: set[str] = set()  # sends of these texts are refused
+        # Raised by the next delete_message calls (None: that call works).
+        self.delete_errors: list[Exception | None] = []
         self.deleted: list[tuple[int, int]] = []
         self._next_id = 900
         self.api_calls: list[tuple[str, dict]] = []
@@ -134,14 +137,18 @@ class FakeBot:
         self.polls: list[dict] = []
 
     async def send_message(self, chat_id, text, parse_mode=None, reply_parameters=None,
-                           reply_markup=None, api_kwargs=None, **kwargs):
+                           reply_markup=None, api_kwargs=None, message_thread_id=None,
+                           disable_notification=None, **kwargs):
         if parse_mode == "Markdown" and self.fail_markdown:
             raise BadRequest("Can't parse entities")
         if api_kwargs and "ephemeral_message_parameters" in api_kwargs and self.fail_ephemeral:
             raise BadRequest("Ephemeral messages are not available")
+        if text in self.fail_send_texts:
+            raise Forbidden("Forbidden: bot was kicked from the group chat")
         self.sent.append({"chat_id": chat_id, "text": text, "parse_mode": parse_mode,
                           "reply_parameters": reply_parameters, "reply_markup": reply_markup,
-                          "api_kwargs": api_kwargs})
+                          "api_kwargs": api_kwargs, "message_thread_id": message_thread_id,
+                          "disable_notification": disable_notification})
         self._next_id += 1
         chat = group(chat_id) if chat_id < 0 else Chat(chat_id, "private")
         return Message(message_id=self._next_id, date=at(60), chat=chat,
@@ -169,6 +176,9 @@ class FakeBot:
                        from_user=BOT_USER, text=text)
 
     async def delete_message(self, chat_id, message_id, **kwargs):
+        error = self.delete_errors.pop(0) if self.delete_errors else None
+        if error is not None:
+            raise error
         self.deleted.append((chat_id, message_id))
         return True
 

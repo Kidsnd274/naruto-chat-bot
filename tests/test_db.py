@@ -278,6 +278,25 @@ def test_search_uses_prefixes_and_diacritics(messages):
     assert messages.search(BASIC, '"') == []
 
 
+def test_messages_the_bot_deleted_leave_what_the_model_reads(messages):
+    kept = messages.insert_live(live(BASIC, 1, "bbq on saturday", date=1_000))
+    gone = messages.insert_live(live(BASIC, 2, "bbq plan card", date=1_001, sender_id=42,
+                                     name="Naruto", from_bot=True))
+    later = messages.insert_live(live(BASIC, 3, "ok", date=1_002))
+    anchor = messages.insert_live(live(BASIC, 4, "now", date=1_003))
+    messages.mark_deleted(gone.id)
+
+    assert messages.get(gone.id).deleted_at is not None  # the row stays
+    assert [m.id for m in messages.recent_window(BASIC, anchor, window=10, step=5)] == \
+        [kept.id, later.id]
+    assert [m.id for m in messages.search(BASIC, "bbq")] == [kept.id]
+    assert [m.id for m in messages.before(BASIC, anchor, limit=10)] == [kept.id, later.id]
+    assert [m.id for m in messages.between(BASIC, since=0, before=anchor, limit=10)] == \
+        [kept.id, later.id]
+    assert [m.id for m in messages.around(BASIC, later.id)] == [kept.id, later.id, anchor.id]
+    assert messages.browse(BASIC).total == 4  # the message browser still lists it
+
+
 def test_fts_query_quotes_words():
     assert fts_query('bbq "east coast"') == '"bbq"* "east"* "coast"*'
     assert fts_query("   ") is None

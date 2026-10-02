@@ -1,6 +1,7 @@
 """Telegram layer: extraction, recording, chat approval, commands, replies."""
 
 from types import SimpleNamespace
+import warnings
 
 import pytest
 from telegram import (
@@ -13,12 +14,14 @@ from telegram import (
     MessageOriginUser,
     Sticker,
 )
-from telegram.error import BadRequest, ChatMigrated
+from telegram.error import BadRequest, ChatMigrated, Forbidden, RetryAfter
 
 import fakes
 from fakes import ALICE, BOB, BOT_ID, GROUP_ID, OWNER, OWNER_ID, FakeBot, context, message, update
 from naruto import markers
+from naruto.db.messages import IMPORT, NewMessage
 from naruto.llm import ChatResult, LLMError
+from naruto.tg import own_messages
 from naruto.tg.access import ChatAccess, note_pin, rights_of
 from naruto.tg.board import BoardPublisher
 from naruto.tg.bot import sanitize_updates
@@ -613,3 +616,123 @@ async def test_clearaliases_is_owner_only(services, bot):
                                 context(bot))
     assert "Cleared 1 aliases" in bot.sent[-1]["text"]
     assert services.members.aliases(GROUP_ID, 8) == []
+
+
+# ------------------------------------------------- deleting own messages
+
+@pytest.fixture
+def an_hour_later(services):
+    """The clock an hour after the stored messages were sent."""
+    services.db._clock = lambda: fakes.T0 + 3600
+
+
+def stored(services, message_id, *, sender=(BOT_ID, "Naruto"), hours_ago=0.5,
+           chat_id=GROUP_ID, origin=None, source="live"):
+    """A transcript row; by default one the bot sent half an hour ago."""
+    sender_id, name = sender
+    record = NewMessage(chat_id=chat_id, origin_chat_id=origin or chat_id, source=source,
+                        message_id=message_id, sender_id=sender_id, sender_name=name,
+                        date=int(fakes.T0 + 3600 - hours_ago * 3600), text=f"m{message_id}",
+                        from_bot=sender_id == BOT_ID, import_id=1 if source == IMPORT else None)
+    if source == IMPORT:
+        services.messages.insert_imported([record])
+        return services.messages.get(services.db.scalar(
+            "SELECT id FROM messages WHERE source = 'import' AND message_id = ?", (message_id,)))
+    return services.messages.insert_live(record)
+
+
+async def test_the_bot_deletes_its_own_messages_without_admin_rights(services, bot,
+                                                                     an_hour_later):
+    enable(services)
+    rows = [stored(services, 501), stored(services, 502)]
+    chat = services.chats.get(GROUP_ID)
+    results = await own_messages.delete_rows(services, bot, chat, [r.id for r in rows])
+    assert [r.status for r in results] == [own_messages.DELETED] * 2
+    assert bot.deleted == [(GROUP_ID, 501), (GROUP_ID, 502)]
+    assert all(services.messages.get(r.id).deleted_at for r in rows)
+
+    again = await own_messages.delete_rows(services, bot, chat, [rows[0].id])
+    assert [r.status for r in again] == [own_messages.GONE]
+    assert len(bot.deleted) == 2 and bot.sent == []  # no call, nothing posted
+
+
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize("make,status", [
+    (lambda s: stored(s, 601, sender=(7, "Alice")), own_messages.NOT_OURS),
+    (lambda s: stored(s, 602, sender=(99, "Other bot")), own_messages.NOT_OURS),
+    (lambda s: stored(s, 603, source=IMPORT), own_messages.OUT_OF_REACH),
+    (lambda s: stored(s, 604, chat_id=-4002), own_messages.NOT_FOUND),
+    (lambda s: SimpleNamespace(id=999_999), own_messages.NOT_FOUND),
+    (lambda s: stored(s, 605, hours_ago=49), own_messages.TOO_OLD),
+    (lambda s: stored(s, 606, origin=-4000), own_messages.OUT_OF_REACH),  # before an upgrade
+    (lambda s: stored(s, 510), own_messages.PROTECTED),  # the board
+])
+async def test_nothing_but_the_bots_own_recent_messages_is_deleted(services, bot, an_hour_later,
+                                                                    make, status, admin):
+    enable(services)
+    services.boards.set_section(GROUP_ID, "plans", [{"text": "BBQ"}], actor="test")
+    services.boards.set_message(GROUP_ID, message_id=510, message_chat_id=GROUP_ID,
+                                format="rich", pinned=True)
+    if admin:  # Telegram would let an admin delete anything: still refused
+        services.chats.set_rights(GROUP_ID, can_pin=True, can_delete=True)
+    row = make(services)
+    results = await own_messages.delete_rows(services, bot, services.chats.get(GROUP_ID),
+                                             [row.id])
+    assert [r.status for r in results] == [status] and results[0].detail
+    assert bot.deleted == []
+
+
+async def test_one_refused_message_stops_the_whole_batch(services, bot, an_hour_later):
+    enable(services)
+    mine, theirs = stored(services, 701), stored(services, 702, sender=(7, "Alice"))
+    results = await own_messages.delete_rows(services, bot, services.chats.get(GROUP_ID),
+                                             [mine.id, theirs.id])
+    assert [r.status for r in results] == [own_messages.HELD, own_messages.NOT_OURS]
+    assert "Alice sent it" in results[1].detail
+    assert bot.deleted == [] and services.messages.get(mine.id).deleted_at is None
+
+
+def flood(seconds: int) -> RetryAfter:
+    with warnings.catch_warnings():  # PTB 22 warns while retry_after is still an int
+        warnings.simplefilter("ignore")
+        return RetryAfter(seconds)
+
+
+async def test_telegram_answers_are_reported_as_they_are(services, bot, an_hour_later,
+                                                         monkeypatch):
+    enable(services)
+    chat = services.chats.get(GROUP_ID)
+    gone, slow, refused = stored(services, 801), stored(services, 802), stored(services, 803)
+    waits = []
+
+    async def no_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr("naruto.tg.own_messages.asyncio.sleep", no_sleep)
+    bot.delete_errors = [BadRequest("Message to delete not found"), flood(3), None,
+                         Forbidden("Forbidden: bot was kicked from the group chat")]
+    results = await own_messages.delete_rows(services, bot, chat, [gone.id, slow.id, refused.id])
+    assert [r.status for r in results] == [own_messages.GONE, own_messages.DELETED,
+                                           own_messages.FAILED]
+    assert waits == [3] and bot.deleted == [(GROUP_ID, 802)]  # waited once, then deleted
+    assert services.messages.get(gone.id).deleted_at is not None
+    assert services.messages.get(refused.id).deleted_at is None  # never reported as deleted
+
+    bot.delete_errors = [flood(3), flood(3)]
+    results = await own_messages.delete_rows(services, bot, chat, [refused.id])
+    assert results[0].status == own_messages.FAILED and "wait 3 seconds" in results[0].detail
+    assert waits == [3, 3]  # one wait per message, no more
+
+
+async def test_the_placeholder_path_checks_the_sent_message(services, bot):
+    enable(services)
+    mine = message(901, "📖 …", sender=fakes.BOT_USER)
+    assert await own_messages.delete_sent(services, bot, mine, GROUP_ID)
+    assert not await own_messages.delete_sent(services, bot, message(902, "hi"), GROUP_ID)
+    assert not await own_messages.delete_sent(services, bot, mine, -4002)  # another chat
+    services.boards.set_section(GROUP_ID, "plans", [{"text": "BBQ"}], actor="test")
+    services.boards.set_message(GROUP_ID, message_id=903, message_chat_id=GROUP_ID,
+                                format="rich", pinned=True)
+    board = message(903, "📌 BBQ", sender=fakes.BOT_USER)
+    assert not await own_messages.delete_sent(services, bot, board, GROUP_ID)
+    assert bot.deleted == [(GROUP_ID, 901)]

@@ -1,12 +1,22 @@
 """Acting in the group: the pinned board, pins, plan proposals and polls."""
 
+from html import escape
 import logging
 
+from telegram import ReplyParameters
 from telegram.error import ChatMigrated, TelegramError
 
 from naruto.agent.tools.base import Tool, ToolContext, ToolError, params
-from naruto.agent.tools.lookup import message_in_chat
-from naruto.db.board import MAX_BOARD_CHARS, SECTION_KEYS, SECTIONS, BoardFull
+from naruto.agent.tools.lookup import find_members, message_in_chat
+from naruto.db.board import (
+    MAX_BOARD_CHARS,
+    MAX_DETAILS_PER_PLAN,
+    MAX_TITLE_CHARS,
+    SECTION_KEYS,
+    SECTIONS,
+    BoardFull,
+    BoardItem,
+)
 from naruto.db.plans import CANCELLED, PROPOSED
 from naruto.tg.access import note_pin
 from naruto.tg.board import BoardPublisher
@@ -23,17 +33,73 @@ POSTING_TOOLS = ("update_board", "propose_plan", "create_poll")
 
 async def update_board(ctx: ToolContext, args: dict) -> str:
     section = args["section"]
-    items = args.get("items") or []
+    items = [dict(item) for item in args.get("items") or []]
+    notes = _who_for(ctx, items)
     actor = f"bot (run {ctx.state.run_id})"
+    asked = ctx.services.boards.get(ctx.chat.chat_id).items("questions")
+    title = {"title": args["title"]} if args.get("title") else {}
     try:
-        board = ctx.services.boards.set_section(ctx.chat.chat_id, section, items, actor=actor)
+        board = ctx.services.boards.set_section(ctx.chat.chat_id, section, items, actor=actor,
+                                                **title)
     except BoardFull as exc:
         raise ToolError(f"Not changed: {exc}") from None
     heading = dict(SECTIONS)[section]
     ctx.state.actions.append(f"updated the board ({section})")
+    if section == "plans" and not board.title:
+        notes.append("The title is built from the plan names; pass title to give it a better one.")
     published = await BoardPublisher(ctx.services).publish(ctx.telegram, ctx.chat)
-    return (f"{heading} now has {len(board.items(section))} items. {published} "
-            f"The group can see the board, so don't repeat it in full. {NOTHING_TO_ADD}")
+    if section == "questions":
+        notes.append(await _ping(ctx, asked, board.items("questions")))
+    return " ".join(part for part in (
+        f"{heading} now has {len(board.items(section))} items.", published, *notes,
+        f"The group can see the board, so don't repeat it in full. {NOTHING_TO_ADD}") if part)
+
+
+def _who_for(ctx: ToolContext, items: list[dict]) -> list[str]:
+    """A question "for" someone gets their name and user ID, so the board
+    can mention them. Returns notes for the model."""
+    notes = []
+    for item in items:
+        name = str(item.pop("for", "") or "").strip()
+        if not name:
+            continue
+        found = {m.person_id: m for m in find_members(ctx, name)}
+        if len(found) == 1:
+            member = next(iter(found.values()))
+            item["for_name"], item["for_user_id"] = member.display_name, member.user_id
+        else:
+            item["for_name"] = name
+            who = "nobody" if not found else "more than one person"
+            notes.append(f"{name!r} matches {who} in this chat, so they aren't mentioned.")
+    return notes
+
+
+async def _ping(ctx: ToolContext, before: list[BoardItem], after: list[BoardItem]) -> str:
+    """Mention the people new questions are for in a message of its own:
+    editing the board notifies nobody."""
+    if not ctx.services.settings.for_chat(ctx.chat.chat_id)["board.ping_questions"]:
+        return ""
+    asked = {(q.text.lower(), q.for_user_id) for q in before}
+    new = [q for q in after if q.for_user_id and (q.text.lower(), q.for_user_id) not in asked]
+    if not new:
+        return ""
+    board = ctx.services.boards.get(ctx.chat.chat_id)
+    chat_id = board.message_chat_id or ctx.chat.chat_id
+    reply = (ReplyParameters(message_id=board.message_id, allow_sending_without_reply=True)
+             if board.message_id else None)
+    text = "\n".join(f'❓ <a href="tg://user?id={q.for_user_id}">{escape(q.for_name or "")}</a>: '
+                     f"{escape(q.text)}" for q in new)
+    names = ", ".join(dict.fromkeys(q.for_name or "" for q in new))
+    try:
+        sent = await ctx.telegram.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
+                                               reply_parameters=reply)
+    except TelegramError as exc:
+        logger.warning("Couldn't ping about board questions: %s", exc,
+                       extra={"chat_id": chat_id})
+        return f"Couldn't send {names} a message about it ({exc})."
+    ctx.recorded(sent)
+    ctx.state.actions.append(f"asked {names} on the board")
+    return f"Sent {names} a message mentioning them, so they're notified."
 
 
 async def pin_message(ctx: ToolContext, args: dict) -> str:
@@ -139,17 +205,31 @@ TOOLS = [
     Tool(
         "update_board",
         "Replace one section of the group's pinned board with a new list of items. "
-        "Sections: plans (things to do or happening, done=true when confirmed or "
-        "finished), decided (decisions), questions (open questions). Only change the "
-        "board when someone asks, or to record something the group clearly agreed on. "
-        "Pass the full new list: items you leave out are removed. The whole board must fit "
-        f"in one message (about {MAX_BOARD_CHARS} characters), so keep items short.",
+        "Sections: plans (each plan with its details: when, where, who does or brings what, "
+        "what was decided about it; done=true once confirmed) and questions (open "
+        "questions; \"for\" names the one person a question is for, who then gets a "
+        "message mentioning them). Only change the board when someone asks, or to record "
+        "something the group clearly agreed on. Pass the full new list: items you leave out "
+        "are removed. Give a title whenever the plans change. The whole board must fit in "
+        f"one message (about {MAX_BOARD_CHARS} characters), so keep items short.",
         params({
             "section": {"type": "string", "enum": list(SECTION_KEYS)},
+            "title": {"type": "string", "maxLength": MAX_TITLE_CHARS,
+                      "description": "What the board's plans are about in a few words, e.g. "
+                                     "'Fri dinner + poker · Sat BBQ'. Shown first and in the "
+                                     "pin bar."},
             "items": {"type": "array", "maxItems": 25, "items": {
                 "type": "object",
-                "properties": {"text": {"type": "string", "maxLength": 300},
-                               "done": {"type": "boolean"}},
+                "properties": {
+                    "text": {"type": "string", "maxLength": 300,
+                             "description": "A plan's name with its day, e.g. 'Sat 10 Oct · "
+                                            "BBQ at East Coast', or a question."},
+                    "done": {"type": "boolean", "description": "Plans: true once confirmed."},
+                    "details": {"type": "array", "maxItems": MAX_DETAILS_PER_PLAN,
+                                "items": {"type": "string", "maxLength": 200},
+                                "description": "Plans: the details, one per item."},
+                    "for": {"type": "string",
+                            "description": "Questions: who it's for, by name."}},
                 "required": ["text"]}},
         }, ("section", "items")),
         update_board,

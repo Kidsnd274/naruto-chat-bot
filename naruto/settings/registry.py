@@ -458,6 +458,10 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("board.pin", "board", "Pin the board",
             "Pin the board message (silently). Needs the “Pin messages” admin right.",
             "bool", True),
+    Setting("board.ping_questions", "board", "Mention who questions are for",
+            "When the bot adds a question for someone to the board, also send a short "
+            "message mentioning them. Editing the board doesn't notify anyone.",
+            "bool", True),
     # -------------------------------------------------------------- import
     Setting("import.max_upload_mb", "import", "Max upload size (MB)",
             "Largest result.json the Import page accepts.",
@@ -521,6 +525,7 @@ PER_CHAT: frozenset[str] = frozenset({
     "history.live_archive",
     "board.format",
     "board.pin",
+    "board.ping_questions",
     "media.enabled",
     "behaviour.progress_after_seconds",
 })

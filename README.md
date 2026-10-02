@@ -85,7 +85,7 @@ What it can do when asked, besides chatting:
 
 - **Look things up** further back than the recent messages it sees, including imported history ("what time did Mei say her flight lands?").
 - **Remember older times** from history summaries, dated summaries of past months or weeks ("what were we planning in summer 2021?"), and by searching the stored messages. It says when an answer comes from a summary rather than the messages themselves.
-- **The board:** one pinned message per group with 🗓 Plans, ✅ Decided and ❓ Open questions, edited in place ("put the BBQ on the board", "mark booking the pit done"). It is sent as a Telegram rich message, or as a plain formatted message if rich messages are refused (Settings → Board).
+- **The board:** one pinned message per group, edited in place ("put the BBQ on the board", "the pit is booked"). Its first line is a short title of what's planned (also the pin text); then 🗓 Plans, each with its details and whether it's confirmed, and ❓ Open questions. A question can be for someone: the board mentions them and the bot sends them a short message, since edits notify nobody. It is sent as a Telegram rich message, or as a plain formatted message if rich messages are refused (Settings → Board). Some Telegram apps show a rich message's pin as blank.
 - **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
 - **Pins** ("pin the address").

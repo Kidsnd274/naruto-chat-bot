@@ -577,6 +577,50 @@ def test_rich_board_layout(services, chat):
     assert "  • Driving or drinking? (for Bob)" in board.as_text()
 
 
+async def test_update_board_takes_a_title_and_plan_details(services, bot, chat):
+    plans = [{"text": "Sat · BBQ", "done": True, "details": ["6pm", "Pit 42"]}]
+    _, results = await run_tools(services, bot, chat, tool_call(
+        "update_board", {"section": "plans", "title": "BBQ weekend", "items": plans}))
+    board = services.boards.get(GROUP_ID)
+    assert board.title == "BBQ weekend" and board.items("plans")[0].details == ["6pm", "Pit 42"]
+    assert "pass title" not in results[0]
+    _, results = await run_tools(services, bot, chat, tool_call(
+        "update_board", {"section": "plans", "items": [*plans, {"text": "Sun · Brunch"}]}))
+    assert services.boards.get(GROUP_ID).title is None and "pass title" in results[0]
+
+
+async def test_a_question_for_someone_mentions_and_pings_them(services, bot, chat):
+    store(services, 1, "i might drive", sender=(8, "Bob"), offset=0)
+    questions = [{"text": "Driving or drinking?", "for": "bob"}, {"text": "Venue?"}]
+    _, results = await run_tools(services, bot, chat, tool_call(
+        "update_board", {"section": "questions", "items": questions}))
+    asked = services.boards.get(GROUP_ID).items("questions")[0]
+    assert (asked.for_name, asked.for_user_id) == ("Bob", 8)
+    board = services.boards.get(GROUP_ID)
+    ping = bot.sent[-1]
+    assert ping["text"] == '❓ <a href="tg://user?id=8">Bob</a>: Driving or drinking?'
+    assert ping["parse_mode"] == "HTML"
+    assert ping["reply_parameters"].message_id == board.message_id
+    assert "Sent Bob a message mentioning them" in results[0]
+
+    # Already asked: no second ping. Someone unknown: no mention, and the model is told.
+    sent = len(bot.sent)
+    _, results = await run_tools(services, bot, chat, tool_call(
+        "update_board", {"section": "questions",
+                         "items": [*questions, {"text": "Cake?", "for": "Zed"}]}))
+    assert len(bot.sent) == sent and "'Zed' matches nobody" in results[0]
+    assert services.boards.get(GROUP_ID).items("questions")[2].for_name == "Zed"
+
+
+async def test_question_pings_can_be_turned_off(services, bot, chat):
+    services.settings.set("board.ping_questions", False, actor="t")
+    store(services, 1, "hi", sender=(8, "Bob"), offset=0)
+    await run_tools(services, bot, chat, tool_call(
+        "update_board", {"section": "questions", "items": [{"text": "Drinks?", "for": "Bob"}]}))
+    assert services.boards.get(GROUP_ID).items("questions")[0].for_user_id == 8
+    assert bot.sent == []
+
+
 async def test_board_and_open_plans_come_with_the_request(services, wired, bot, chat):
     """They change whenever the bot acts, so they sit next to the current
     request rather than before the transcript (the server's prompt cache)."""

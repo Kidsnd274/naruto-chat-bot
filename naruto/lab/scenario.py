@@ -70,7 +70,8 @@ MEDIA_KINDS = ("photo", "sticker", "animation", "video", "voice", "document", "p
 COMMANDS = ("summary", "plan", "questions", "remember", "remind", "catchup")
 STATE_KEYS = ("digest", "notes", "board", "reminders", "plans", "history_summaries")
 SIMULATED_METHODS = ("send_message", "send_poll", "pin_chat_message", "unpin_chat_message",
-                     "sendRichMessage", "editMessageText", "edit_message_text", "get_file")
+                     "sendRichMessage", "editMessageText", "edit_message_text", "get_file",
+                     "delete_message")
 SIMULATED_FAILURES = ("error", "rights_error", "forbidden", "network", "timeout")
 EXPECT_KEYS = {
     # what the answer says

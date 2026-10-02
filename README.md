@@ -5,7 +5,7 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 - **Group-only.** It answers when someone mentions it or replies to it. Private messages are only for the owner, to approve groups.
 - **Approve once.** A group the bot is added to stays pending until the owner approves it. Pending and disabled groups get no replies and nothing is recorded.
 - **Remembers the chat.** Every message in an enabled group is stored (text, sender, replies, media as markers such as `[photo]`), with full-text search. Images are only downloaded when someone asks about one.
-- **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, post a plan with Confirm / Change buttons, start polls and pin messages. Each answer is a bounded agent run: a few model requests and tool calls at most.
+- **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, post a plan with Confirm / Change buttons, start polls, pin messages and delete its own messages when asked. Each answer is a bounded agent run: a few model requests and tool calls at most.
 - **Remembers the group.** Messages are kept until the owner deletes them, and stay searchable. A rolling digest of what's going on and long-term memory notes (people's preferences, traditions, running jokes) come from live chat; each reply reads only a bounded recent window plus the digest and notes, however long the history. Members can ask it to remember or forget things, and the owner can edit everything in the web admin.
 - **Web admin** on localhost: dashboard, chats, message browser, board, agent traces, settings, logs.
 
@@ -89,6 +89,7 @@ What it can do when asked, besides chatting:
 - **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
 - **Pins** ("pin the address").
+- **Deleting its own messages** ("delete that" in reply to one, "delete your unnecessary messages"). Only messages the bot sent in the last 48 hours (Telegram's limit), never anyone else's and never the pinned board, whatever rights it has. Its copies stay in the stored history, marked deleted, but replies no longer read them.
 - **Memory:** "remember that Sam is vegetarian", "forget that", "what do you remember about me?". It also keeps durable facts on its own, when someone mentions one while talking to it and while it updates the digest (Settings → Memory → Automatic notes), and never keeps health, money or relationship details unless asked to.
 - **Reminders** ("remind us Saturday at 5pm to bring the grill", "remind me in 20 minutes…"), posted in the group when due. If Telegram is briefly unreachable, it tries again.
 - **Older images:** "what was in the photo Bob sent this morning?" It downloads the image on demand, describes it once and keeps the description (never the image).

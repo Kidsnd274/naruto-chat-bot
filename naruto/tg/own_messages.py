@@ -43,6 +43,7 @@ NOT_OURS = "not mine"
 PROTECTED = "protected"
 NOT_FOUND = "not found"
 OUT_OF_REACH = "out of reach"
+REFUSED = (TOO_OLD, NOT_OURS, PROTECTED, NOT_FOUND, OUT_OF_REACH)
 
 
 @dataclass

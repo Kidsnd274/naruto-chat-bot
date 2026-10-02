@@ -194,6 +194,15 @@ def test_chat_detail_browses_and_searches_messages(admin, chat):
     assert admin.client.get(f"/chats/{CHAT}/messages", params={"since": "garbage"}).status_code == 400
 
 
+def test_the_message_browser_shows_what_the_bot_deleted(admin, chat, services):
+    row = services.messages.search(CHAT, "grill")[0]
+    services.messages.mark_deleted(row.id)
+    html = admin.client.get(f"/chats/{CHAT}/messages", params={"q": "grill"}).text
+    assert "bring the grill" in html and ">deleted</span>" in html
+    assert ">deleted</span>" not in admin.client.get(f"/chats/{CHAT}/messages",
+                                                     params={"q": "saturday"}).text
+
+
 def test_old_chat_id_redirects_to_current(admin, chat, services):
     services.chats.migrate(CHAT, -1004001)
     response = admin.client.get(f"/chats/{CHAT}")

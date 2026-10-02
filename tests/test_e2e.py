@@ -5,6 +5,7 @@ such as a startup step that never runs."""
 import pytest
 from telegram import Message
 
+from fakes import ScriptedLLM, tool_call
 from naruto.llm import ChatResult
 from naruto.tg.bot import TelegramBot
 from naruto.tg.content import to_new_message
@@ -227,3 +228,28 @@ async def test_skill_commands_through_the_real_bot(running):
     private = (await fake.wait_for("sendMessage", 2))[1]
     assert private["ephemeral_message_parameters"] == {"receiver_user_id": 7}
     assert "Your task: catch someone up" in services.llm.calls[1][0]["content"]
+
+
+async def test_only_the_bots_own_message_is_deleted_in_telegram(running):
+    fake, services = running
+    services.chats.upsert_seen(CHAT, title="BBQ crew")
+    services.chats.set_status(CHAT, "enabled")
+    services.llm = ScriptedLLM("Plan: dinner at 8pm, Sam fetches people.")
+    fake.push_message("@naruto_bot what's the plan?", user=ALICE, message_id=10)
+    reply = (await fake.wait_for("sendMessage"))[0]
+    reply_id = fake._message_id  # the bot's answer
+    assert reply["text"] == "Plan: dinner at 8pm, Sam fetches people."
+    rows = services.messages.latest(CHAT, 10)
+    alice_row, bot_row = rows[0].id, rows[1].id
+    assert rows[1].message_id == reply_id and rows[1].from_bot
+
+    services.llm = ScriptedLLM(
+        [tool_call("delete_messages", {"message_ids": [alice_row, bot_row]}, "a")],
+        [tool_call("delete_messages", {"message_ids": [bot_row]}, "b")], "[NO REPLY]")
+    fake.push_message("@naruto_bot delete ur unnecessary msgs", user=ALICE, message_id=20)
+    deleted = await fake.wait_for("deleteMessage")
+    await fake.settle()
+    assert [(int(d["chat_id"]), int(d["message_id"])) for d in fake.sent("deleteMessage")] == \
+        [(CHAT, reply_id)]  # Alice's message was never sent to deleteMessage
+    assert len(deleted) == 1 and len(fake.sent("sendMessage")) == 1  # nothing more posted
+    assert services.messages.get(bot_row).deleted_at is not None

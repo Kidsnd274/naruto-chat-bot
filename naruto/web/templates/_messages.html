@@ -12,7 +12,7 @@
       <td class="text">
         {% if m.reply_to_row_id %}<span class="muted small">↩{{ m.reply_to_row_id }}</span> {% elif m.reply_to_snippet %}<span class="muted small">↩ {{ m.reply_to_snippet }}</span><br>{% endif %}
         {% if m.forwarded_from %}<span class="muted small">forwarded from {{ m.forwarded_from }}</span><br>{% endif %}
-        <span class="msg-text">{{ m|body }}</span>{% if m.edit_date %} <span class="muted small">(edited)</span>{% endif %}
+        <span class="msg-text">{{ m|body }}</span>{% if m.edit_date %} <span class="muted small">(edited)</span>{% endif %}{% if m.deleted_at %} <span class="badge muted-badge" title="The bot deleted it in Telegram {{ m.deleted_at|ts }}; replies no longer read it">deleted</span>{% endif %}
       </td>
       <td><span class="badge {{ 'live' if m.source == 'live' else 'import' }}">{{ m.source }}</span></td>
     </tr>

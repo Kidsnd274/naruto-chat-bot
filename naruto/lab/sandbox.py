@@ -269,6 +269,7 @@ class SandboxTelegram:
         return True
 
     async def delete_message(self, chat_id, message_id, **kwargs):
+        self._maybe_fail("delete_message", message_id=message_id)
         self._record("delete_message", message_id=message_id)
         return True
 

@@ -68,6 +68,20 @@ CHECKS: tuple[ActionCheck, ...] = (
         _pattern(r"\b(?:un)?pin\s+(?:this|that|it|the|my|his|her|their|message|msg|\[?\d+\]?)\b"),
         _pattern(r"\b(?:un)?pinned\s+(?:it|that|this|the|your)\b"),
     ),
+    # Seen live: "I can't delete my own messages from here", with no tool to
+    # try. A sentence about the board is about update_board instead.
+    ActionCheck(
+        ("delete_messages",), "delete messages (delete_messages)",
+        _pattern(r"\b(?:delete|remove|unsend)\b(?![^.?!\n]*\bboard\b)[^.?!\n]{0,40}"
+                 r"\b(?:msgs?|messages?|texts?|posts?|replies|duplicates?)\b"
+                 r"|\bdelete\s+(?:that|this|it|them|those|these)\b"
+                 r"(?!\s+(?:reminder|note|memory|plan|poll|question|from)\b)"),
+        _pattern(r"\bdeleted\b(?![^.?!\n]*\bboard\b)[^.?!\n]{0,40}"
+                 r"\b(?:msgs?|messages?|posts?|replies|duplicates?)\b"
+                 r"|\b(?:removed|unsent)\b(?![^.?!\n]*\bboard\b)[^.?!\n]{0,40}"
+                 r"\b(?:msgs?|messages?)\b"
+                 r"|\bdeleted\s+(?:it|that|this|them|those|these|both)\b"),
+    ),
 )
 
 

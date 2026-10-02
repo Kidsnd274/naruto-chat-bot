@@ -788,6 +788,82 @@ async def test_pins_only_live_messages(services, bot, chat):
     assert bot.pins == [(GROUP_ID, 50)] and bot.unpins == [(GROUP_ID, 50)]
 
 
+# ------------------------------------------------- deleting own messages
+
+def bot_said(services, message_id, text, *, offset=0):
+    """A message the bot sent, as record_sent stores it."""
+    return services.messages.insert_live(NewMessage(
+        chat_id=GROUP_ID, origin_chat_id=GROUP_ID, source="live", message_id=message_id,
+        sender_id=fakes.BOT_ID, sender_name="Naruto", from_bot=True, date=fakes.T0 + offset,
+        text=text))
+
+
+@pytest.fixture
+def soon_after(services):
+    """The clock shortly after the stored messages (deleting needs < 48 hours)."""
+    services.db._clock = lambda: fakes.T0 + 20_000
+
+
+async def test_cleanup_request_deletes_the_bots_own_messages(services, wired, bot, chat,
+                                                             soon_after):
+    """The chat in plans/TELEGRAM_PERMISSIONS_AND_CHAT_CLUTTER_PLAN.md §3, step 5."""
+    store(services, 10, "can u summarize the plan. it's at 8pm and Sam will be fetching ppl")
+    long_reply = bot_said(services, 11, "The plan is up with Confirm/Change buttons…", offset=5)
+    card = bot_said(services, 12, "📋 Plan: Dinner\n• 8pm\n• Sam fetches people", offset=6)
+    services.llm = ScriptedLLM(
+        [tool_call("delete_messages", {"message_ids": [long_reply.id, card.id]})], "[NO REPLY]")
+    await say(wired, bot, message(20, "@naruto_bot delete ur unnecessary msgs", offset=60))
+
+    assert bot.deleted == [(GROUP_ID, 11), (GROUP_ID, 12)]
+    assert bot.sent == []  # no message about the cleanup
+    result = tool_results(services.llm, 1)[0]
+    assert result.startswith(f"Deleted [{long_reply.id}], [{card.id}].")
+    run = services.runs.recent()[0][0]
+    assert run.status == "ok" and run.error is None
+
+    # The next request no longer sees them.
+    services.llm = ScriptedLLM("Sure.")
+    await say(wired, bot, message(21, "@naruto_bot thanks", offset=120))
+    transcript = services.llm.calls[0]["messages"][1]["content"]
+    assert "Confirm/Change" not in transcript and "can u summarize" in transcript
+
+
+async def test_deleting_anyone_elses_message_is_refused_and_says_why(services, bot, chat,
+                                                                     soon_after):
+    theirs = store(services, 30, "lol")
+    mine = bot_said(services, 31, "Heh.")
+    outcome, results = await run_tools(
+        services, bot, chat,
+        tool_call("delete_messages", {"message_ids": [mine.id, theirs.id]}, "a"),
+        tool_call("delete_messages", {"message_ids": [999_999]}, "b"))
+    assert results[0].startswith("Error: Nothing was deleted.")
+    assert f"[{theirs.id}] can't be deleted: Alice sent it" in results[0]
+    assert f"[{mine.id}]" not in results[0]  # not tried: the batch stopped
+    assert "no such message in this chat" in results[1]
+    assert bot.deleted == [] and outcome.actions == []
+
+
+async def test_a_claimed_inability_to_delete_is_asked_again(services, wired, bot, chat,
+                                                            soon_after):
+    """Seen live: "I can't delete my own messages from here though" with no
+    tool to try."""
+    reply = bot_said(services, 11, "The plan is up…", offset=5)
+    services.llm = ScriptedLLM(
+        "Board's cleaned up! I can't delete my own messages from here though.",
+        [tool_call("delete_messages", {"message_ids": [reply.id]})], "[NO REPLY]")
+    await say(wired, bot, message(20, "@naruto_bot delete ur unnecessary msgs", offset=60))
+    assert bot.deleted == [(GROUP_ID, 11)] and bot.sent == []
+    run = services.runs.recent()[0][0]
+    assert [s["type"] for s in run.steps] == ["model", "check", "model", "tool", "model"]
+    assert "delete_messages" in run.steps[1]["note"]
+
+
+async def test_delete_messages_is_offered_where_cleanup_requests_arrive(services):
+    from naruto.agent.skills import SKILLS
+    offered = {name for name, skill in SKILLS.items() if "delete_messages" in skill.tools}
+    assert offered == {"banter", "plan", "decide", "questions"}
+
+
 # ------------------------------------------------------------ migrations
 
 def test_board_and_plans_move_with_a_group_upgrade(services, chat):

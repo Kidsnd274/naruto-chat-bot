@@ -1,4 +1,5 @@
-"""Acting in the group: the pinned board, pins, plan proposals and polls."""
+"""Acting in the group: the pinned board, pins, plan proposals, polls and
+deleting the bot's own messages."""
 
 from html import escape
 import logging
@@ -18,6 +19,7 @@ from naruto.db.board import (
     BoardItem,
 )
 from naruto.db.plans import CANCELLED, PROPOSED
+from naruto.tg import own_messages
 from naruto.tg.access import note_pin
 from naruto.tg.board import BoardPublisher
 from naruto.tg.plans import render_plan, send_plan
@@ -25,6 +27,7 @@ from naruto.tg.plans import render_plan, send_plan
 logger = logging.getLogger(__name__)
 
 MAX_POLL_OPTIONS = 10
+MAX_DELETE = 10  # messages per delete_messages call
 # After posting something the group sees, the model may send nothing more.
 NOTHING_TO_ADD = "If there's nothing to add, answer with just [NO REPLY]; otherwise keep it short."
 # The tools whose result the group sees, so a run may end after them without an answer.
@@ -138,6 +141,40 @@ def _pinnable(ctx: ToolContext, row_id: int):
     return message
 
 
+async def delete_messages(ctx: ToolContext, args: dict) -> str:
+    """Only the bot's own messages: the guard in tg/own_messages.py refuses
+    anything else, whatever the model asks for."""
+    row_ids = list(dict.fromkeys(args["message_ids"]))
+    results = await own_messages.delete_rows(ctx.services, ctx.telegram, ctx.chat, row_ids)
+    deleted = [r.row_id for r in results if r.status == own_messages.DELETED]
+    if deleted:
+        ctx.state.actions.append(f"deleted messages {', '.join(map(str, deleted))}")
+    report = _deletion_report(results)
+    if not deleted and not any(r.status == own_messages.GONE for r in results):
+        raise ToolError(report)
+    return f"{report} {NOTHING_TO_ADD}"
+
+
+def _deletion_report(results: list[own_messages.Result]) -> str:
+    """Exactly what happened, so the answer can say it."""
+    refused = any(r.status in own_messages.REFUSED for r in results)
+    deleted = [r.row_id for r in results if r.status == own_messages.DELETED]
+    parts = ["Nothing was deleted."] if refused else []
+    if deleted:
+        parts.append(f"Deleted {', '.join(f'[{row_id}]' for row_id in deleted)}.")
+    for result in results:
+        if result.status == own_messages.GONE:
+            parts.append(f"[{result.row_id}] was already deleted.")
+        elif result.status == own_messages.FAILED:
+            parts.append(f"[{result.row_id}] couldn't be deleted ({result.detail}).")
+        elif result.status in own_messages.REFUSED:
+            parts.append(f"[{result.row_id}] can't be deleted: {result.detail}.")
+    if refused:
+        parts.append("Call again with only your own messages from the last 48 hours if those "
+                     "should still go.")
+    return " ".join(parts)
+
+
 async def propose_plan(ctx: ToolContext, args: dict) -> str:
     plans = ctx.services.plans
     items = [item for item in args.get("items") or [] if item]
@@ -247,6 +284,20 @@ TOOLS = [
         params({"message_id": {"type": "integer", "description": "The [id] of the message."}},
                ("message_id",)),
         unpin_message,
+    ),
+    Tool(
+        "delete_messages",
+        "Delete your own messages (marked (you)), only when someone asks you to delete "
+        "messages; never anyone else's. \"Delete that\" in reply to your message: the one "
+        "it replies to. \"Delete your unnecessary messages\": your repeated or outdated "
+        "messages about the current request, not all of yours. Works for 48 hours, not on "
+        "the pinned board. Say exactly what the result says.",
+        params({
+            "message_ids": {"type": "array", "minItems": 1, "maxItems": MAX_DELETE,
+                            "items": {"type": "integer"},
+                            "description": "The [id]s of your messages."},
+        }, ("message_ids",)),
+        delete_messages,
     ),
     Tool(
         "propose_plan",

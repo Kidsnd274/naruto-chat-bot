@@ -948,6 +948,15 @@ _V15_DELETED_MESSAGES = """
 ALTER TABLE messages ADD COLUMN deleted_at INTEGER;
 """
 
+_V16_NO_PLAN_CARDS = """
+-- plans/TELEGRAM_PERMISSIONS_AND_CHAT_CLUTTER_PLAN.md §7: plans are kept on the
+-- board, and the bot no longer posts plan cards to confirm. Open proposals are
+-- closed; the table stays as history.
+UPDATE plans SET status = 'cancelled', decided_at = CAST(strftime('%s', 'now') AS INTEGER),
+       decided_by_name = 'plan cards removed'
+ WHERE status = 'proposed';
+"""
+
 MIGRATIONS: list[str] = [
     _V1_FOUNDATIONS,
     _V2_AGENT_RUNS,
@@ -964,6 +973,7 @@ MIGRATIONS: list[str] = [
     _V13_KEEP_MESSAGES,
     _V14_BOARD_TITLE,
     _V15_DELETED_MESSAGES,
+    _V16_NO_PLAN_CARDS,
 ]
 
 # Tables whose rows belong to one chat and move with it on a group upgrade.

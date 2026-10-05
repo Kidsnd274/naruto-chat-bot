@@ -171,7 +171,7 @@ async def test_owner_dm_start_lists_pending_groups(running):
     assert reply["chat_id"] == 1000 and "Pending: 1" in reply["text"]
 
 
-async def test_plan_buttons_and_poll_updates(running):
+async def test_old_plan_card_buttons_and_poll_updates(running):
     fake, services = running
     services.chats.upsert_seen(CHAT, title="BBQ crew")
     services.chats.set_status(CHAT, "enabled")
@@ -183,10 +183,12 @@ async def test_plan_buttons_and_poll_updates(running):
                     "chat": {"id": CHAT, "type": "group", "title": "BBQ crew"},
                     "from": BOT_USER, "text": "📋 Plan: BBQ"},
     })
-    await fake.wait_for("sendRichMessage")
-    assert services.plans.get(plan.id).status == "confirmed"
-    assert any(name == "pinChatMessage" for name, _ in fake.calls)
-    assert any(name == "answerCallbackQuery" for name, _ in fake.calls)
+    edit = (await fake.wait_for("editMessageReplyMarkup"))[0]
+    assert (int(edit["chat_id"]), int(edit["message_id"])) == (CHAT, 77)
+    assert "reply_markup" not in edit  # the buttons go, the text stays
+    assert fake.sent("answerCallbackQuery")[0]["text"] == "Plans are kept on the board now."
+    assert services.plans.get(plan.id).status == "proposed"
+    assert fake.sent("sendRichMessage") == [] and fake.sent("editMessageText") == []
 
     poll_message = fake._sendPoll({"chat_id": CHAT, "question": "Day?",
                                    "options": ["Sat", "Sun"], "is_anonymous": False})

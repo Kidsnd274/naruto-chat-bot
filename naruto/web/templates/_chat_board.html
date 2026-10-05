@@ -43,7 +43,7 @@
     </div>
   </form>
 
-  <h3>Proposed plans</h3>
+  <h3>Earlier plan cards</h3>
   {% if plans %}
     <ul class="plain">
       {% for plan in plans %}
@@ -56,6 +56,6 @@
       {% endfor %}
     </ul>
   {% else %}
-    <p class="muted small">None yet. The bot proposes a plan with Confirm / Change buttons when asked to.</p>
+    <p class="muted small">None. Plans are kept on the board; the bot no longer posts plan cards.</p>
   {% endif %}
 </section>

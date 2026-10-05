@@ -20,7 +20,7 @@ from naruto.agent.runner import (
     AgentRunner,
     RunRequest,
 )
-from naruto.db.board import MAX_ITEMS_PER_SECTION, BoardFull
+from naruto.db.board import BoardFull
 from naruto.db.messages import IMPORT, NewMessage
 from naruto.llm import (
     LLMClient,
@@ -31,7 +31,7 @@ from naruto.llm import (
 )
 from naruto.tg.access import ChatAccess
 from naruto.tg.board import RULE, BoardPublisher, Updated, render_html, render_markdown
-from naruto.tg.plans import PlanButtons
+from naruto.tg.plans import OLD_CARD_ANSWER, on_old_card_button
 from naruto.tg.polls import PollTracker
 from naruto.tg.recorder import Recorder
 from naruto.tg.responder import Responder
@@ -618,8 +618,8 @@ async def test_question_pings_can_be_turned_off(services, bot, chat):
     assert bot.sent == []
 
 
-async def test_board_and_open_plans_come_with_the_request(services, wired, bot, chat):
-    """They change whenever the bot acts, so they sit next to the current
+async def test_the_board_comes_with_the_request(services, wired, bot, chat):
+    """It changes whenever the bot acts, so it sits next to the current
     request rather than before the transcript (the server's prompt cache)."""
     services.boards.set_section(GROUP_ID, "questions", ["Who brings the grill?"], actor="t")
     services.plans.create(GROUP_ID, "BBQ", ["Sat 6pm"], run_id=None, proposed_for_user_id=7)
@@ -629,57 +629,69 @@ async def test_board_and_open_plans_come_with_the_request(services, wired, bot, 
     assert current.startswith("## Board, plans and reminders\nWhat you keep for the group")
     assert "\n\nPinned board:\n❓ Open questions (questions)\n  • Who brings the grill?" \
         in current
-    assert "- plan 1: BBQ: Sat 6pm" in current
-    assert current.index("- plan 1") < current.index("## Current request")
+    assert current.index("Pinned board") < current.index("## Current request")
     assert "Pinned board" not in context_block and "## Background" not in context_block
+    assert "plan 1" not in current and "proposed" not in current  # old plan cards aren't shown
 
 
 # ----------------------------------------------------------------- plans
 
-async def test_plan_is_proposed_and_confirmed_onto_the_board(services, wired, bot, chat):
-    services.llm = ScriptedLLM(
-        [tool_call("propose_plan", {"title": "BBQ", "items": ["Sat 6pm", "East Coast"]})],
-        "Plan's up!")
-    trigger_message = message(6, "/plan", command=True)
-    await wired.recorder.on_message(update(trigger_message), context(bot))
-    trigger = services.messages.get_live(GROUP_ID, 6)
-    await wired.responder.respond(bot, chat, trigger_message, trigger, services.status.bot,
-                                  skill="plan")
-    proposal = bot.sent[-2]
-    assert proposal["parse_mode"] == "HTML" and "📋 <b>Plan: BBQ</b>" in proposal["text"]
-    buttons = proposal["reply_markup"].inline_keyboard[0]
-    assert [b.callback_data for b in buttons] == ["plan:confirm:1", "plan:change:1"]
-    assert bot.sent[-1]["text"] == "Plan's up!"
-    plan = services.plans.get(1)
-    stored = services.messages.get_live(GROUP_ID, plan.message_id)
-    assert stored is not None and stored.from_bot
+async def test_plans_are_kept_on_the_board_not_posted_as_cards(services, wired, bot, chat):
+    """A synthetic version of the chat in plans/TELEGRAM_PERMISSIONS_AND_CHAT_CLUTTER_PLAN.md
+    §3: one board entry for the plan and at most one short reply, no card."""
+    plan = {"section": "plans", "title": "Dinner at 8",
+            "items": [{"text": "Dinner tonight", "done": False,
+                       "details": ["8pm", "Sam fetches people"]}]}
+    services.llm = ScriptedLLM([tool_call("update_board", plan)], "Board's updated.")
+    text = "@naruto_bot can u summarize the plan. it's at 8pm and Sam will be fetching ppl"
+    msg = message(6, text)
+    await wired.recorder.on_message(update(msg), context(bot))
+    await wired.responder.respond(bot, chat, msg, services.messages.get_live(GROUP_ID, 6),
+                                  services.status.bot, skill="plan")
 
-    buttons_handler = PlanButtons(services, BoardPublisher(services))
-    answers = []
-    query = SimpleNamespace(data="plan:confirm:1", from_user=BOB,
-                            answer=lambda text=None, **kw: _record(answers, text),
-                            edit_message_text=lambda text, **kw: _record(answers, text))
-    await buttons_handler.on_callback(SimpleNamespace(callback_query=query), context(bot))
-    assert services.plans.get(1).status == "confirmed"
-    assert services.plans.get(1).decided_by_name == "Bob"
+    assert "propose_plan" not in services.llm.tool_names(0)
+    assert [s["text"] for s in bot.sent] == ["Board's updated."]  # one short reply
+    assert all(s["reply_markup"] is None for s in bot.sent)  # no buttons anywhere
     assert [(i.text, i.done, i.details) for i in services.boards.get(GROUP_ID).items("plans")] \
-        == [("BBQ", True, ["Sat 6pm", "East Coast"])]
-    assert "Confirmed" in answers[0] and "✅ Confirmed by Bob" in answers[1]
-    assert "✅ Confirmed by Bob" in services.messages.get_live(GROUP_ID, plan.message_id).text
-    assert bot.api_calls[-1][0] == "sendRichMessage"
+        == [("Dinner tonight", False, ["8pm", "Sam fetches people"])]
 
-    await buttons_handler.on_callback(SimpleNamespace(callback_query=query), context(bot))
-    assert answers[-1] == "This plan was already confirmed or replaced."
+    # Once the group says it's settled, the same entry is ticked, not added again.
+    plan["items"][0]["done"] = True
+    services.llm = ScriptedLLM([tool_call("update_board", plan)], "[NO REPLY]")
+    await say(wired, bot, message(7, "@naruto_bot ok it's settled", offset=60))
+    assert [(i.text, i.done) for i in services.boards.get(GROUP_ID).items("plans")] == \
+        [("Dinner tonight", True)]
+    assert len(bot.sent) == 1 and services.plans.for_chat(GROUP_ID) == []
 
 
-async def test_a_new_proposal_replaces_an_open_one_with_the_same_title(services, bot, chat):
-    _, results = await run_tools(services, bot, chat,
-                                 tool_call("propose_plan", {"title": "BBQ", "items": ["Sat"]}, "a"),
-                                 tool_call("propose_plan", {"title": "bbq", "items": ["Sun"]}, "b"),
-                                 skill="plan")
-    assert "It replaces plan 1." in results[1]
-    assert [p.status for p in services.plans.for_chat(GROUP_ID)] == ["proposed", "cancelled"]
-    assert "Replaced by a newer plan" in bot.edits[-1]["text"]
+def test_propose_plan_is_gone_from_every_skill_and_the_lab():
+    from naruto.agent.skills import SKILLS
+    from naruto.agent.tools import default_registry
+    from naruto.lab.capabilities import SIMULATED
+    assert all("propose_plan" not in skill.tools for skill in SKILLS.values())
+    assert "propose_plan" not in default_registry().tools and "propose_plan" not in SIMULATED
+
+
+async def test_an_old_plan_card_button_says_plans_are_on_the_board(services, bot, chat):
+    plan = services.plans.create(GROUP_ID, "BBQ", ["Sat"], run_id=None, proposed_for_user_id=None)
+    calls = []
+
+    async def answer(text=None, **kwargs):
+        calls.append(("answer", text))
+
+    async def edit_markup(reply_markup="not given", **kwargs):
+        calls.append(("buttons", reply_markup))
+
+    async def edit_text(*args, **kwargs):
+        calls.append(("text", args))
+
+    query = SimpleNamespace(data=f"plan:confirm:{plan.id}", from_user=BOB, answer=answer,
+                            edit_message_reply_markup=edit_markup, edit_message_text=edit_text)
+    await on_old_card_button(SimpleNamespace(callback_query=query), context(bot))
+    assert calls == [("answer", OLD_CARD_ANSWER), ("buttons", None)]  # the text stays
+    assert OLD_CARD_ANSWER == "Plans are kept on the board now."
+    assert services.plans.get(plan.id).status == "proposed"  # nothing is confirmed
+    assert services.boards.get(GROUP_ID).is_empty and bot.api_calls == []
 
 
 async def test_no_tools_are_offered_when_the_limit_is_zero(services, wired, bot, chat):
@@ -687,27 +699,6 @@ async def test_no_tools_are_offered_when_the_limit_is_zero(services, wired, bot,
     services.llm = ScriptedLLM("Hi!")
     await say(wired, bot, message(6, "@naruto_bot hi"))
     assert services.llm.calls[0]["tools"] is None
-
-
-async def _record(bucket, text):
-    bucket.append(text)
-    return True
-
-
-async def test_confirming_a_plan_on_a_full_board_says_so(services, bot, chat):
-    full = [f"Plan {i}" for i in range(MAX_ITEMS_PER_SECTION)]
-    services.boards.set_section(GROUP_ID, "plans", full, actor="t")
-    plan = services.plans.create(GROUP_ID, "BBQ", ["Sat"], run_id=None, proposed_for_user_id=None)
-    answers = []
-    query = SimpleNamespace(data=f"plan:confirm:{plan.id}", from_user=BOB,
-                            answer=lambda text=None, **kw: _record(answers, text),
-                            edit_message_text=lambda text, **kw: _record(answers, text))
-    await PlanButtons(services, BoardPublisher(services)).on_callback(
-        SimpleNamespace(callback_query=query), context(bot))
-    assert services.plans.get(plan.id).status == "confirmed"
-    assert "board is full" in answers[0]
-    assert [i.text for i in services.boards.get(GROUP_ID).items("plans")] == full  # unchanged
-    assert bot.api_calls == []  # nothing new to publish
 
 
 async def test_the_board_stays_within_one_telegram_message(services, bot, chat):

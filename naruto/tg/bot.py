@@ -33,7 +33,7 @@ from naruto.services import BotIdentity, Services
 from naruto.tg.access import CALLBACK_PREFIX, ChatAccess
 from naruto.tg.board import BoardPublisher
 from naruto.tg.commands import GroupCommands
-from naruto.tg.plans import CALLBACK_PREFIX as PLAN_PREFIX, PlanButtons
+from naruto.tg.plans import CALLBACK_PREFIX as PLAN_PREFIX, on_old_card_button
 from naruto.tg.polls import PollTracker
 from naruto.tg.recorder import Recorder
 from naruto.tg.reminders import ReminderSender
@@ -92,7 +92,7 @@ GROUP_COMMANDS = [
     BotCommand("summary", "Summarize the chat: /summary, /summary today, /summary 3h"),
     BotCommand("catchup", "Only you see it: what you missed since you last spoke",
                api_kwargs={"is_ephemeral": True}),
-    BotCommand("plan", "Pull the plan together and propose it"),
+    BotCommand("plan", "Pull the plan together and keep it on the board"),
     BotCommand("questions", "List the open questions (kept on the board)"),
     BotCommand("board", "Show the board of plans, decisions and open questions"),
     BotCommand("remember", "Remember something: /remember Sam is vegetarian"),
@@ -132,7 +132,6 @@ class TelegramBot:
         self.board = BoardPublisher(services)
         self.commands = GroupCommands(services)
         self.responder = Responder(services, self.recorder)
-        self.plans = PlanButtons(services, self.board)
         self.polls = PollTracker(services)
         self.skills = SkillCommands(services, self.responder, self.board)
         self.reminders = ReminderSender(services, self.recorder)
@@ -153,7 +152,7 @@ class TelegramBot:
                                           ChatMemberHandler.MY_CHAT_MEMBER))
         app.add_handler(CallbackQueryHandler(self.access.on_callback,
                                              pattern=rf"^{CALLBACK_PREFIX}:"))
-        app.add_handler(CallbackQueryHandler(self.plans.on_callback, pattern=rf"^{PLAN_PREFIX}:"))
+        app.add_handler(CallbackQueryHandler(on_old_card_button, pattern=rf"^{PLAN_PREFIX}:"))
         app.add_handler(PollHandler(self.polls.on_poll))
         app.add_handler(PollAnswerHandler(self.polls.on_poll_answer))
         app.add_handler(CommandHandler("enable", self.access.on_enable_command, filters=groups))

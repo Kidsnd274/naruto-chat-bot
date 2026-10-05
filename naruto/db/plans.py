@@ -1,4 +1,6 @@
-"""Plans the bot proposed with Confirm / Change buttons."""
+"""Plans the bot proposed with Confirm / Change buttons, before plans moved to
+the board (plans/TELEGRAM_PERMISSIONS_AND_CHAT_CLUTTER_PLAN.md §7). Kept as
+history: the web board page and the lab still read them."""
 
 from dataclasses import dataclass
 import json
@@ -32,12 +34,6 @@ class Plan:
         data = {name: row[name] for name in cls.__dataclass_fields__}
         data["items"] = json.loads(data["items"] or "[]")
         return cls(**data)
-
-    def one_line(self) -> str:
-        """For the model's prompt: the title plus the details."""
-        if not self.items:
-            return self.title
-        return f"{self.title}: {'; '.join(self.items)}"
 
 
 class PlanRepository:

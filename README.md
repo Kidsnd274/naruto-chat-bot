@@ -5,7 +5,7 @@ A Telegram group assistant that talks like Naruto. It runs against a local OpenA
 - **Group-only.** It answers when someone mentions it or replies to it. Private messages are only for the owner, to approve groups.
 - **Approve once.** A group the bot is added to stays pending until the owner approves it. Pending and disabled groups get no replies and nothing is recorded.
 - **Remembers the chat.** Every message in an enabled group is stored (text, sender, replies, media as markers such as `[photo]`), with full-text search. Images are only downloaded when someone asks about one.
-- **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, post a plan with Confirm / Change buttons, start polls, pin messages and delete its own messages when asked. Each answer is a bounded agent run: a few model requests and tool calls at most.
+- **Gets things done.** It can look further back in the chat, keep a pinned board of plans, decisions and open questions, start polls, pin messages and delete its own messages when asked. Each answer is a bounded agent run: a few model requests and tool calls at most.
 - **Remembers the group.** Messages are kept until the owner deletes them, and stay searchable. A rolling digest of what's going on and long-term memory notes (people's preferences, traditions, running jokes) come from live chat; each reply reads only a bounded recent window plus the digest and notes, however long the history. Members can ask it to remember or forget things, and the owner can edit everything in the web admin.
 - **Web admin** on localhost: dashboard, chats, message browser, board, agent traces, settings, logs.
 
@@ -86,7 +86,7 @@ What it can do when asked, besides chatting:
 - **Look things up** further back than the recent messages it sees, including imported history ("what time did Mei say her flight lands?").
 - **Remember older times** from history summaries, dated summaries of past months or weeks ("what were we planning in summer 2021?"), and by searching the stored messages. It says when an answer comes from a summary rather than the messages themselves.
 - **The board:** one pinned message per group, edited in place ("put the BBQ on the board", "the pit is booked"). Its first line is a short title of what's planned (also the pin text); then 🗓 Plans, each with its details and whether it's confirmed, and ❓ Open questions. A question can be for someone: the board mentions them and the bot sends them a short message, since edits notify nobody. It is sent as a Telegram rich message, or as a plain formatted message if rich messages are refused (Settings → Board). Some Telegram apps show a rich message's pin as blank.
-- **Plans:** "lock in the plan" posts the plan with **✅ Confirm** and **✏️ Change** buttons. Anyone can confirm; a confirmed plan goes on the board. A new plan with the same title replaces an open one.
+- **Plans** live on the board only. The group settles plans among themselves, and the bot keeps track: "/plan" or "put the plan on the board" records the plan with its details as ⏳ until the group says it's settled, then ✅, updating the same entry rather than adding another. Plan cards with Confirm / Change buttons are gone; pressing a button on an old card just says "Plans are kept on the board now" and removes its buttons.
 - **Polls** ("make a poll for Saturday or Sunday"). Votes show up in what the bot reads, including who voted for what in non-anonymous polls.
 - **Pins** ("pin the address").
 - **Deleting its own messages** ("delete that" in reply to one, "delete your unnecessary messages"). Only messages the bot sent in the last 48 hours (Telegram's limit), never anyone else's and never the pinned board, whatever rights it has. Its copies stay in the stored history, marked deleted, but replies no longer read them.
@@ -100,7 +100,7 @@ Commands (each goes straight to a focused skill):
 | --- | --- |
 | `/summary` | Summarize the recent discussion. `/summary today`, `/summary yesterday`, `/summary 3h`, `/summary 2 days`, `/summary <topic>`, or reply to a message with `/summary` to summarize everything since it. |
 | `/catchup` | Only you see it (ephemeral): what you missed since you last spoke. If Telegram refuses the private reply, it comes as a DM, or in the group as a last resort. |
-| `/plan` | Pull the plan being discussed together and post it with Confirm / Change buttons, putting open points on the board. |
+| `/plan` | Pull the plan being discussed together and keep it on the board, with its open points under open questions. |
 | `/questions` | List the open questions and keep them on the board. |
 | `/board` | Show the board again (a new pinned message). |
 | `/remember <fact>` | Save a memory note (or reply to a message with `/remember`). |
@@ -111,7 +111,7 @@ Commands (each goes straight to a focused skill):
 | Page | What it does |
 | --- | --- |
 | Dashboard | Bot, Telegram and model status, pending groups, recent errors |
-| Chats | Every group with status, admin rights, message and memory-note counts; enable, disable, leave. Each chat has its roster (with aliases), its memory notes, the digest (view, edit, update now), history summaries, reminders, the board (edit, send, clear) and proposed plans, a searchable message browser and data deletion (messages older than N days, before a date, or all; the digest, board, memory and history summaries). |
+| Chats | Every group with status, admin rights, message and memory-note counts; enable, disable, leave. Each chat has its roster (with aliases), its memory notes, the digest (view, edit, update now), history summaries, reminders, the board (edit, send, clear) and earlier plan cards, a searchable message browser and data deletion (messages older than N days, before a date, or all; the digest, board, memory and history summaries). |
 | History (per chat) | Every history summary: search, filter by date, edit (earlier versions are kept) and delete; live months waiting for their summary, or failed (with **Retry**); and the date live recording began. |
 | Memory (per chat) | Every memory note: filter by person, category or text; add, edit, lock (the bot and members can't change a locked note) and delete; each note shows who created it, the messages it came from and its change history. |
 | People | Everyone across chats: a display name and aliases that apply in every chat; merge two accounts of one person, or split them. |

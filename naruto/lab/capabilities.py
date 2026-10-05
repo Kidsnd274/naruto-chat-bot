@@ -11,8 +11,7 @@ from naruto.lab.service import MAX_BATCH, MAX_REPEAT
 from naruto.settings.registry import REGISTRY
 
 # How each tool behaves in a sandbox.
-SIMULATED = {"create_poll", "pin_message", "unpin_message", "update_board", "propose_plan",
-             "delete_messages"}
+SIMULATED = {"create_poll", "pin_message", "unpin_message", "update_board", "delete_messages"}
 NEEDS_IMAGE = {"describe_image"}
 
 COMMANDS = [

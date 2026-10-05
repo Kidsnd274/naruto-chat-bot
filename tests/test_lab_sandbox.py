@@ -258,7 +258,8 @@ async def test_seeded_state_shows_in_the_prompt_and_state_checks():
     assert "updated Sat 03 Oct, 12:00" in context
     assert "Summaries of earlier history: 1–31 Aug 2025 (1 periods)" in context
     assert "☐ BBQ Sat 6pm" in current and "Who brings the grill?" in current
-    assert "bring the grill" in current and "plan 1: BBQ" in current
+    assert "bring the grill" in current
+    assert "plan 1" not in current  # old plan cards stay in the state, not in the prompt
     assert result.outcome == "pass", result.turns[0].checks
 
 

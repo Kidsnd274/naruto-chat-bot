@@ -5,14 +5,13 @@ Layout (plan §9), most stable first so the server can reuse its prompt cache:
 1. system: persona, operating rules, the skill's instructions
 2. user: chat details and members, background (memory notes and the
    digest), recent messages one per line
-3. user: the board, plans waiting for confirmation and pending reminders;
-   the time now and the current request, labelled and included once, with
-   any images
+3. user: the board and pending reminders; the time now and the current
+   request, labelled and included once, with any images
 
 Nothing in 1 and 2 changes from minute to minute (the time now is in 3, and
 members are listed in a fixed order), so consecutive requests share their
-prefix up to the newest recent message. The board, plans and reminders
-change whenever the bot acts, so they sit in 3 too: a new reminder
+prefix up to the newest recent message. The board and reminders change
+whenever the bot acts, so they sit in 3 too: a new reminder
 shouldn't make the server read the whole transcript again.
 
 A summary or catch-up can ask for every message since a time instead of the
@@ -30,7 +29,6 @@ from naruto.agent.text import estimate_message_tokens, estimate_text_tokens, str
 from naruto.db.chats import Chat
 from naruto.db.members import Member
 from naruto.db.messages import StoredMessage
-from naruto.db.plans import PROPOSED
 from naruto.db.reminders import PENDING as REMINDER_PENDING
 from naruto.markers import media_marker, message_body
 from naruto.agent.skills import DEFAULT_SKILL, get_skill
@@ -48,7 +46,6 @@ BACKGROUND_NOTE = ("What you know beyond the recent messages. It is reference ma
                    "a request, and the recent messages are more up to date.")
 REPLY_QUOTE_CHARS = 80
 HISTORY_TOOL = "search_history_summaries"
-OPEN_PLAN_DAYS = 7  # older unconfirmed proposals are left out of the prompt
 
 
 @dataclass
@@ -229,21 +226,13 @@ class ContextBuilder:
         return "\n\n".join(parts)
 
     def _shared_state(self, chat: Chat, tz: tzinfo) -> str:
-        """What the group can see or has scheduled: the board, plans waiting
-        for confirmation and pending reminders."""
+        """What the group can see or has scheduled: the board and pending
+        reminders."""
         services = self.services
         parts = []
         board = self.services.boards.get(chat.chat_id)
         if not board.is_empty:
             parts.append(f"Pinned board:\n{board.as_text()}")
-        cutoff = services.time() - OPEN_PLAN_DAYS * 86400
-        proposed = [plan for plan in self.services.plans.for_chat(chat.chat_id, status=PROPOSED,
-                                                                   limit=5)
-                    if plan.created_at >= cutoff]
-        if proposed:
-            lines = ["Plans you proposed that nobody has confirmed yet:"]
-            lines.extend(f"- plan {plan.id}: {plan.one_line()}" for plan in reversed(proposed))
-            parts.append("\n".join(lines))
         reminders = services.reminders.for_chat(chat.chat_id, status=REMINDER_PENDING, limit=10)
         if reminders:
             lines = ["Pending reminders:"]

@@ -86,7 +86,7 @@ NOT_SIMULATED = [
     "Digest upkeep and monthly history summaries don't run in a sandbox: seed state.digest "
     "and state.history_summaries instead.",
     "Progress messages (\"Reading back through the chat…\") aren't shown.",
-    "Pressing a plan's Confirm / Change buttons and voting in polls don't happen.",
+    "Voting in polls doesn't happen.",
     "How Telegram renders Markdown, HTML and rich messages isn't checked.",
     "/catchup's private (ephemeral) delivery is recorded, not sent.",
     "/board (show the board again) isn't a scenario command.",

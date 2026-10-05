@@ -4,7 +4,7 @@ Limits come from the settings (agent.*): model requests per run, tool calls
 per run and a deadline that includes waiting for the model server. The last
 allowed request is reserved for the answer: its tool results say that no
 more tools are available, and only the calls that post something (the
-board, a plan, a poll) still run on it. A hand-over to another skill (use_skill) does no
+board, a poll) still run on it. A hand-over to another skill (use_skill) does no
 work of its own, so it doesn't use up a request. Every model request and
 tool call is traced in the run's ``steps``.
 
@@ -211,7 +211,7 @@ class AgentRunner:
                     continue
             if last_request and calls:
                 # Reading can't help any more, but a post the request asked
-                # for (the board, a plan, a poll) still runs: the group sees
+                # for (the board, a poll) still runs: the group sees
                 # it, so the run may end without an answer.
                 posts = [call for call in calls if call.name in POSTING_TOOLS]
                 if len(posts) < len(calls):

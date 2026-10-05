@@ -1,5 +1,5 @@
-"""Acting in the group: the pinned board, pins, plan proposals, polls and
-deleting the bot's own messages."""
+"""Acting in the group: the pinned board, pins, polls and deleting the bot's
+own messages."""
 
 from html import escape
 import logging
@@ -18,11 +18,9 @@ from naruto.db.board import (
     BoardFull,
     BoardItem,
 )
-from naruto.db.plans import CANCELLED, PROPOSED
 from naruto.tg import own_messages
 from naruto.tg.access import note_pin
 from naruto.tg.board import BoardPublisher
-from naruto.tg.plans import render_plan, send_plan
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +29,7 @@ MAX_DELETE = 10  # messages per delete_messages call
 # After posting something the group sees, the model may send nothing more.
 NOTHING_TO_ADD = "If there's nothing to add, answer with just [NO REPLY]; otherwise keep it short."
 # The tools whose result the group sees, so a run may end after them without an answer.
-POSTING_TOOLS = ("update_board", "propose_plan", "create_poll")
+POSTING_TOOLS = ("update_board", "create_poll")
 
 
 async def update_board(ctx: ToolContext, args: dict) -> str:
@@ -175,44 +173,6 @@ def _deletion_report(results: list[own_messages.Result]) -> str:
     return " ".join(parts)
 
 
-async def propose_plan(ctx: ToolContext, args: dict) -> str:
-    plans = ctx.services.plans
-    items = [item for item in args.get("items") or [] if item]
-    plan = plans.create(ctx.chat.chat_id, args["title"], items, run_id=ctx.state.run_id,
-                        proposed_for_user_id=ctx.trigger.sender_id)
-    try:
-        sent = await send_plan(ctx.telegram, ctx.services, ctx.chat, plan)
-    except TelegramError as exc:
-        plans.decide(plan.id, CANCELLED, user_id=None, name="not sent")
-        raise ToolError(f"Couldn't post the plan ({exc}).") from None
-    ctx.recorded(sent)
-    ctx.state.actions.append(f"proposed plan {plan.id}")
-    replaced = await _replace_older(ctx, plan)
-    note = f" It replaces plan {', '.join(map(str, replaced))}." if replaced else ""
-    return (f"Posted plan {plan.id} with Confirm / Change buttons.{note} Once someone confirms "
-            f"it, it goes on the board. Don't repeat the plan in your answer. {NOTHING_TO_ADD}")
-
-
-async def _replace_older(ctx: ToolContext, plan) -> list[int]:
-    """An open proposal with the same title is superseded by the new one."""
-    replaced = []
-    for old in ctx.services.plans.for_chat(ctx.chat.chat_id, status=PROPOSED):
-        if old.id == plan.id or old.title.strip().lower() != plan.title.strip().lower():
-            continue
-        if not ctx.services.plans.decide(old.id, CANCELLED, user_id=None,
-                                         name=f"replaced by plan {plan.id}"):
-            continue
-        replaced.append(old.id)
-        if old.message_id and old.message_chat_id:
-            try:
-                await ctx.telegram.edit_message_text(
-                    chat_id=old.message_chat_id, message_id=old.message_id,
-                    text=render_plan(old, "↪️ Replaced by a newer plan."), parse_mode="HTML")
-            except TelegramError as exc:
-                logger.debug("Couldn't mark plan %s as replaced: %s", old.id, exc)
-    return replaced
-
-
 async def create_poll(ctx: ToolContext, args: dict) -> str:
     options = []
     for option in args["options"]:
@@ -298,20 +258,6 @@ TOOLS = [
                             "description": "The [id]s of your messages."},
         }, ("message_ids",)),
         delete_messages,
-    ),
-    Tool(
-        "propose_plan",
-        "Post a clear plan with Confirm / Change buttons, when the group has settled "
-        "on something (what, when, where, who does what). Confirmed plans go on the board.",
-        params({
-            "title": {"type": "string", "maxLength": 120,
-                      "description": "Short name, e.g. 'BBQ on Saturday'."},
-            "items": {"type": "array", "minItems": 1, "maxItems": 12,
-                      "items": {"type": "string", "maxLength": 200},
-                      "description": "The details, one per item: date and time, place, "
-                                     "who brings or books what."},
-        }, ("title", "items")),
-        propose_plan,
     ),
     Tool(
         "create_poll",

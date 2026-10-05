@@ -51,6 +51,20 @@ def test_migrations_set_user_version_and_are_idempotent(db):
     assert db.schema_version == len(MIGRATIONS)
 
 
+def test_open_plan_proposals_are_closed_when_plan_cards_go(db):
+    """Migration 16: plans are kept on the board now."""
+    from naruto.db.plans import PlanRepository
+    plans = PlanRepository(db)
+    open_plan = plans.create(BASIC, "BBQ", ["Sat"], run_id=None, proposed_for_user_id=None)
+    confirmed = plans.create(BASIC, "Dinner", [], run_id=None, proposed_for_user_id=None)
+    plans.decide(confirmed.id, "confirmed", user_id=7, name="Alice")
+    db.execute("PRAGMA user_version = 15")
+    db.migrate()
+    assert plans.get(open_plan.id).status == "cancelled"
+    assert plans.get(open_plan.id).decided_by_name == "plan cards removed"
+    assert plans.get(confirmed.id).decided_by_name == "Alice"  # history is kept
+
+
 def test_meta_round_trip(db):
     assert db.get_meta("x") is None
     db.set_meta("x", "1")

@@ -345,7 +345,7 @@ async def test_focused_and_quiet_turns():
     focused = scenario(skill="plan", turns=[{"from": "Bob", "from_id": 8, "text": "plan it"}])
     result, llm = await run(focused, "Plan: BBQ.")
     assert result.focused and result.turns[0].kind == "focused"
-    assert "consolidate the plan" in llm.calls[0]["messages"][0]["content"]  # plan's instructions
+    assert "keep track of the plan" in llm.calls[0]["messages"][0]["content"]  # plan's instructions
 
     quiet = scenario(turns=[{"from": "Bob", "from_id": 8, "text": "anyone hungry?",
                              "expect": {"answers": False}}])

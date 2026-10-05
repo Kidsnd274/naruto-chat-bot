@@ -609,7 +609,7 @@ async def test_summary_command_is_recorded_and_answered_in_thread(services, wire
 
 async def test_other_commands_pick_their_skill(services, wired, bot):
     for name, handler, args, skill in [
-            ("/plan", wired.skills.plan, [], "consolidate the plan"),
+            ("/plan", wired.skills.plan, [], "keep track of the plan"),
             ("/questions", wired.skills.questions, [], "open questions"),
             ("/remember Sam is vegan", wired.skills.remember, ["Sam", "is", "vegan"],
              "group memory"),

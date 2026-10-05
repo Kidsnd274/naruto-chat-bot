@@ -26,6 +26,22 @@ GROUP_TYPES = ("group", "supergroup")
 PRESENT = (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR,
            ChatMemberStatus.RESTRICTED, ChatMemberStatus.OWNER)
 CALLBACK_PREFIX = "access"
+# Telegram keeps undelivered updates for a day and hands them all over when
+# the bot starts polling again, so commands sent during an outage arrive
+# together, too late for an ephemeral answer (15 seconds).
+LATE_AFTER_SECONDS = 60
+BACKLOG_SECONDS = 2 * 86400
+
+
+def arrived_late(message, now: float | None = None) -> bool:
+    """The command was sent while the bot was offline. A date older than
+    Telegram's backlog can't be one (an ephemeral command's date is
+    undocumented), so it counts as on time."""
+    sent = getattr(message, "date", None)
+    if sent is None:
+        return False
+    age = (time.time() if now is None else now) - sent.timestamp()
+    return LATE_AFTER_SECONDS < age <= BACKLOG_SECONDS
 
 
 def rights_of(member, permissions=None) -> tuple[bool, bool]:
@@ -192,7 +208,8 @@ class ChatAccess:
         if await self.notify_owner(text, approval_keyboard(chat)):
             self.services.chats.mark_owner_notified(chat.chat_id)
 
-    async def reply_privately(self, message, user_id: int, text: str) -> None:
+    async def reply_privately(self, message, user_id: int, text: str, *,
+                              dm_fallback: bool = True) -> None:
         """Answer an in-group owner command without the group seeing it:
         ephemerally if possible, otherwise in the owner's DMs."""
         try:
@@ -200,6 +217,9 @@ class ChatAccess:
                                  reply_to_ephemeral_id=ephemeral_message_id(message))
             return
         except TelegramError as exc:
+            if not dm_fallback:
+                logger.info("Ephemeral reply failed (%s); not sending it as a DM.", exc)
+                return
             logger.info("Ephemeral reply failed (%s); using DMs.", exc)
         chat_title = escape(message.chat.title or str(message.chat_id))
         await self.notify_owner(f"<b>{chat_title}</b>: {escape(text)}")
@@ -271,11 +291,20 @@ class ChatAccess:
                 text += ("\n⚠️ Missing admin rights: " + ", ".join(missing)
                          + ". Make me a group admin with “Pin messages”.")
         elif chat.status == DISABLED:
+            already = True
             text = "⏸ Already disabled here. Use /enable to turn me back on."
         else:
+            already = False
             await self.disable(chat.chat_id, actor="owner (/disable)")
             text = "⏸ Disabled. I won't record or reply here until you /enable me."
-        await self.reply_privately(message, user.id, text)
+        if arrived_late(message):
+            if already:
+                logger.info("Not answering a late /%s: nothing changed",
+                            "enable" if enable else "disable", extra={"chat_id": chat.chat_id})
+                return
+            text += "\n(You sent this while I was offline.)"
+        # "Already ..." is only worth an answer where the owner typed it.
+        await self.reply_privately(message, user.id, text, dm_fallback=not already)
 
     async def on_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query

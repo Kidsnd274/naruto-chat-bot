@@ -1,5 +1,6 @@
 """Telegram layer: extraction, recording, chat approval, commands, replies."""
 
+import time
 from types import SimpleNamespace
 import warnings
 
@@ -22,7 +23,7 @@ from naruto import markers
 from naruto.db.messages import IMPORT, NewMessage
 from naruto.llm import ChatResult, LLMError
 from naruto.tg import own_messages
-from naruto.tg.access import ChatAccess, note_pin, rights_of
+from naruto.tg.access import ChatAccess, arrived_late, note_pin, rights_of
 from naruto.tg.board import BoardPublisher
 from naruto.tg.bot import sanitize_updates
 from naruto.tg.commands import GroupCommands, parse_alias_args
@@ -309,6 +310,50 @@ async def test_disable_command_falls_back_to_dm_when_ephemeral_fails(services, w
     assert services.chats.get(GROUP_ID).status == "disabled"
     assert bot.sent[-1]["chat_id"] == OWNER_ID
     assert "Disabled" in bot.sent[-1]["text"]
+
+
+def sent_ago(seconds: int) -> int:
+    """The ``offset`` for a message sent ``seconds`` ago."""
+    return int(time.time()) - fakes.T0 - seconds
+
+
+def test_arrived_late_only_within_telegrams_backlog():
+    now = fakes.T0 + 10 * 86400
+    assert not arrived_late(SimpleNamespace(date=None), now)
+    assert not arrived_late(message(1, offset=10 * 86400 - 30), now)
+    assert arrived_late(message(1, offset=10 * 86400 - 3600), now)
+    assert not arrived_late(message(1, offset=0), now)  # 10 days: not a backlog
+
+
+async def test_already_enabled_after_an_outage_sends_nothing(services, wired, bot):
+    """Commands sent while the bot was offline all arrive when it starts,
+    too late for an ephemeral answer; a no-op isn't worth a DM."""
+    enable(services)
+    bot.fail_ephemeral = True
+    for message_id in (30, 31):
+        await wired.access.on_enable_command(update(message(
+            message_id, "/enable", sender=OWNER, command=True, offset=sent_ago(3 * 3600))),
+            context(bot))
+    assert services.chats.get(GROUP_ID).enabled
+    assert bot.sent == []
+
+
+async def test_already_enabled_is_never_sent_as_a_dm(services, wired, bot):
+    enable(services)
+    bot.fail_ephemeral = True
+    await wired.access.on_enable_command(update(message(
+        32, "/enable", sender=OWNER, command=True, offset=sent_ago(2))), context(bot))
+    assert bot.sent == []
+
+
+async def test_late_command_that_changes_something_still_reports(services, wired, bot):
+    enable(services)
+    bot.fail_ephemeral = True
+    await wired.access.on_disable_command(update(message(
+        33, "/disable", sender=OWNER, command=True, offset=sent_ago(3600))), context(bot))
+    assert services.chats.get(GROUP_ID).status == "disabled"
+    assert bot.sent[-1]["chat_id"] == OWNER_ID
+    assert "Disabled" in bot.sent[-1]["text"] and "while I was offline" in bot.sent[-1]["text"]
 
 
 class FakeQuery:

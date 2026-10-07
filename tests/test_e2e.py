@@ -2,6 +2,8 @@
 against a fake Bot API. Catches wiring bugs that handler-level tests miss,
 such as a startup step that never runs."""
 
+import time
+
 import pytest
 from telegram import Message
 
@@ -102,6 +104,23 @@ async def test_enable_command_reports_state(running):
     replies = await fake.wait_for("sendMessage", 4)
     assert replies[2]["text"].startswith("⏸ Disabled.")
     assert replies[3]["text"].startswith("⏸ Already disabled")
+
+
+async def test_edited_commands_are_not_run_again(running):
+    """Telegram can send an old command again as an edit; the owner got
+    "Already enabled here" DMs from six groups overnight."""
+    fake, services = running
+    services.chats.upsert_seen(CHAT, title="BBQ crew")
+    services.chats.set_status(CHAT, "enabled")
+    now = int(time.time())
+    for message_id, text in ((40, "/enable"), (41, "/disable")):
+        fake.push(edited_message={
+            "message_id": message_id, "date": now - 3 * 86400, "edit_date": now,
+            "chat": {"id": CHAT, "type": "group", "title": "BBQ crew"}, "from": OWNER,
+            "text": text, "entities": [{"type": "bot_command", "offset": 0, "length": len(text)}]})
+    await fake.settle()
+    assert fake.sent() == []
+    assert services.chats.get(CHAT).enabled
 
 
 async def test_enable_by_non_owner_is_ignored(running):

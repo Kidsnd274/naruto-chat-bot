@@ -141,6 +141,9 @@ class TelegramBot:
         app = self.application
         groups = filters.ChatType.GROUPS
         private = filters.ChatType.PRIVATE
+        # New messages only: CommandHandler also takes edits, and Telegram
+        # can send an old command again as an edit.
+        commands = filters.UpdateType.MESSAGE & groups
 
         app.add_handler(TypeHandler(Update, self._track_update), group=-2)
         app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & groups,
@@ -155,18 +158,19 @@ class TelegramBot:
         app.add_handler(CallbackQueryHandler(on_old_card_button, pattern=rf"^{PLAN_PREFIX}:"))
         app.add_handler(PollHandler(self.polls.on_poll))
         app.add_handler(PollAnswerHandler(self.polls.on_poll_answer))
-        app.add_handler(CommandHandler("enable", self.access.on_enable_command, filters=groups))
-        app.add_handler(CommandHandler("disable", self.access.on_disable_command, filters=groups))
-        app.add_handler(CommandHandler("start", self.commands.start, filters=groups))
-        app.add_handler(CommandHandler("alias", self.commands.alias, filters=groups))
-        app.add_handler(CommandHandler("removealias", self.commands.removealias, filters=groups))
-        app.add_handler(CommandHandler("clearaliases", self.commands.clearaliases, filters=groups))
-        app.add_handler(CommandHandler("group_info", self.commands.group_info, filters=groups))
+        app.add_handler(CommandHandler("enable", self.access.on_enable_command, filters=commands))
+        app.add_handler(CommandHandler("disable", self.access.on_disable_command, filters=commands))
+        app.add_handler(CommandHandler("start", self.commands.start, filters=commands))
+        app.add_handler(CommandHandler("alias", self.commands.alias, filters=commands))
+        app.add_handler(CommandHandler("removealias", self.commands.removealias, filters=commands))
+        app.add_handler(CommandHandler("clearaliases", self.commands.clearaliases,
+                                       filters=commands))
+        app.add_handler(CommandHandler("group_info", self.commands.group_info, filters=commands))
         for name, handler in (("summary", self.skills.summary), ("catchup", self.skills.catchup),
                               ("plan", self.skills.plan), ("questions", self.skills.questions),
                               ("board", self.skills.show_board),
                               ("remember", self.skills.remember), ("remind", self.skills.remind)):
-            app.add_handler(CommandHandler(name, handler, filters=groups))
+            app.add_handler(CommandHandler(name, handler, filters=commands))
         app.add_handler(MessageHandler(
             filters.UpdateType.MESSAGE & groups & ~filters.COMMAND, self.responder.on_message))
         app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & private,
